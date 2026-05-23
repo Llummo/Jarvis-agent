@@ -65,13 +65,13 @@ def build_benchmark_command(config: MetaHarnessConfig, run_spec: BenchmarkRunSpe
         "--env.meta_harness_candidate",
         str(candidate_path),
         "--env.meta_harness_archive_dir",
-        str(run_spec.archive_root),
+        str(run_spec.archive_root.expanduser().resolve()),
     ]
 
     if run_spec.run_name:
         command.extend(["--env.meta_harness_run_name", run_spec.run_name])
     if run_spec.hermes_config_path:
-        command.extend(["--config", str(run_spec.hermes_config_path)])
+        command.extend(["--config", str(run_spec.hermes_config_path.expanduser().resolve())])
     if run_spec.task_filter:
         command.extend(["--env.task_filter", run_spec.task_filter])
     if run_spec.skip_tasks:

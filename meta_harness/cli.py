@@ -111,10 +111,13 @@ def _build_config(
     launcher_prefix: Optional[str] = None,
     python_executable: Optional[str] = None,
 ) -> MetaHarnessConfig:
-    if hermes_repo:
-        config = MetaHarnessConfig(hermes_agent_path=Path(hermes_repo).expanduser().resolve())
-    else:
-        config = MetaHarnessConfig()
+    try:
+        if hermes_repo:
+            config = MetaHarnessConfig(hermes_agent_path=Path(hermes_repo).expanduser().resolve())
+        else:
+            config = MetaHarnessConfig()
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
     if launcher_prefix is not None:
         config.launch_prefix = parse_command_prefix(launcher_prefix)
         if python_executable is None:
@@ -508,7 +511,7 @@ def search_candidates_cmd(
 
     try:
         summary = run_structured_search(config, request, dry_run=dry_run)
-    except (KeyError, ValueError) as exc:
+    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     overview = Table(title="Structured Search")

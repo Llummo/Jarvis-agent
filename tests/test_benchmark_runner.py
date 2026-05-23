@@ -53,6 +53,44 @@ def test_build_benchmark_command(tmp_path):
     assert "--env.meta_harness_run_name" in command
     assert "smoke" in command
     assert "--env.task_filter" in command
+    archive_flag_index = command.index("--env.meta_harness_archive_dir")
+    assert command[archive_flag_index + 1] == str((tmp_path / "archive").resolve())
+
+
+def test_build_benchmark_command_resolves_relative_archive_and_config(tmp_path, monkeypatch):
+    hermes_repo = tmp_path / "hermes-agent"
+    benchmark_script = hermes_repo / "environments" / "benchmarks" / "tblite" / "tblite_env.py"
+    benchmark_script.parent.mkdir(parents=True)
+    benchmark_script.write_text("# test")
+
+    candidates_dir = hermes_repo / "environments" / "meta_harness" / "candidates"
+    candidates_dir.mkdir(parents=True)
+    (candidates_dir / "snapshot_baseline.py").write_text("# candidate")
+
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
+    config_file = workdir / "config.yaml"
+    config_file.write_text("model: test\n", encoding="utf-8")
+    monkeypatch.chdir(workdir)
+
+    config = MetaHarnessConfig(
+        hermes_agent_path=hermes_repo,
+        output_dir=tmp_path / "output",
+        python_executable="python3",
+    )
+    run_spec = BenchmarkRunSpec(
+        benchmark="tblite",
+        candidate="snapshot_baseline",
+        archive_root=Path("relative-archive"),
+        hermes_config_path=Path("config.yaml"),
+        python_executable=config.python_executable,
+    )
+
+    command = build_benchmark_command(config, run_spec)
+    archive_flag_index = command.index("--env.meta_harness_archive_dir")
+    config_flag_index = command.index("--config")
+    assert command[archive_flag_index + 1] == str((workdir / "relative-archive").resolve())
+    assert command[config_flag_index + 1] == str(config_file.resolve())
 
 
 def test_build_benchmark_command_with_launch_prefix(tmp_path):
