@@ -1,0 +1,4 @@
+include PRODUCT_SPEC.md
+recursive-include candidates *.md *.py
+recursive-include configs *.md *.yaml
+recursive-include docs *.md
