@@ -97,41 +97,43 @@ def run_structured_search(
         task_filter=request.task_filter,
         skip_tasks=request.skip_tasks,
     )
-    if baseline_selection.requires_fresh_run:
-        baseline_spec = BenchmarkRunSpec(
-            benchmark=request.benchmark,
-            candidate=baseline_selection.baseline_candidate,
-            archive_root=archive_root,
-            run_name=f"baseline__{safe_slug(baseline_selection.baseline_candidate)}",
-            hermes_config_path=request.hermes_config_path,
-            task_filter=request.task_filter,
-            skip_tasks=request.skip_tasks,
-            python_executable=request.python_executable or config.python_executable,
-        )
-        baseline_result = run_benchmark(config, baseline_spec, dry_run=dry_run)
-    else:
-        baseline_result = BenchmarkRunResult(
-            command=[],
-            archive_root=archive_root,
-            returncode=0,
-            run_dir=baseline_selection.run_dir,
-            summary=baseline_selection.summary,
-        )
-
     summary = SearchSummary(
         benchmark_name=request.benchmark,
         baseline_candidate=baseline_selection.baseline_candidate,
         baseline_source=baseline_selection.source,
-        baseline_run_dir=str(baseline_result.run_dir) if baseline_result.run_dir else None,
+        baseline_run_dir=str(baseline_selection.run_dir) if baseline_selection.run_dir else None,
         baseline_reference=baseline_selection.reference,
         seed_candidate=request.seed_candidate,
         workspace_dir=str(workspace_dir),
         generated_candidates_dir=str(generated_candidates_dir),
     )
 
-    frontier = FrontierStore(request.frontier_path) if request.frontier_path else None
-
+    baseline_result: Optional[BenchmarkRunResult] = None
     try:
+        if baseline_selection.requires_fresh_run:
+            baseline_spec = BenchmarkRunSpec(
+                benchmark=request.benchmark,
+                candidate=baseline_selection.baseline_candidate,
+                archive_root=archive_root,
+                run_name=f"baseline__{safe_slug(baseline_selection.baseline_candidate)}",
+                hermes_config_path=request.hermes_config_path,
+                task_filter=request.task_filter,
+                skip_tasks=request.skip_tasks,
+                python_executable=request.python_executable or config.python_executable,
+            )
+            baseline_result = run_benchmark(config, baseline_spec, dry_run=dry_run)
+            summary.baseline_run_dir = str(baseline_result.run_dir) if baseline_result.run_dir else None
+        else:
+            baseline_result = BenchmarkRunResult(
+                command=[],
+                archive_root=archive_root,
+                returncode=0,
+                run_dir=baseline_selection.run_dir,
+                summary=baseline_selection.summary,
+            )
+
+        frontier = FrontierStore(request.frontier_path) if request.frontier_path else None
+
         for mutation, candidate_path in zip(mutations, generated_candidates):
             run_spec = BenchmarkRunSpec(
                 benchmark=request.benchmark,
@@ -155,6 +157,7 @@ def run_structured_search(
                         candidate_name=candidate_path.stem,
                         candidate_path=str(candidate_path),
                         returncode=-1,
+                        failure_reason=str(exc),
                     )
                 )
                 continue
@@ -172,6 +175,7 @@ def run_structured_search(
                             run_dir=str(trial_result.run_dir) if trial_result.run_dir else None,
                             command=trial_result.command,
                             returncode=trial_result.returncode,
+                            failure_reason="missing summary for baseline or trial",
                         )
                     )
                     continue
@@ -200,6 +204,10 @@ def run_structured_search(
                     returncode=trial_result.returncode,
                 )
             )
+    except BaseException as exc:
+        if summary.failure_reason is None:
+            summary.failure_reason = str(exc)
+        raise
     finally:
         # Always persist partial results so crashed searches leave a record.
         ranked = [trial for trial in summary.trial_results if trial.report is not None]

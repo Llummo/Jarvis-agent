@@ -225,6 +225,8 @@ def test_run_benchmark_writes_outer_loop_manifest_metadata(tmp_path, monkeypatch
 
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     runner_manifest = manifest["outer_loop"]["benchmark_runner"]
+    provenance = manifest["outer_loop"]["provenance"]
+    assert runner_manifest["schema_version"] == 2
     assert runner_manifest["benchmark"] == "tblite"
     assert runner_manifest["candidate"] == "snapshot_baseline"
     assert runner_manifest["total_tasks"] == 12
@@ -232,3 +234,6 @@ def test_run_benchmark_writes_outer_loop_manifest_metadata(tmp_path, monkeypatch
         task_filter="task_b, task_a",
         skip_tasks="task_x",
     )
+    assert provenance["python_executable"] == "python3"
+    assert provenance["command"][0] == "python3"
+    assert provenance["candidate_path"] == "/tmp/snapshot_baseline.py"

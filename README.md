@@ -56,6 +56,8 @@ The current release provides:
 - paired baseline-vs-candidate evaluation and reporting
 - baseline reuse from an existing run or the current frontier-best entry
 - task-selection comparability metadata for reused baselines
+- outer-loop provenance metadata with candidate/config hashes and launcher details
+- explicit task-set comparability checks for baseline-vs-candidate reports
 - a simple JSON-backed frontier with cross-platform locking
 - deterministic wrapper-mutation search over generated candidate variants
 
@@ -184,6 +186,12 @@ Candidate files can live in `candidates/`, with an example in `candidates/templa
 
 Two local benchmark configs are also included in `configs/` for smoke-testing
 against an Ollama OpenAI-compatible endpoint on `http://localhost:11434/v1`.
+
+## Best Practices Notes
+
+See [`docs/META_HARNESS_BEST_PRACTICES.md`](docs/META_HARNESS_BEST_PRACTICES.md)
+for a May 2026 scan of recent Meta-Harness and agent-benchmarking developments
+and how they map onto this repo's next steps.
 
 ## Release Notes
 

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from meta_harness.benchmark_runner import BenchmarkRunResult
 from meta_harness.comparability import build_task_selection_metadata
 from meta_harness.config import MetaHarnessConfig
@@ -295,3 +297,37 @@ def test_run_structured_search_reuses_frontier_baseline(tmp_path, monkeypatch):
     assert summary.baseline_source == "frontier_best"
     assert summary.baseline_candidate == "frontier_best"
     assert summary.baseline_reference == str(frontier.path)
+
+
+def test_run_structured_search_persists_summary_when_fresh_baseline_fails(tmp_path, monkeypatch):
+    config = _make_config(tmp_path)
+    seed_candidate = tmp_path / "seed.py"
+    seed_candidate.write_text("# seed\n", encoding="utf-8")
+    workspace_dir = tmp_path / "workspace"
+
+    def fake_run_benchmark(config_arg, run_spec, *, dry_run=False, timeout=None):
+        assert run_spec.candidate == "snapshot_baseline"
+        raise RuntimeError("baseline failed")
+
+    monkeypatch.setattr("meta_harness.search.run_benchmark", fake_run_benchmark)
+
+    with pytest.raises(RuntimeError, match="baseline failed"):
+        run_structured_search(
+            config,
+            StructuredSearchRequest(
+                benchmark="tblite",
+                seed_candidate=str(seed_candidate),
+                baseline_candidate="snapshot_baseline",
+                workspace_dir=workspace_dir,
+                mutation_slugs=("plan_briefly",),
+                python_executable="python3",
+            ),
+            dry_run=False,
+        )
+
+    summary_path = workspace_dir / "search_summary.json"
+    assert summary_path.exists()
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["baseline_source"] == "fresh_candidate"
+    assert payload["failure_reason"] == "baseline failed"
+    assert payload["trial_results"] == []

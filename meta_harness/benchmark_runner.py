@@ -6,6 +6,8 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass
+from hashlib import sha256
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Optional, Set
 
@@ -87,7 +89,38 @@ def _total_tasks(summary: RunSummary) -> int:
     return int(summary.eval_metrics.get("eval/total_tasks") or len(summary.task_results) or 0)
 
 
-def _write_outer_loop_manifest(run_dir: Path, run_spec: BenchmarkRunSpec, summary: RunSummary) -> None:
+def _package_version() -> str:
+    try:
+        return version("hermes-agent-metaharness")
+    except PackageNotFoundError:
+        return "0.1.0"
+
+
+def _file_sha256(path: Optional[Path]) -> Optional[str]:
+    """Return a stable content hash for provenance when the file is available."""
+    if path is None:
+        return None
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return None
+    if not resolved.is_file():
+        return None
+
+    digest = sha256()
+    with resolved.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_outer_loop_manifest(
+    run_dir: Path,
+    run_spec: BenchmarkRunSpec,
+    summary: RunSummary,
+    config: MetaHarnessConfig,
+    command: list,
+) -> None:
     """Persist outer-loop comparability metadata alongside Hermes' manifest."""
     manifest_path = run_dir / "manifest.json"
     manifest = load_manifest(run_dir)
@@ -95,6 +128,7 @@ def _write_outer_loop_manifest(run_dir: Path, run_spec: BenchmarkRunSpec, summar
     if not isinstance(outer_loop, dict):
         outer_loop = {}
     outer_loop["benchmark_runner"] = {
+        "schema_version": 2,
         "benchmark": run_spec.benchmark,
         "candidate": summary.candidate_name,
         "total_tasks": _total_tasks(summary),
@@ -102,6 +136,18 @@ def _write_outer_loop_manifest(run_dir: Path, run_spec: BenchmarkRunSpec, summar
             task_filter=run_spec.task_filter,
             skip_tasks=run_spec.skip_tasks,
         ),
+    }
+    candidate_path = Path(summary.candidate_path) if summary.candidate_path else None
+    outer_loop["provenance"] = {
+        "metaharness_version": _package_version(),
+        "hermes_agent_path": str(config.hermes_agent_path),
+        "launcher_prefix": list(config.launch_prefix),
+        "python_executable": run_spec.python_executable or config.python_executable,
+        "hermes_config_path": str(run_spec.hermes_config_path) if run_spec.hermes_config_path else None,
+        "hermes_config_sha256": _file_sha256(run_spec.hermes_config_path),
+        "candidate_path": summary.candidate_path,
+        "candidate_sha256": _file_sha256(candidate_path),
+        "command": list(command),
     }
     manifest["outer_loop"] = outer_loop
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -165,7 +211,7 @@ def run_benchmark(
         run_dir = fallback[-1]
 
     summary = load_run_summary(run_dir)
-    _write_outer_loop_manifest(run_dir, run_spec, summary)
+    _write_outer_loop_manifest(run_dir, run_spec, summary, config, command)
     summary = load_run_summary(run_dir)
 
     return BenchmarkRunResult(

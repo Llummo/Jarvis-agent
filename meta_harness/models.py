@@ -86,6 +86,8 @@ class ComparisonReport:
     improved_task_names: List[str] = field(default_factory=list)
     regressed_task_names: List[str] = field(default_factory=list)
     unchanged_task_names: List[str] = field(default_factory=list)
+    baseline_only_task_names: List[str] = field(default_factory=list)
+    candidate_only_task_names: List[str] = field(default_factory=list)
 
     @property
     def net_task_gain(self) -> int:
@@ -94,20 +96,29 @@ class ComparisonReport:
     @property
     def candidate_better(self) -> bool:
         """A candidate is better only if it improves pass rate AND does not regress too many tasks."""
+        if not self.comparable_task_set:
+            return False
         if self.pass_rate_delta <= 0.0:
             return False
         if self.total_tasks > 0 and self.regressed_tasks / self.total_tasks > MAX_REGRESSION_RATIO:
             return False
         return True
 
-    def ranking_key(self) -> Tuple[float, float, int, float]:
-        return comparison_sort_key(self)
+    @property
+    def comparable_task_set(self) -> bool:
+        """Whether baseline and candidate emitted results for the same tasks."""
+        return self.baseline_only_tasks == 0 and self.candidate_only_tasks == 0
+
+    def ranking_key(self) -> Tuple[float, ...]:
+        comparable_weight = 1.0 if self.comparable_task_set else 0.0
+        return (comparable_weight, *comparison_sort_key(self))
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
         payload["baseline_run_dir"] = str(self.baseline_run_dir)
         payload["candidate_run_dir"] = str(self.candidate_run_dir)
         payload["candidate_better"] = self.candidate_better
+        payload["comparable_task_set"] = self.comparable_task_set
         payload["net_task_gain"] = self.net_task_gain
         payload["ranking_key"] = list(self.ranking_key())
         return payload
@@ -143,6 +154,7 @@ class SearchTrialResult:
     report: Optional[ComparisonReport] = None
     command: List[str] = field(default_factory=list)
     returncode: int = 0
+    failure_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -167,6 +179,7 @@ class SearchSummary:
     best_candidate_name: Optional[str] = None
     best_run_dir: Optional[str] = None
     trial_results: List[SearchTrialResult] = field(default_factory=list)
+    failure_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -181,6 +194,7 @@ class SearchSummary:
             "best_mutation_slug": self.best_mutation_slug,
             "best_candidate_name": self.best_candidate_name,
             "best_run_dir": self.best_run_dir,
+            "failure_reason": self.failure_reason,
             "trial_results": [trial.to_dict() for trial in self.trial_results],
         }
 

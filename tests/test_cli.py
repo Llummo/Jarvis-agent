@@ -157,3 +157,61 @@ def test_evaluate_candidate_cli_supports_launcher_prefix(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert captured["launch_prefix"] == ("uv", "run", "--python", "3.12", "--extra", "rl")
     assert captured["python_executable"] == "python"
+
+
+def test_evaluate_candidate_cli_reports_runtime_errors(monkeypatch, tmp_path):
+    hermes_repo = tmp_path / "hermes-agent"
+    hermes_repo.mkdir()
+
+    def fake_run_benchmark(config, run_spec, *, dry_run=False, timeout=None):
+        raise RuntimeError("benchmark exploded")
+
+    monkeypatch.setattr("meta_harness.cli.run_benchmark", fake_run_benchmark)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "evaluate-candidate",
+            "--candidate",
+            "snapshot_baseline",
+            "--benchmark",
+            "tblite",
+            "--hermes-repo",
+            str(hermes_repo),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error: benchmark exploded" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_search_candidates_cli_reports_unknown_mutation(tmp_path):
+    hermes_repo = tmp_path / "hermes-agent"
+    hermes_repo.mkdir()
+    seed_candidate = tmp_path / "seed.py"
+    seed_candidate.write_text("# seed\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "search-candidates",
+            "--seed-candidate",
+            str(seed_candidate),
+            "--benchmark",
+            "tblite",
+            "--hermes-repo",
+            str(hermes_repo),
+            "--workspace-dir",
+            str(tmp_path / "workspace"),
+            "--mutation",
+            "does_not_exist",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Unknown mutation" in result.output
+    assert "Traceback" not in result.output

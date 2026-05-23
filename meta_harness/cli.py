@@ -42,6 +42,7 @@ def _emit_report(report, *, show_task_names: bool = True) -> None:
     summary_table.add_row("Benchmark", report.benchmark_name)
     summary_table.add_row("Baseline", report.baseline_candidate_name)
     summary_table.add_row("Candidate", report.candidate_name)
+    summary_table.add_row("Comparable Task Set", "yes" if report.comparable_task_set else "no")
     summary_table.add_row("Candidate Better", "yes" if report.candidate_better else "no")
     summary_table.add_row("Pass Rate Delta", _format_optional_delta(report.pass_rate_delta))
     summary_table.add_row("Passed Tasks Delta", _format_optional_delta(report.passed_tasks_delta))
@@ -87,6 +88,22 @@ def _emit_report(report, *, show_task_names: bool = True) -> None:
         console.print()
         console.print(improved_table)
 
+    if report.baseline_only_task_names:
+        baseline_only_table = Table(title="Baseline-Only Tasks")
+        baseline_only_table.add_column("Task", style="bold yellow")
+        for task_name in report.baseline_only_task_names:
+            baseline_only_table.add_row(task_name)
+        console.print()
+        console.print(baseline_only_table)
+
+    if report.candidate_only_task_names:
+        candidate_only_table = Table(title="Candidate-Only Tasks")
+        candidate_only_table.add_column("Task", style="bold yellow")
+        for task_name in report.candidate_only_task_names:
+            candidate_only_table.add_row(task_name)
+        console.print()
+        console.print(candidate_only_table)
+
 
 def _build_config(
     hermes_repo: Optional[str],
@@ -114,6 +131,10 @@ def _write_json(path: Path, payload: dict) -> None:
 def _format_command(command: Iterable[str], *, fallback: str) -> str:
     rendered = " ".join(command).strip()
     return rendered if rendered else fallback
+
+
+def _clickify_runtime_error(exc: Exception) -> click.ClickException:
+    return click.ClickException(str(exc))
 
 
 @main.command("list-builtins")
@@ -222,7 +243,10 @@ def evaluate_candidate_cmd(
     console.print(f"  Candidate: {candidate}")
     console.print(f"  Archive root: {archive_root}")
 
-    result = run_benchmark(config, run_spec, dry_run=dry_run)
+    try:
+        result = run_benchmark(config, run_spec, dry_run=dry_run)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise _clickify_runtime_error(exc) from exc
 
     console.print("\n[bold]Command[/bold]")
     console.print("  " + " ".join(result.command))
@@ -367,7 +391,10 @@ def evaluate_vs_baseline_cmd(
             run_name=baseline_run_name or f"baseline__{safe_slug(baseline_selection.baseline_candidate)}",
             **common_kwargs,
         )
-        baseline_result = run_benchmark(config, baseline_spec, dry_run=dry_run)
+        try:
+            baseline_result = run_benchmark(config, baseline_spec, dry_run=dry_run)
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            raise _clickify_runtime_error(exc) from exc
     else:
         baseline_result = BenchmarkRunResult(
             command=[],
@@ -376,7 +403,10 @@ def evaluate_vs_baseline_cmd(
             run_dir=baseline_selection.run_dir,
             summary=baseline_selection.summary,
         )
-    candidate_result = run_benchmark(config, candidate_spec, dry_run=dry_run)
+    try:
+        candidate_result = run_benchmark(config, candidate_spec, dry_run=dry_run)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise _clickify_runtime_error(exc) from exc
 
     command_table = Table(title="Commands")
     command_table.add_column("Run", style="bold")
@@ -477,7 +507,7 @@ def search_candidates_cmd(
 
     try:
         summary = run_structured_search(config, request, dry_run=dry_run)
-    except ValueError as exc:
+    except (KeyError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     overview = Table(title="Structured Search")

@@ -37,6 +37,10 @@ def _task_status(
     baseline_passed: Optional[bool],
     candidate_passed: Optional[bool],
 ) -> str:
+    if baseline_passed is None and candidate_passed is not None:
+        return "candidate_only"
+    if baseline_passed is not None and candidate_passed is None:
+        return "baseline_only"
     if baseline_passed is True and candidate_passed is False:
         return "regressed"
     if baseline_passed is False and candidate_passed is True:
@@ -96,6 +100,12 @@ def build_comparison_report(baseline: RunSummary, candidate: RunSummary) -> Comp
     improved = [delta.task_name for delta in comparison.task_deltas if delta.status == "improved"]
     regressed = [delta.task_name for delta in comparison.task_deltas if delta.status == "regressed"]
     unchanged = [delta.task_name for delta in comparison.task_deltas if delta.status == "unchanged"]
+    baseline_only = [
+        delta.task_name for delta in comparison.task_deltas if delta.status == "baseline_only"
+    ]
+    candidate_only = [
+        delta.task_name for delta in comparison.task_deltas if delta.status == "candidate_only"
+    ]
 
     return ComparisonReport(
         benchmark_name=comparison.benchmark_name,
@@ -108,8 +118,8 @@ def build_comparison_report(baseline: RunSummary, candidate: RunSummary) -> Comp
         improved_tasks=len(improved),
         regressed_tasks=len(regressed),
         unchanged_tasks=len(unchanged),
-        baseline_only_tasks=len(baseline_task_names - candidate_task_names),
-        candidate_only_tasks=len(candidate_task_names - baseline_task_names),
+        baseline_only_tasks=len(baseline_only),
+        candidate_only_tasks=len(candidate_only),
         pass_rate_delta=float(comparison.metric_deltas.get("eval/pass_rate", 0.0)),
         passed_tasks_delta=float(comparison.metric_deltas.get("eval/passed_tasks", 0.0)),
         evaluation_time_delta_seconds=_metric_delta(comparison.metric_deltas, "eval/evaluation_time_seconds"),
@@ -117,4 +127,6 @@ def build_comparison_report(baseline: RunSummary, candidate: RunSummary) -> Comp
         improved_task_names=improved,
         regressed_task_names=regressed,
         unchanged_task_names=unchanged,
+        baseline_only_task_names=baseline_only,
+        candidate_only_task_names=candidate_only,
     )

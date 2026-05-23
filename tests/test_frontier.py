@@ -69,3 +69,62 @@ def test_frontier_top_for_benchmark_filters_by_task_selection_hash(tmp_path):
 
     ranked = frontier.top_for_benchmark("tblite", task_selection_hash="hash_b")
     assert [entry.candidate_name for entry in ranked] == ["beta"]
+
+
+def test_frontier_keeps_same_candidate_across_task_selections(tmp_path):
+    frontier = FrontierStore(tmp_path / "frontier.json")
+
+    for selection_hash, pass_rate in [("subset_a", 0.4), ("subset_b", 0.6)]:
+        frontier.upsert_from_summary(
+            RunSummary(
+                benchmark_name="tblite",
+                candidate_name="candidate",
+                candidate_path="/tmp/candidate.py",
+                run_dir=Path(f"/tmp/{selection_hash}"),
+                eval_metrics={"eval/pass_rate": pass_rate, "eval/total_tasks": 10},
+                manifest={"outer_loop": {"benchmark_runner": {"task_selection": {"selection_hash": selection_hash}}}},
+            )
+        )
+
+    entries = frontier.load()
+    assert len(entries) == 2
+    assert {entry.task_selection_hash for entry in entries} == {"subset_a", "subset_b"}
+
+
+def test_frontier_load_rejects_malformed_json(tmp_path):
+    path = tmp_path / "frontier.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    frontier = FrontierStore(path)
+    try:
+        frontier.load()
+    except ValueError as exc:
+        assert "Malformed frontier JSON" in str(exc)
+    else:
+        raise AssertionError("Expected malformed JSON to raise ValueError")
+
+
+def test_frontier_load_rejects_non_list_payload(tmp_path):
+    path = tmp_path / "frontier.json"
+    path.write_text('{"candidate_name": "x"}', encoding="utf-8")
+
+    frontier = FrontierStore(path)
+    try:
+        frontier.load()
+    except ValueError as exc:
+        assert "must contain a JSON list" in str(exc)
+    else:
+        raise AssertionError("Expected non-list frontier payload to raise ValueError")
+
+
+def test_frontier_load_rejects_invalid_entry_shape(tmp_path):
+    path = tmp_path / "frontier.json"
+    path.write_text('[{"candidate_name": "missing required fields"}]', encoding="utf-8")
+
+    frontier = FrontierStore(path)
+    try:
+        frontier.load()
+    except ValueError as exc:
+        assert "missing required fields" in str(exc)
+    else:
+        raise AssertionError("Expected invalid frontier entry to raise ValueError")

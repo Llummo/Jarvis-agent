@@ -97,7 +97,7 @@ def test_resolve_candidate_path_containment_rejects_escape(tmp_path):
 
 
 def test_compare_runs_one_sided_tasks():
-    """Tasks present in only one run get 'unchanged' status but report tracks asymmetry."""
+    """Tasks present in only one run get explicit one-sided statuses."""
     baseline = RunSummary(
         benchmark_name="tblite",
         candidate_name="base",
@@ -121,8 +121,8 @@ def test_compare_runs_one_sided_tasks():
     comparison = compare_runs(baseline, candidate)
     statuses = {d.task_name: d.status for d in comparison.task_deltas}
     assert statuses["shared"] == "improved"
-    assert "only_in_baseline" in statuses
-    assert "only_in_candidate" in statuses
+    assert statuses["only_in_baseline"] == "baseline_only"
+    assert statuses["only_in_candidate"] == "candidate_only"
 
 
 # --- frontier error paths ---

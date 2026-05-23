@@ -27,11 +27,33 @@ class FrontierStore:
         """Load all frontier entries."""
         if not self.path.exists():
             return []
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
-        return [
-            FrontierEntry(**{k: v for k, v in entry.items() if k in FrontierEntry.__dataclass_fields__})
-            for entry in payload
-        ]
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed frontier JSON in {self.path}: {exc}") from exc
+
+        if not isinstance(payload, list):
+            raise ValueError(
+                f"Frontier file {self.path} must contain a JSON list, got {type(payload).__name__}."
+            )
+
+        entries: List[FrontierEntry] = []
+        for index, entry in enumerate(payload):
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"Frontier entry #{index} in {self.path} is not a JSON object."
+                )
+            try:
+                entries.append(
+                    FrontierEntry(
+                        **{k: v for k, v in entry.items() if k in FrontierEntry.__dataclass_fields__}
+                    )
+                )
+            except TypeError as exc:
+                raise ValueError(
+                    f"Frontier entry #{index} in {self.path} is missing required fields."
+                ) from exc
+        return entries
 
     def save(self, entries: List[FrontierEntry]) -> None:
         """Save the frontier atomically via temp file + rename."""
@@ -99,6 +121,7 @@ class FrontierStore:
                     entry.candidate_name == new_entry.candidate_name
                     and entry.candidate_path == new_entry.candidate_path
                     and entry.benchmark_name == new_entry.benchmark_name
+                    and entry.task_selection_hash == new_entry.task_selection_hash
                 )
                 if same_identity:
                     entries[index] = new_entry
