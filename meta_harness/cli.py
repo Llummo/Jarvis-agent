@@ -111,9 +111,10 @@ def _build_config(
     launcher_prefix: Optional[str] = None,
     python_executable: Optional[str] = None,
 ) -> MetaHarnessConfig:
-    config = MetaHarnessConfig()
     if hermes_repo:
-        config.hermes_agent_path = Path(hermes_repo).expanduser().resolve()
+        config = MetaHarnessConfig(hermes_agent_path=Path(hermes_repo).expanduser().resolve())
+    else:
+        config = MetaHarnessConfig()
     if launcher_prefix is not None:
         config.launch_prefix = parse_command_prefix(launcher_prefix)
         if python_executable is None:
