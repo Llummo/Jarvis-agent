@@ -45,6 +45,8 @@ The practical standard for this repo should be:
 - prefer deterministic admitted metrics for promotion decisions
 - use traces and per-task archives to explain results, not to rescue an
   otherwise failing candidate
+- verify the concrete Hermes checkout before evaluation, because the Meta-Harness
+  runtime and benchmark entrypoints are versioned integration points
 
 ## Current Implementation Status
 
@@ -58,7 +60,27 @@ Implemented in this repo:
 - explicit `baseline_only` and `candidate_only` task statuses
 - candidate promotion gating on a comparable task set
 - partial search-summary persistence when a fresh baseline run fails
+- a `check-hermes` compatibility probe for required Hermes benchmark/runtime
+  files
 - CI coverage for tests plus installed-wheel smoke checks
+
+## Hermes Compatibility Status
+
+Compatibility is tied to Hermes' inner Meta-Harness runtime, not just the
+package version. This repo expects Hermes to provide:
+
+- `environments/benchmarks/tblite/tblite_env.py`
+- `environments/benchmarks/terminalbench_2/terminalbench2_env.py`
+- `environments/meta_harness/candidate.py`
+- `environments/meta_harness/loader.py`
+- `environments/meta_harness/types.py`
+
+On 2026-05-23, upstream `NousResearch/hermes-agent` was checked at latest
+release v0.14.0 (`v2026.5.16`) and current `main` commit
+`cae7537359c0ba8fceedc0a6423a4d9f30972100`; neither checkout included these
+legacy paths. The production-safe behavior is therefore to fail fast with
+`python -m meta_harness check-hermes --hermes-repo /path/to/hermes-agent` until
+Hermes restores or ports the inner runtime surface.
 
 Recommended next steps:
 

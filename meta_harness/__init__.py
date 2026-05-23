@@ -7,6 +7,7 @@ from meta_harness.candidate_registry import list_builtin_candidates, resolve_can
 from meta_harness.comparison import build_comparison_report, compare_runs
 from meta_harness.config import MetaHarnessConfig
 from meta_harness.frontier import FrontierStore
+from meta_harness.hermes_compat import inspect_hermes_compatibility
 from meta_harness.search import StructuredSearchRequest, run_structured_search
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "resolve_candidate_path",
     "run_structured_search",
     "run_benchmark",
+    "inspect_hermes_compatibility",
 ]

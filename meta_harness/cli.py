@@ -17,6 +17,7 @@ from meta_harness.candidate_registry import list_builtin_candidates
 from meta_harness.comparison import build_comparison_report
 from meta_harness.config import MetaHarnessConfig, parse_command_prefix
 from meta_harness.frontier import FrontierStore
+from meta_harness.hermes_compat import inspect_hermes_compatibility
 from meta_harness.models import BenchmarkRunSpec
 from meta_harness.mutation import builtin_mutations, safe_slug
 from meta_harness.search import StructuredSearchRequest, run_structured_search
@@ -139,6 +140,62 @@ def _format_command(command: Iterable[str], *, fallback: str) -> str:
 
 def _clickify_runtime_error(exc: Exception) -> click.ClickException:
     return click.ClickException(str(exc))
+
+
+@main.command("check-hermes")
+@click.option("--hermes-repo", type=click.Path(exists=True, file_okay=False), help="Path to the hermes-agent checkout.")
+@click.option("--json-output", help="Optional path to write the compatibility report as JSON.")
+def check_hermes_cmd(hermes_repo: Optional[str] = None, json_output: Optional[str] = None) -> None:
+    """Check whether a Hermes checkout supports this Meta-Harness repo."""
+    config = _build_config(hermes_repo)
+    report = inspect_hermes_compatibility(config.hermes_agent_path)
+
+    overview = Table(title="Hermes Compatibility")
+    overview.add_column("Field", style="bold")
+    overview.add_column("Value")
+    overview.add_row("Hermes Repo", str(report.hermes_agent_path))
+    overview.add_row("Remote", report.remote_url or "-")
+    overview.add_row("Git Head", report.git_head or "-")
+    overview.add_row("Compatible", "yes" if report.compatible else "no")
+    overview.add_row("Built-in Candidates", ", ".join(report.builtin_candidates) or "-")
+    console.print(overview)
+
+    checks = Table(title="Required Legacy Surface")
+    checks.add_column("Component", style="bold")
+    checks.add_column("Path")
+    checks.add_column("Status", justify="right")
+    missing_paths = {issue.path for issue in report.issues if issue.severity == "error"}
+    for benchmark, path in report.benchmark_scripts.items():
+        relative_path = str(Path(path).relative_to(report.hermes_agent_path))
+        checks.add_row(f"benchmark:{benchmark}", relative_path, "missing" if relative_path in missing_paths else "ok")
+    for name, path in report.runtime_files.items():
+        relative_path = str(Path(path).relative_to(report.hermes_agent_path))
+        checks.add_row(f"runtime:{name}", relative_path, "missing" if relative_path in missing_paths else "ok")
+    console.print()
+    console.print(checks)
+
+    if report.issues:
+        issues_table = Table(title="Issues")
+        issues_table.add_column("Severity", style="bold")
+        issues_table.add_column("Code")
+        issues_table.add_column("Path")
+        issues_table.add_column("Message")
+        for issue in report.issues:
+            issues_table.add_row(issue.severity, issue.code, issue.path, issue.message)
+        console.print()
+        console.print(issues_table)
+        console.print(
+            "\nIssue codes: "
+            + ", ".join(sorted({issue.code for issue in report.issues}))
+        )
+
+    if json_output:
+        _write_json(Path(json_output).expanduser().resolve(), report.to_dict())
+
+    if not report.compatible:
+        raise click.ClickException(
+            "Hermes checkout is missing the legacy Meta-Harness benchmark/runtime surface required by this repo."
+        )
 
 
 @main.command("list-builtins")

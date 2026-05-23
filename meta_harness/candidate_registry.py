@@ -11,6 +11,17 @@ def builtin_candidates_dir(hermes_agent_path: Path) -> Path:
     return hermes_agent_path / "environments" / "meta_harness" / "candidates"
 
 
+def _missing_builtins_hint(hermes_agent_path: Path) -> str:
+    directory = builtin_candidates_dir(hermes_agent_path)
+    if directory.exists():
+        return ""
+    return (
+        f" Built-in candidates directory is missing at '{directory}'. "
+        "Run `python -m meta_harness check-hermes --hermes-repo /path/to/hermes-agent` "
+        "to verify Hermes compatibility."
+    )
+
+
 def list_builtin_candidates(hermes_agent_path: Path) -> List[str]:
     """List built-in Hermes candidate names."""
     directory = builtin_candidates_dir(hermes_agent_path)
@@ -94,4 +105,5 @@ def resolve_candidate_path(
     raise FileNotFoundError(
         f"Could not resolve candidate '{candidate}'. "
         "Checked absolute path, cwd-relative path, Hermes-relative path, and built-in candidates."
+        + _missing_builtins_hint(hermes_agent_path)
     )

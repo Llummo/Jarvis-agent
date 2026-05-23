@@ -15,6 +15,7 @@ from meta_harness.archive_reader import find_run_dirs, load_manifest, load_run_s
 from meta_harness.comparability import build_task_selection_metadata
 from meta_harness.candidate_registry import resolve_candidate_path
 from meta_harness.config import MetaHarnessConfig
+from meta_harness.hermes_compat import LEGACY_BENCHMARK_SCRIPTS, legacy_surface_hint
 from meta_harness.models import BenchmarkRunSpec, RunSummary
 
 logger = logging.getLogger(__name__)
@@ -22,10 +23,7 @@ logger = logging.getLogger(__name__)
 # Default timeout for benchmark subprocess (30 minutes).
 DEFAULT_BENCHMARK_TIMEOUT_S = 1800
 
-BENCHMARK_SCRIPTS = {
-    "tblite": "environments/benchmarks/tblite/tblite_env.py",
-    "tb2": "environments/benchmarks/terminalbench_2/terminalbench2_env.py",
-}
+BENCHMARK_SCRIPTS = {name: str(path) for name, path in LEGACY_BENCHMARK_SCRIPTS.items()}
 
 
 @dataclass
@@ -47,7 +45,7 @@ def resolve_benchmark_script(benchmark: str, hermes_agent_path: Path) -> Path:
         raise ValueError(f"Unsupported benchmark '{benchmark}'. Expected one of {sorted(BENCHMARK_SCRIPTS)}")
     script = (hermes_agent_path / BENCHMARK_SCRIPTS[benchmark]).resolve()
     if not script.exists():
-        raise FileNotFoundError(f"Benchmark script not found: {script}")
+        raise FileNotFoundError(f"Benchmark script not found: {script}. {legacy_surface_hint()}")
     return script
 
 

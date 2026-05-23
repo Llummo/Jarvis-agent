@@ -75,6 +75,26 @@ Point it at Hermes with either:
 - a sibling checkout at `../hermes-agent`
 - or `~/.hermes/hermes-agent`
 
+Check that the Hermes checkout exposes the Meta-Harness benchmark/runtime
+surface before running evaluations:
+
+```bash
+python -m meta_harness check-hermes --hermes-repo /path/to/hermes-agent
+```
+
+This repo currently targets the legacy Hermes Meta-Harness surface:
+
+- `environments/benchmarks/tblite/tblite_env.py`
+- `environments/benchmarks/terminalbench_2/terminalbench2_env.py`
+- `environments/meta_harness/{candidate.py,loader.py,types.py}`
+
+As of 2026-05-23, the latest published upstream release
+`NousResearch/hermes-agent` v0.14.0 (`v2026.5.16`) and current `main` no longer
+ship that legacy surface. Use `check-hermes` against the exact Hermes checkout
+you intend to run; if it reports missing benchmark/runtime files, a Hermes-side
+port or restoration of that inner runtime is required before TBLite/TB2
+evaluations can execute.
+
 If Hermes needs to run inside a managed environment, Meta-Harness can launch it
 through a shell-style prefix such as:
 
@@ -176,6 +196,7 @@ meta_harness/
 ├── comparison.py
 ├── config.py
 ├── frontier.py
+├── hermes_compat.py
 ├── models.py
 ├── mutation.py
 ├── search.py
