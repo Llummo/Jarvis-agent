@@ -44,6 +44,7 @@ def _emit_report(report, *, show_task_names: bool = True) -> None:
     summary_table.add_row("Baseline", report.baseline_candidate_name)
     summary_table.add_row("Candidate", report.candidate_name)
     summary_table.add_row("Comparable Task Set", "yes" if report.comparable_task_set else "no")
+    summary_table.add_row("Task Selection", report.task_selection_status)
     summary_table.add_row("Candidate Better", "yes" if report.candidate_better else "no")
     summary_table.add_row("Pass Rate Delta", _format_optional_delta(report.pass_rate_delta))
     summary_table.add_row("Passed Tasks Delta", _format_optional_delta(report.passed_tasks_delta))
@@ -104,6 +105,26 @@ def _emit_report(report, *, show_task_names: bool = True) -> None:
             candidate_only_table.add_row(task_name)
         console.print()
         console.print(candidate_only_table)
+
+    if report.task_diagnostics:
+        diagnostics_table = Table(title="Task Diagnostics")
+        diagnostics_table.add_column("Task", style="bold")
+        diagnostics_table.add_column("Status")
+        diagnostics_table.add_column("Baseline Error")
+        diagnostics_table.add_column("Candidate Error")
+        diagnostics_table.add_column("Baseline Trace")
+        diagnostics_table.add_column("Candidate Trace")
+        for item in report.task_diagnostics:
+            diagnostics_table.add_row(
+                str(item.get("task_name") or "-"),
+                str(item.get("status") or "-"),
+                str(item.get("baseline_error_summary") or "-"),
+                str(item.get("candidate_error_summary") or "-"),
+                str(item.get("baseline_trace_path") or "-"),
+                str(item.get("candidate_trace_path") or "-"),
+            )
+        console.print()
+        console.print(diagnostics_table)
 
 
 def _build_config(

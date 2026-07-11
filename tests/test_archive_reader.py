@@ -27,6 +27,115 @@ def test_load_run_summary(tmp_path):
     assert summary.manifest["run_name"] == "smoke"
 
 
+def test_load_run_summary_uses_task_records_when_summary_is_thin(tmp_path):
+    run_dir = tmp_path / "run_with_tasks"
+    tasks_dir = run_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(json.dumps({
+        "benchmark_name": "tblite",
+        "candidate_name": "candidate",
+        "candidate_path": "/tmp/candidate.py",
+        "eval_metrics": {"eval/pass_rate": 0.0},
+        "task_results": [],
+    }), encoding="utf-8")
+    (tasks_dir / "task_a.json").write_text(json.dumps({
+        "task": {"task_name": "task_a"},
+        "result": {
+            "success": "passed",
+            "score": "1.0",
+            "failure_reason": "eventual success after retry",
+        },
+        "artifacts": {"trace_path": "traces/task_a.jsonl"},
+    }), encoding="utf-8")
+
+    summary = load_run_summary(run_dir)
+
+    assert summary.task_results == [
+        {
+            "task_name": "task_a",
+            "passed": True,
+            "reward": 1.0,
+            "error_summary": "eventual success after retry",
+            "trace_path": "traces/task_a.jsonl",
+        }
+    ]
+
+
+def test_load_run_summary_understands_hermes_outcome_task_records(tmp_path):
+    run_dir = tmp_path / "run_with_outcome"
+    tasks_dir = run_dir / "tasks"
+    task_file = tasks_dir / "task_a__123.json"
+    tasks_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(json.dumps({
+        "benchmark_name": "tblite",
+        "candidate_name": "candidate",
+        "candidate_path": "/tmp/candidate.py",
+        "eval_metrics": {"eval/pass_rate": 0.0},
+        "task_results": [],
+    }), encoding="utf-8")
+    task_file.write_text(json.dumps({
+        "benchmark_name": "tblite",
+        "candidate_name": "candidate",
+        "task": {
+            "task_id": "123",
+            "task_name": "task_a",
+            "category": "software-engineering",
+        },
+        "outcome": {
+            "passed": False,
+            "reward": 0.0,
+            "elapsed_seconds": 9.6,
+            "error": "benchmark timed out",
+            "tool_errors": [],
+            "messages": [{"role": "user", "content": "fix it"}],
+        },
+    }), encoding="utf-8")
+
+    summary = load_run_summary(run_dir)
+
+    assert summary.task_results == [
+        {
+            "task_name": "task_a",
+            "passed": False,
+            "reward": 0.0,
+            "error_summary": "benchmark timed out",
+            "trace_path": str(task_file),
+        }
+    ]
+
+
+def test_load_run_summary_merges_task_record_diagnostics(tmp_path):
+    run_dir = tmp_path / "run_merge"
+    tasks_dir = run_dir / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(json.dumps({
+        "benchmark_name": "tblite",
+        "candidate_name": "candidate",
+        "candidate_path": "/tmp/candidate.py",
+        "eval_metrics": {"eval/pass_rate": 0.0},
+        "task_results": [{"task_name": "task_a", "passed": False, "reward": 0.0}],
+    }), encoding="utf-8")
+    (tasks_dir / "task_a.json").write_text(json.dumps({
+        "task_name": "task_a",
+        "passed": True,
+        "reward": 1.0,
+        "error_summary": "assertion failed",
+        "trace_path": "traces/task_a.jsonl",
+    }), encoding="utf-8")
+
+    summary = load_run_summary(run_dir)
+
+    assert summary.task_results == [
+        {
+            "task_name": "task_a",
+            "passed": False,
+            "reward": 0.0,
+            "error_summary": "assertion failed",
+            "trace_path": "traces/task_a.jsonl",
+        }
+    ]
+
+
 def test_load_task_records(tmp_path):
     run_dir = tmp_path / "run_b"
     tasks_dir = run_dir / "tasks"

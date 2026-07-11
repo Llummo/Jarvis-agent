@@ -106,6 +106,8 @@ def run_structured_search(
         seed_candidate=request.seed_candidate,
         workspace_dir=str(workspace_dir),
         generated_candidates_dir=str(generated_candidates_dir),
+        archive_root=str(archive_root),
+        dry_run=dry_run,
     )
 
     baseline_result: Optional[BenchmarkRunResult] = None
@@ -217,8 +219,7 @@ def run_structured_search(
             summary.best_candidate_name = best.candidate_name
             summary.best_run_dir = best.run_dir
 
-        if not dry_run:
-            summary_path = workspace_dir / "search_summary.json"
-            summary_path.write_text(json.dumps(summary.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+        summary_path = workspace_dir / "search_summary.json"
+        summary_path.write_text(json.dumps(summary.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
 
     return summary

@@ -48,6 +48,10 @@ class TaskDelta:
     baseline_reward: Optional[float]
     candidate_reward: Optional[float]
     status: str
+    baseline_error_summary: Optional[str] = None
+    candidate_error_summary: Optional[str] = None
+    baseline_trace_path: Optional[str] = None
+    candidate_trace_path: Optional[str] = None
 
 
 @dataclass
@@ -83,11 +87,15 @@ class ComparisonReport:
     passed_tasks_delta: float
     evaluation_time_delta_seconds: Optional[float]
     metric_deltas: Dict[str, float] = field(default_factory=dict)
+    baseline_task_selection_hash: str = ""
+    candidate_task_selection_hash: str = ""
+    task_selection_status: str = "missing"
     improved_task_names: List[str] = field(default_factory=list)
     regressed_task_names: List[str] = field(default_factory=list)
     unchanged_task_names: List[str] = field(default_factory=list)
     baseline_only_task_names: List[str] = field(default_factory=list)
     candidate_only_task_names: List[str] = field(default_factory=list)
+    task_diagnostics: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def net_task_gain(self) -> int:
@@ -97,6 +105,8 @@ class ComparisonReport:
     def candidate_better(self) -> bool:
         """A candidate is better only if it improves pass rate AND does not regress too many tasks."""
         if not self.comparable_task_set:
+            return False
+        if self.task_selection_status == "mismatched":
             return False
         if self.pass_rate_delta <= 0.0:
             return False
@@ -109,8 +119,17 @@ class ComparisonReport:
         """Whether baseline and candidate emitted results for the same tasks."""
         return self.baseline_only_tasks == 0 and self.candidate_only_tasks == 0
 
+    @property
+    def comparable_task_selection(self) -> bool:
+        """Whether task-selection provenance is absent or explicitly matching."""
+        return self.task_selection_status != "mismatched"
+
     def ranking_key(self) -> Tuple[float, ...]:
-        comparable_weight = 1.0 if self.comparable_task_set else 0.0
+        comparable_weight = (
+            1.0
+            if self.comparable_task_set and self.comparable_task_selection
+            else 0.0
+        )
         return (comparable_weight, *comparison_sort_key(self))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -119,6 +138,7 @@ class ComparisonReport:
         payload["candidate_run_dir"] = str(self.candidate_run_dir)
         payload["candidate_better"] = self.candidate_better
         payload["comparable_task_set"] = self.comparable_task_set
+        payload["comparable_task_selection"] = self.comparable_task_selection
         payload["net_task_gain"] = self.net_task_gain
         payload["ranking_key"] = list(self.ranking_key())
         return payload
@@ -175,6 +195,8 @@ class SearchSummary:
     seed_candidate: str
     workspace_dir: str
     generated_candidates_dir: str
+    archive_root: str = ""
+    dry_run: bool = False
     best_mutation_slug: Optional[str] = None
     best_candidate_name: Optional[str] = None
     best_run_dir: Optional[str] = None
@@ -191,6 +213,8 @@ class SearchSummary:
             "seed_candidate": self.seed_candidate,
             "workspace_dir": self.workspace_dir,
             "generated_candidates_dir": self.generated_candidates_dir,
+            "archive_root": self.archive_root,
+            "dry_run": self.dry_run,
             "best_mutation_slug": self.best_mutation_slug,
             "best_candidate_name": self.best_candidate_name,
             "best_run_dir": self.best_run_dir,

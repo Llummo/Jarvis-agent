@@ -72,6 +72,16 @@ def test_run_structured_search_dry_run_generates_candidates(tmp_path, monkeypatc
     assert summary.best_mutation_slug is None
     assert calls[0] == "snapshot_baseline"
 
+    summary_path = tmp_path / "workspace" / "search_summary.json"
+    assert summary_path.exists()
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["dry_run"] is True
+    assert payload["archive_root"] == str((tmp_path / "workspace" / "archives").resolve())
+    assert payload["trial_results"][0]["command"] == [
+        "python3",
+        str((tmp_path / "workspace" / "generated_candidates" / "seed__plan_briefly.py").resolve()),
+    ]
+
 
 def test_run_structured_search_writes_reports_and_updates_frontier(tmp_path, monkeypatch):
     config = _make_config(tmp_path)

@@ -58,8 +58,10 @@ The current release provides:
 - task-selection comparability metadata for reused baselines
 - outer-loop provenance metadata with candidate/config hashes and launcher details
 - explicit task-set comparability checks for baseline-vs-candidate reports
+- task-record fallback plus trace/error diagnostics in comparison reports
 - a simple JSON-backed frontier with cross-platform locking
 - deterministic wrapper-mutation search over generated candidate variants
+- persisted dry-run search summaries for later review
 
 ## Quick Start
 
@@ -226,7 +228,8 @@ This repo is intentionally research-oriented:
 ## Near-Term Roadmap
 
 1. Better ranking/reporting and frontier-backed baseline policies
-2. More expressive mutation spaces and composition
-3. Trace-driven reflective candidate improvement
-4. Frontier-aware search strategies
-5. Stronger benchmark-aware candidate generation
+2. Evidence-corpus summaries and failure-taxonomy tags over archived traces
+3. More expressive mutation spaces and composition
+4. Trace-driven reflective candidate improvement
+5. Frontier-aware search strategies
+6. Stronger benchmark-aware candidate generation

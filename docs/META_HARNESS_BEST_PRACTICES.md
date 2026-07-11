@@ -41,6 +41,8 @@ The practical standard for this repo should be:
 - record content hashes for candidate and config files when available
 - preserve the exact launcher and command used for each benchmark run
 - keep failed searches auditable by writing partial summaries
+- preserve dry-run search planning details in search artifacts so reviewers can
+  reconstruct intended candidate, baseline, and task-selection decisions
 - keep frontier entries separated by task-selection identity
 - prefer deterministic admitted metrics for promotion decisions
 - use traces and per-task archives to explain results, not to rescue an
@@ -58,8 +60,12 @@ Implemented in this repo:
 - exact command, launcher prefix, Python executable, and Hermes repo path in
   provenance
 - explicit `baseline_only` and `candidate_only` task statuses
+- task-selection provenance status in comparison reports
+- fallback task-result loading from `tasks/*.json`
+- trace pointers and error summaries in task-level comparison diagnostics
 - candidate promotion gating on a comparable task set
 - partial search-summary persistence when a fresh baseline run fails
+- dry-run search-summary persistence for planned candidate reviews
 - a `check-hermes` compatibility probe for required Hermes benchmark/runtime
   files
 - CI coverage for tests plus installed-wheel smoke checks
@@ -84,10 +90,10 @@ Hermes restores or ports the inner runtime surface.
 
 Recommended next steps:
 
-1. Load `tasks/*.json` records into comparison reports when `summary.json` lacks
-   enough per-task detail.
-2. Add trace pointers or error summaries to task-level deltas.
-3. Add a planner interface that ranks candidate mutation targets before search.
+1. Add an evidence-corpus layer with per-task summaries that cite raw trace
+   paths and assign failure-taxonomy tags.
+2. Add a planner interface that ranks candidate mutation targets before search.
+3. Add candidate change manifests and prediction-vs-outcome audits.
 4. Add repeated-run or bootstrap confidence intervals before frontier promotion.
 5. Extend comparability metadata to include dataset/config identifiers exposed
    by `hermes-agent`.
