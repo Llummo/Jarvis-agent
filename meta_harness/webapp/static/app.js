@@ -275,6 +275,11 @@ async function onGenerateTickets(event) {
   renderTicketWarnings([]);
   const formData = new FormData();
   formData.append("file", file);
+  const prefix = document.getElementById("tickets-prefix").value.trim();
+  if (prefix) {
+    formData.append("ticket_prefix", prefix);
+    formData.append("ticket_start_number", document.getElementById("tickets-start-number").value || "1");
+  }
 
   const submitButton = event.target.querySelector('button[type="submit"]');
   submitButton.disabled = true;

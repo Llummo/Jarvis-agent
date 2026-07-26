@@ -49,6 +49,7 @@ from meta_harness.ticket_generator import (
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
+    apply_ticket_numbering,
     generate_tickets_from_file,
 )
 
@@ -936,13 +937,20 @@ def _proposed_ticket_to_dict(ticket: ProposedTicket) -> dict:
 @tickets_group.command("generate")
 @click.option("--file", "file_path", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--json-output", default=None, help="Optional path to write proposed tickets as JSON.")
-def tickets_generate_cmd(file_path: str, json_output: Optional[str]) -> None:
+@click.option("--prefix", default=None, help="Ticket name prefix, e.g. TAM -> 'TAM-01 | <title>'.")
+@click.option("--start-number", default=1, show_default=True, type=int, help="First number in the sequence.")
+def tickets_generate_cmd(
+    file_path: str, json_output: Optional[str], prefix: Optional[str], start_number: int
+) -> None:
     """Analyze a document and propose tickets (not yet created anywhere)."""
     path = Path(file_path)
     try:
         tickets, warnings = generate_tickets_from_file(path.name, path.read_bytes())
     except (TicketExtractionError, ClaudeNotFoundError, TicketGenerationError, TicketParseError) as exc:
         raise click.ClickException(str(exc)) from exc
+
+    if prefix:
+        tickets = apply_ticket_numbering(tickets, prefix, start_number)
 
     table = Table(title="Proposed Tickets")
     table.add_column("Title", style="bold")

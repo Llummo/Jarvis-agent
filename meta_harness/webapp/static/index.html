@@ -99,9 +99,12 @@
 
         <form id="tickets-generate-form" class="inline-form">
           <input type="file" id="tickets-file-input" name="file" accept=".pdf,.txt,.md" required>
+          <input type="text" id="tickets-prefix" placeholder="Name prefix (optional, e.g. TAM)">
+          <input type="number" id="tickets-start-number" placeholder="Start #" min="1" value="1">
           <input type="text" id="tickets-list-id" placeholder="ClickUp list id (optional, defaults to Sprint backlog)">
           <button type="submit">Analyze</button>
         </form>
+        <p class="hint">Name prefix follows this project's ticket convention, e.g. "TAM-02 | Build login page" — leave blank to keep the raw generated titles.</p>
 
         <div id="tickets-thinking" class="thinking-indicator" hidden>
           <span class="spinner"></span>

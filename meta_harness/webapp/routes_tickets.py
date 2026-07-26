@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpTicketError, create_clickup_ticket
 from meta_harness.ticket_generator import (
@@ -18,6 +18,7 @@ from meta_harness.ticket_generator import (
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
+    apply_ticket_numbering,
     generate_tickets_from_file,
 )
 from meta_harness.webapp.deps import get_clickup_project_path
@@ -33,7 +34,11 @@ router = APIRouter()
 
 
 @router.post("/generate", response_model=GenerateTicketsOut)
-def post_generate_tickets(file: UploadFile = File(...)) -> GenerateTicketsOut:
+def post_generate_tickets(
+    file: UploadFile = File(...),
+    ticket_prefix: Optional[str] = Form(None),
+    ticket_start_number: int = Form(1),
+) -> GenerateTicketsOut:
     content = file.file.read()
     try:
         tickets, warnings = generate_tickets_from_file(file.filename or "document", content)
@@ -45,6 +50,10 @@ def post_generate_tickets(file: UploadFile = File(...)) -> GenerateTicketsOut:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (TicketGenerationError, TicketParseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if ticket_prefix:
+        tickets = apply_ticket_numbering(tickets, ticket_prefix, ticket_start_number)
+
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
 
 

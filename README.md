@@ -300,9 +300,14 @@ shape (title, description, acceptance criteria, priority); nothing is
 created until you review and confirm.
 
 ```bash
-meta-harness tickets generate --file requirements.pdf --json-output proposed.json
+meta-harness tickets generate --file requirements.pdf --prefix TAM --start-number 2 --json-output proposed.json
 meta-harness tickets create-all --from-json proposed.json --list-id <id>
 ```
+
+`--prefix`/`--start-number` (or the matching fields in the web UI) name each
+ticket in order as `"{prefix}-{NN} | {title}"` — e.g. `TAM-02 | Build login
+page`, continuing a project's existing numbering. Omit `--prefix` to keep
+the raw generated titles.
 
 The generation call is harnessed for reliability, not a single blind
 attempt: if Claude's output fails JSON/shape validation, the specific

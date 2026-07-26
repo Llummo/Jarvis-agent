@@ -41,8 +41,9 @@ h1 { font-size: 1.25rem; margin: 0; }
 
 .counts { font-size: 0.9rem; color: #444; margin-bottom: 0.75rem; }
 
-.inline-form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+.inline-form { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
 .inline-form input, .inline-form select { padding: 0.35rem; }
+#tickets-start-number { width: 5rem; }
 
 .stacked-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .stacked-form input, .stacked-form select { padding: 0.4rem; }

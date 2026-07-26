@@ -13,7 +13,7 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -255,3 +255,19 @@ def generate_tickets_from_file(
     """End-to-end: extract text from an uploaded file, then generate tickets."""
     text = extract_document_text(filename, content)
     return generate_tickets_from_text(text, timeout_s=timeout_s)
+
+
+def apply_ticket_numbering(
+    tickets: List[ProposedTicket], prefix: str, start_number: int = 1
+) -> List[ProposedTicket]:
+    """Rename tickets in order as "{prefix}-{NN} | {title}" (e.g. TAM-02, TAM-03, ...).
+
+    Returns a new list — the input tickets are not mutated. Numbering
+    follows the tickets' existing order (their position in the list),
+    starting at `start_number`, so it stays stable regardless of which
+    ones later get created.
+    """
+    return [
+        replace(ticket, title=f"{prefix}-{start_number + index:02d} | {ticket.title}")
+        for index, ticket in enumerate(tickets)
+    ]

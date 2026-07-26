@@ -4,9 +4,11 @@ import pytest
 
 from meta_harness.ticket_generator import (
     ClaudeNotFoundError,
+    ProposedTicket,
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
+    apply_ticket_numbering,
     extract_document_text,
     generate_tickets_from_text,
     parse_proposed_tickets,
@@ -278,3 +280,59 @@ def test_generate_tickets_succeeds_first_try_does_not_retry(monkeypatch):
     generate_tickets_from_text("some text", timeout_s=5)
 
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# apply_ticket_numbering
+# ---------------------------------------------------------------------------
+
+
+def _tickets(*titles):
+    return [ProposedTicket(title=t, description="d", acceptance_criteria=[], priority="normal") for t in titles]
+
+
+def test_apply_ticket_numbering_default_start():
+    tickets = _tickets("Build login page", "Add rate limiting")
+
+    numbered = apply_ticket_numbering(tickets, "TAM")
+
+    assert numbered[0].title == "TAM-01 | Build login page"
+    assert numbered[1].title == "TAM-02 | Add rate limiting"
+
+
+def test_apply_ticket_numbering_custom_start():
+    tickets = _tickets("Build login page", "Add rate limiting", "Fix currency rounding")
+
+    numbered = apply_ticket_numbering(tickets, "TAM", start_number=2)
+
+    assert numbered[0].title == "TAM-02 | Build login page"
+    assert numbered[1].title == "TAM-03 | Add rate limiting"
+    assert numbered[2].title == "TAM-04 | Fix currency rounding"
+
+
+def test_apply_ticket_numbering_does_not_mutate_input():
+    tickets = _tickets("Build login page")
+
+    apply_ticket_numbering(tickets, "TAM", start_number=5)
+
+    assert tickets[0].title == "Build login page"
+
+
+def test_apply_ticket_numbering_pads_to_two_digits_but_not_beyond():
+    tickets = _tickets("t1")
+
+    numbered_low = apply_ticket_numbering(tickets, "TAM", start_number=7)
+    numbered_high = apply_ticket_numbering(tickets, "TAM", start_number=123)
+
+    assert numbered_low[0].title == "TAM-07 | t1"
+    assert numbered_high[0].title == "TAM-123 | t1"
+
+
+def test_apply_ticket_numbering_preserves_other_fields():
+    tickets = [ProposedTicket(title="t1", description="desc", acceptance_criteria=["a"], priority="urgent")]
+
+    numbered = apply_ticket_numbering(tickets, "TAM")
+
+    assert numbered[0].description == "desc"
+    assert numbered[0].acceptance_criteria == ["a"]
+    assert numbered[0].priority == "urgent"
