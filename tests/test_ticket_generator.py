@@ -220,3 +220,61 @@ def test_generate_tickets_from_text_raises_on_timeout(monkeypatch):
 
     with pytest.raises(TicketGenerationError, match="timed out"):
         generate_tickets_from_text("some text", timeout_s=5)
+
+
+# ---------------------------------------------------------------------------
+# generate_tickets_from_text — retry-with-repair harness
+# ---------------------------------------------------------------------------
+
+
+def test_generate_tickets_retries_and_recovers_from_bad_json(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        if len(calls) == 1:
+            return Result(stdout="not valid json")
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    tickets, warnings = generate_tickets_from_text("Build a login page.", timeout_s=5)
+
+    assert len(calls) == 2
+    assert tickets[0].title == "Build login page"
+    # the retry prompt must reference the specific failure so Claude can self-correct
+    second_prompt = calls[1][2]
+    assert "previous response was invalid" in second_prompt
+    assert "did not return valid JSON" in second_prompt
+
+
+def test_generate_tickets_gives_up_after_max_attempts(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        return Result(stdout="still not valid json")
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    with pytest.raises(TicketParseError, match="did not return valid JSON"):
+        generate_tickets_from_text("some text", timeout_s=5, max_attempts=3)
+
+    assert len(calls) == 3
+
+
+def test_generate_tickets_succeeds_first_try_does_not_retry(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_text("some text", timeout_s=5)
+
+    assert len(calls) == 1

@@ -1,7 +1,12 @@
 from fastapi.testclient import TestClient
 
 from meta_harness.clickup_bridge import ClickUpTicketError
-from meta_harness.ticket_generator import ClaudeNotFoundError, ProposedTicket, TicketExtractionError
+from meta_harness.ticket_generator import (
+    ClaudeNotFoundError,
+    ProposedTicket,
+    TicketExtractionError,
+    TicketParseError,
+)
 from meta_harness.webapp.app import app
 
 client = TestClient(app)
@@ -38,7 +43,7 @@ def test_generate_tickets_extraction_error_returns_400(monkeypatch):
     assert "unsupported file type" in response.json()["detail"]
 
 
-def test_generate_tickets_claude_not_found_returns_502(monkeypatch):
+def test_generate_tickets_claude_not_found_returns_503(monkeypatch):
     def boom(filename, content, **kw):
         raise ClaudeNotFoundError("no claude binary")
 
@@ -46,8 +51,20 @@ def test_generate_tickets_claude_not_found_returns_502(monkeypatch):
 
     response = client.post("/api/tickets/generate", files={"file": ("spec.txt", b"text", "text/plain")})
 
-    assert response.status_code == 502
+    assert response.status_code == 503
     assert "no claude binary" in response.json()["detail"]
+
+
+def test_generate_tickets_parse_error_returns_502(monkeypatch):
+    def boom(filename, content, **kw):
+        raise TicketParseError("no usable tickets")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_file", boom)
+
+    response = client.post("/api/tickets/generate", files={"file": ("spec.txt", b"text", "text/plain")})
+
+    assert response.status_code == 502
+    assert "no usable tickets" in response.json()["detail"]
 
 
 def test_create_tickets_partial_failure_reports_both_results(monkeypatch):

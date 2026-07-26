@@ -195,28 +195,58 @@ def parse_proposed_tickets(raw_output: str) -> Tuple[List[ProposedTicket], List[
     return tickets, warnings
 
 
-def generate_tickets_from_text(
-    document_text: str, *, timeout_s: Optional[float] = None
-) -> Tuple[List[ProposedTicket], List[str]]:
-    """Run `claude -p <prompt>` with the document piped via stdin; parse the result."""
-    claude_path = _find_claude()
-    resolved_timeout = (
-        timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
-    )
-    command = [claude_path, "-p", TICKET_EXTRACTION_PROMPT, "--output-format", "text"]
+MAX_GENERATION_ATTEMPTS = 3
+
+
+def _run_claude(claude_path: str, prompt: str, document_text: str, timeout_s: float) -> str:
+    command = [claude_path, "-p", prompt, "--output-format", "text"]
     try:
         completed = subprocess.run(
-            command, input=document_text, capture_output=True, text=True, timeout=resolved_timeout
+            command, input=document_text, capture_output=True, text=True, timeout=timeout_s
         )
     except subprocess.TimeoutExpired as exc:
-        raise TicketGenerationError(
-            f"Claude CLI timed out after {resolved_timeout}s analyzing the document"
-        ) from exc
+        raise TicketGenerationError(f"Claude CLI timed out after {timeout_s}s analyzing the document") from exc
 
     if completed.returncode != 0:
         raise TicketGenerationError(f"Claude CLI failed ({completed.returncode}): {completed.stderr.strip()}")
 
-    return parse_proposed_tickets(completed.stdout)
+    return completed.stdout
+
+
+def generate_tickets_from_text(
+    document_text: str, *, timeout_s: Optional[float] = None, max_attempts: int = MAX_GENERATION_ATTEMPTS
+) -> Tuple[List[ProposedTicket], List[str]]:
+    """Run `claude -p <prompt>` with the document piped via stdin; parse the result.
+
+    This is the harness around the model call: if Claude's output fails
+    JSON/shape validation, the specific parse error is fed back into a
+    follow-up prompt asking it to self-correct, up to `max_attempts`
+    total tries, instead of failing the whole batch on the first bad
+    response. A malformed-but-fixable response is far more common than a
+    genuinely bad document, so this materially improves real output
+    quality without masking a document that's truly unusable.
+    """
+    claude_path = _find_claude()
+    resolved_timeout = (
+        timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
+    )
+
+    prompt = TICKET_EXTRACTION_PROMPT
+    last_error: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        if last_error is not None:
+            prompt = (
+                f"{TICKET_EXTRACTION_PROMPT}\n\nYour previous response was invalid: {last_error} "
+                "Fix this and output ONLY the corrected JSON array."
+            )
+        raw_output = _run_claude(claude_path, prompt, document_text, resolved_timeout)
+        try:
+            return parse_proposed_tickets(raw_output)
+        except TicketParseError as exc:
+            last_error = str(exc)
+            if attempt == max_attempts:
+                raise
+    raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
 
 
 def generate_tickets_from_file(

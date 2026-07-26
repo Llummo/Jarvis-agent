@@ -39,7 +39,11 @@ def post_generate_tickets(file: UploadFile = File(...)) -> GenerateTicketsOut:
         tickets, warnings = generate_tickets_from_file(file.filename or "document", content)
     except TicketExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (ClaudeNotFoundError, TicketGenerationError, TicketParseError) as exc:
+    except ClaudeNotFoundError as exc:
+        # A configuration/availability problem (no claude on PATH), distinct
+        # from the agent running but producing a bad result.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (TicketGenerationError, TicketParseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
 

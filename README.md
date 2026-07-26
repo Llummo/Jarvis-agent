@@ -304,6 +304,15 @@ meta-harness tickets generate --file requirements.pdf --json-output proposed.jso
 meta-harness tickets create-all --from-json proposed.json --list-id <id>
 ```
 
+The generation call is harnessed for reliability, not a single blind
+attempt: if Claude's output fails JSON/shape validation, the specific
+error is fed back into a follow-up prompt asking it to self-correct, up
+to 3 attempts total, before giving up. The web UI shows a visible
+"thinking" indicator while analysis/creation requests are in flight, and
+surfaces errors with a status-code-specific label (e.g. "Invalid
+request", "Upstream service failed", "Service unavailable") alongside the
+backend's detail message.
+
 Priority (`urgent`/`high`/`normal`/`low`) is set as ClickUp's native
 priority field, not just text in the description. Bulk creation reports a
 per-ticket result — one failure never aborts the rest of the batch.
