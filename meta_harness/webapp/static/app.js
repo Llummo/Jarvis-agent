@@ -12,6 +12,12 @@ function initTabs() {
   });
 }
 
+function escapeHtml(value) {
+  const div = document.createElement("div");
+  div.textContent = value == null ? "" : String(value);
+  return div.innerHTML;
+}
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const body = await response.json().catch(() => ({}));
@@ -77,10 +83,10 @@ function renderFindings(findings) {
     }
 
     row.innerHTML =
-      `<td>${finding.id}</td><td>${finding.project}</td><td>${finding.route}</td>` +
-      `<td class="${severityClass(finding.severity)}">${finding.severity}</td>` +
-      `<td>${finding.status}</td><td>${finding.clickup_task_id || "-"}</td>` +
-      `<td>${finding.observation}</td>`;
+      `<td>${escapeHtml(finding.id)}</td><td>${escapeHtml(finding.project)}</td><td>${escapeHtml(finding.route)}</td>` +
+      `<td class="${severityClass(finding.severity)}">${escapeHtml(finding.severity)}</td>` +
+      `<td>${escapeHtml(finding.status)}</td><td>${escapeHtml(finding.clickup_task_id || "-")}</td>` +
+      `<td>${escapeHtml(finding.observation)}</td>`;
     row.appendChild(closeCell);
     tbody.appendChild(row);
   }
@@ -206,10 +212,143 @@ async function initClickupBrowser() {
   }
 }
 
+// --- Generate Tickets tab -------------------------------------------------
+
+let proposedTickets = []; // [{ ticket, status: "pending"|"creating"|"created"|"error", clickup_task_id, error }]
+
+function showTicketsError(message) {
+  const el = document.getElementById("tickets-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function renderTicketWarnings(warnings) {
+  const el = document.getElementById("tickets-warnings");
+  if (warnings && warnings.length) {
+    el.textContent = `Warnings: ${warnings.join("; ")}`;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+async function onGenerateTickets(event) {
+  event.preventDefault();
+  const file = document.getElementById("tickets-file-input").files[0];
+  if (!file) return;
+  showTicketsError(null);
+  renderTicketWarnings([]);
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const body = await fetchJson("/api/tickets/generate", { method: "POST", body: formData });
+    proposedTickets = body.tickets.map((ticket) => ({ ticket, status: "pending" }));
+    renderTicketWarnings(body.warnings);
+    document.getElementById("tickets-actions").hidden = proposedTickets.length === 0;
+    renderProposedTickets();
+  } catch (err) {
+    showTicketsError(err.message);
+  }
+}
+
+function applyTicketResult(entry, result) {
+  if (result.ok) {
+    entry.status = "created";
+    entry.clickup_task_id = result.clickup_task_id;
+  } else {
+    entry.status = "error";
+    entry.error = result.error;
+  }
+}
+
+async function createOneTicket(index) {
+  const entry = proposedTickets[index];
+  entry.status = "creating";
+  renderProposedTickets();
+  const listId = document.getElementById("tickets-list-id").value || null;
+  try {
+    const body = await fetchJson("/api/tickets/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tickets: [entry.ticket], list_id: listId }),
+    });
+    applyTicketResult(entry, body.results[0]);
+  } catch (err) {
+    entry.status = "error";
+    entry.error = err.message;
+  }
+  renderProposedTickets();
+}
+
+async function onCreateAllTickets() {
+  const pending = proposedTickets.filter((e) => e.status !== "created");
+  if (!pending.length) return;
+  pending.forEach((e) => (e.status = "creating"));
+  renderProposedTickets();
+  const listId = document.getElementById("tickets-list-id").value || null;
+  try {
+    const body = await fetchJson("/api/tickets/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tickets: pending.map((e) => e.ticket), list_id: listId }),
+    });
+    pending.forEach((entry, i) => applyTicketResult(entry, body.results[i]));
+  } catch (err) {
+    showTicketsError(err.message);
+    pending.forEach((e) => (e.status = "pending"));
+  }
+  renderProposedTickets();
+}
+
+function renderProposedTickets() {
+  const container = document.getElementById("tickets-list");
+  container.innerHTML = "";
+  proposedTickets.forEach((entry, index) => {
+    const card = document.createElement("div");
+    card.className = "ticket-card";
+    const acItems = entry.ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
+    const priority = escapeHtml(entry.ticket.priority);
+    card.innerHTML =
+      `<h3>${escapeHtml(entry.ticket.title)} <span class="priority-badge priority-${priority}">${priority}</span></h3>` +
+      `<p>${escapeHtml(entry.ticket.description)}</p>` +
+      (acItems ? `<ul>${acItems}</ul>` : "") +
+      `<div class="ticket-status"></div>`;
+
+    const statusEl = card.querySelector(".ticket-status");
+    if (entry.status === "created") {
+      statusEl.textContent = `Created: ${entry.clickup_task_id}`;
+      statusEl.classList.add("ticket-status-ok");
+    } else if (entry.status === "error") {
+      statusEl.textContent = `Failed: ${entry.error}`;
+      statusEl.classList.add("ticket-status-error");
+    } else if (entry.status === "creating") {
+      statusEl.textContent = "Creating...";
+    }
+
+    if (entry.status !== "created" && entry.status !== "creating") {
+      const button = document.createElement("button");
+      button.textContent = "Create";
+      button.addEventListener("click", () => createOneTicket(index));
+      card.appendChild(button);
+    }
+    container.appendChild(card);
+  });
+}
+
+function initTicketsTab() {
+  document.getElementById("tickets-generate-form").addEventListener("submit", onGenerateTickets);
+  document.getElementById("tickets-create-all").addEventListener("click", onCreateAllTickets);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   initQaFilters();
   initQaReportForm();
   loadFindings();
   initClickupBrowser();
+  initTicketsTab();
 });

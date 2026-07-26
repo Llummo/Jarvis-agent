@@ -16,6 +16,9 @@ from typing import List, Optional, Sequence
 from meta_harness.playbook import load_agent_playbook, resolve_project_path
 
 
+CLICKUP_PRIORITY_WORDS = ("urgent", "high", "normal", "low")
+
+
 class ClickUpTicketError(RuntimeError):
     """Raised when the p-harness ClickUp CLI fails or returns unusable output."""
 
@@ -107,9 +110,13 @@ def create_clickup_ticket(
     description: str,
     *,
     list_id: Optional[str] = None,
+    priority: Optional[str] = None,
     project_path: Optional[Path] = None,
 ) -> str:
     """Create a ClickUp task via the p-harness CLI; return its task id."""
+    if priority is not None and priority not in CLICKUP_PRIORITY_WORDS:
+        raise ValueError(f"priority must be one of {CLICKUP_PRIORITY_WORDS}, got {priority!r}")
+
     resolved_path = project_path
     if resolved_path is None:
         resolved_path = resolve_project_path(load_agent_playbook("clickup"))
@@ -125,6 +132,8 @@ def create_clickup_ticket(
     ]
     if list_id:
         command += ["--list-id", list_id]
+    if priority is not None:
+        command += ["--priority", priority]
 
     completed = subprocess.run(command, cwd=resolved_path, capture_output=True, text=True)
     if completed.returncode != 0:

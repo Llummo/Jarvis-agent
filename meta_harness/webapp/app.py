@@ -13,6 +13,7 @@ from meta_harness.clickup_bridge import ClickUpReadError
 from meta_harness.qa_findings import QAFindingNotFoundError
 from meta_harness.webapp.routes_clickup import router as clickup_router
 from meta_harness.webapp.routes_qa import router as qa_router
+from meta_harness.webapp.routes_tickets import router as tickets_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     # matches routes in registration order.
     app.include_router(qa_router, prefix="/api/qa", tags=["qa"])
     app.include_router(clickup_router, prefix="/api/clickup", tags=["clickup"])
+    app.include_router(tickets_router, prefix="/api/tickets", tags=["tickets"])
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
 
