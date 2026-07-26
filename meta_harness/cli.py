@@ -14,7 +14,7 @@ from meta_harness.archive_reader import load_run_summary
 from meta_harness.baseline import resolve_baseline_selection
 from meta_harness.benchmark_runner import BenchmarkRunResult, run_benchmark
 from meta_harness.candidate_registry import list_builtin_candidates
-from meta_harness.clickup_bridge import ClickUpTicketError, create_clickup_ticket
+from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
 from meta_harness.comparison import build_comparison_report
 from meta_harness.config import MetaHarnessConfig, parse_command_prefix
 from meta_harness.frontier import FrontierStore
@@ -41,6 +41,7 @@ from meta_harness.qa_findings import (
     list_qa_issues,
     report_qa_issue,
 )
+from meta_harness.qa_flow import QAFlowError, replay_qa_review, review_and_record
 from meta_harness.run_archive import RunArchive
 from meta_harness.search import StructuredSearchRequest, run_structured_search
 from meta_harness.ticket_generator import (
@@ -900,6 +901,76 @@ def qa_close_issue_cmd(finding_id: int, note: str, db_path: Optional[str]) -> No
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _emit_findings_table("QA Finding Closed", [finding])
+
+
+def _emit_review(title: str, review, finding, record) -> None:
+    table = Table(title=title)
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    table.add_row("Run ID", record.run_id)
+    table.add_row("Ticket", f"{review.ticket_id} — {review.ticket_name}")
+    table.add_row("Severity", review.severity)
+    table.add_row("Observation", review.observation)
+    if finding is not None:
+        table.add_row("Persisted", f"[green]yes — finding #{finding.id}[/green]")
+    else:
+        table.add_row("Persisted", "[yellow]no (dry-run)[/yellow]")
+    console.print(table)
+
+
+@qa_group.command("review-ticket")
+@click.option("--ticket-id", required=True, help="ClickUp ticket id to review.")
+@click.option("--project", required=True, help="Project name to file the finding under.")
+@click.option("--persist", is_flag=True, help="Report the review as a real finding (default: dry-run only).")
+@click.option("--clickup-list-id", default=None, help="Override the ClickUp list id used for critical tickets.")
+@click.option("--db-path", default=None)
+def qa_review_ticket_cmd(
+    ticket_id: str, project: str, persist: bool, clickup_list_id: Optional[str], db_path: Optional[str]
+) -> None:
+    """Review a ClickUp ticket as a QA flow: fetch it, analyze it, and
+    (optionally) report a finding. Dry-run by default."""
+    try:
+        review, finding, record = review_and_record(
+            ticket_id, project=project, clickup_list_id=clickup_list_id,
+            persist=persist, store=_qa_store(db_path),
+        )
+    except (QAFlowError, ClickUpReadError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _emit_review("QA Ticket Review", review, finding, record)
+
+
+@qa_group.command("review-runs")
+def qa_review_runs_cmd() -> None:
+    """List recorded QA ticket reviews, most recent last."""
+    records = RunArchive("qa_ticket_review").load()
+    if not records:
+        console.print("No recorded QA ticket reviews. Use `qa review-ticket --ticket-id ... --project ...`.")
+        return
+    table = Table(title="QA Ticket Reviews")
+    table.add_column("Run ID", style="bold")
+    table.add_column("Ticket")
+    table.add_column("Started At")
+    table.add_column("Status")
+    for record in records:
+        table.add_row(record.run_id, record.subject_id or "-", record.started_at, "ok" if record.ok else "failed")
+    console.print(table)
+
+
+@qa_group.command("replay-review")
+@click.argument("run_id")
+@click.option("--persist", is_flag=True, help="Report the replayed review as a real finding (default: dry-run only).")
+@click.option("--clickup-list-id", default=None, help="Override the ClickUp list id used for critical tickets.")
+@click.option("--db-path", default=None)
+def qa_replay_review_cmd(run_id: str, persist: bool, clickup_list_id: Optional[str], db_path: Optional[str]) -> None:
+    """Repeat a previously recorded ticket review against the same ticket."""
+    try:
+        original, review, finding, record = replay_qa_review(
+            run_id, persist=persist, clickup_list_id=clickup_list_id, store=_qa_store(db_path),
+        )
+    except (QAFlowError, ClickUpReadError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    console.print(f"Replaying review [bold]{run_id}[/bold] (ticket: {original.subject_id})")
+    _emit_review("Replayed Review", review, finding, record)
 
 
 @main.command("ui")

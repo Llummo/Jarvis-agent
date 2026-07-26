@@ -233,8 +233,8 @@ meta-harness playbook runs clickup                       # list recorded runs
 meta-harness playbook replay clickup <run-id>             # repeat a recorded run
 ```
 
-Every `run` against a subject (e.g. a ticket) is archived, so a QA flow can
-be replayed later against the same subject to check it still reproduces.
+Every `run` against a subject (e.g. a ticket) is archived and replayable
+(see the next section for the actual QA flow built on this mechanism).
 
 See [`agents/README.md`](agents/README.md) for the config format.
 
@@ -256,6 +256,28 @@ meta-harness qa close-issue <id> --note "fixed the null check"
 
 `--severity` is one of `minor`/`major`/`critical`. The database defaults to
 `qa/findings.db` (gitignored); override with `--db-path`.
+
+## QA Ticket Review Flow (replayable)
+
+The actual "QA flow": fetch a ClickUp ticket, have Claude analyze it, and
+propose an observation + severity. **Dry-run by default** — nothing is
+saved or created in ClickUp until you pass `--persist`, so replaying the
+same ticket repeatedly never piles up duplicate findings.
+
+```bash
+meta-harness qa review-ticket --ticket-id <id> --project sigo-front            # dry-run
+meta-harness qa review-ticket --ticket-id <id> --project sigo-front --persist  # reports a real finding
+meta-harness qa review-runs                                                    # list recorded reviews
+meta-harness qa replay-review <run-id>                                         # re-fetch + re-analyze, dry-run
+meta-harness qa replay-review <run-id> --persist                               # replay and report for real
+```
+
+Every review (dry-run or persisted) is recorded via the same
+`RunArchive`/`RunRecord` mechanism the agent playbooks use, so `replay-review`
+re-runs the exact same ticket through a fresh live analysis and reports
+whether it reproduces. The analysis call is harnessed the same way ticket
+generation is (bounded retry with the specific validation error fed back
+on a malformed response).
 
 ## Localhost UI
 
