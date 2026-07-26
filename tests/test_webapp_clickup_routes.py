@@ -49,6 +49,22 @@ def test_get_lists_passes_space_id(monkeypatch):
     assert captured["space_id"] == "S1"
 
 
+def test_get_tasks_passes_list_id(monkeypatch):
+    captured = {}
+
+    def fake_list_tasks(list_id, **kw):
+        captured["list_id"] = list_id
+        return [{"id": "T1", "name": "Task 1"}]
+
+    monkeypatch.setattr("meta_harness.webapp.routes_clickup.list_clickup_tasks", fake_list_tasks)
+
+    response = client.get("/api/clickup/tasks", params={"list_id": "L1"})
+
+    assert response.status_code == 200
+    assert captured["list_id"] == "L1"
+    assert response.json() == [{"id": "T1", "name": "Task 1"}]
+
+
 def test_clickup_read_error_returns_502(monkeypatch):
     def boom(**kw):
         raise ClickUpReadError("p-harness CLI unavailable")

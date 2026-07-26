@@ -8,6 +8,7 @@ from meta_harness.clickup_bridge import (
     create_clickup_ticket,
     list_clickup_lists,
     list_clickup_spaces,
+    list_clickup_tasks,
     list_clickup_teams,
 )
 
@@ -126,6 +127,23 @@ def test_list_clickup_lists_builds_correct_command(tmp_path, monkeypatch):
     assert lists == [{"id": "L1", "name": "List 1"}]
     assert calls[0] == [
         str(tmp_path / ".venv" / "bin" / "harness"), "clickup", "lists", "--space-id", "S1",
+    ]
+
+
+def test_list_clickup_tasks_builds_correct_command(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps([{"id": "T1", "name": "Task 1"}]))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    tasks = list_clickup_tasks("L1", project_path=tmp_path)
+
+    assert tasks == [{"id": "T1", "name": "Task 1"}]
+    assert calls[0] == [
+        str(tmp_path / ".venv" / "bin" / "harness"), "clickup", "tasks", "--list-id", "L1",
     ]
 
 

@@ -143,14 +143,28 @@ async function initClickupBrowser() {
     showClickupError(null);
     renderList("clickup-teams", teams, (t) => t.name, async (team) => {
       document.getElementById("clickup-lists").innerHTML = "";
+      document.getElementById("clickup-tasks").innerHTML = "";
       try {
         const spaces = await fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`);
         showClickupError(null);
         renderList("clickup-spaces", spaces, (s) => s.name, async (space) => {
+          document.getElementById("clickup-tasks").innerHTML = "";
           try {
             const lists = await fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(space.id)}`);
             showClickupError(null);
-            renderList("clickup-lists", lists, (l) => l.name, () => {});
+            renderList("clickup-lists", lists, (l) => l.name, async (list) => {
+              try {
+                const tasks = await fetchJson(`/api/clickup/tasks?list_id=${encodeURIComponent(list.id)}`);
+                showClickupError(null);
+                renderList(
+                  "clickup-tasks", tasks,
+                  (t) => `${t.name} (${t.status ? t.status.status : "-"})`,
+                  () => {},
+                );
+              } catch (err) {
+                showClickupError(err.message);
+              }
+            });
           } catch (err) {
             showClickupError(err.message);
           }
