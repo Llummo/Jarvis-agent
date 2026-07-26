@@ -49,6 +49,45 @@ def test_get_lists_passes_space_id(monkeypatch):
     assert captured["space_id"] == "S1"
 
 
+def test_get_lists_passes_folder_id(monkeypatch):
+    captured = {}
+
+    def fake_list_lists(space_id, folder_id=None, **kw):
+        captured["space_id"] = space_id
+        captured["folder_id"] = folder_id
+        return [{"id": "L2", "name": "Sprint backlog"}]
+
+    monkeypatch.setattr("meta_harness.webapp.routes_clickup.list_clickup_lists", fake_list_lists)
+
+    response = client.get("/api/clickup/lists", params={"folder_id": "F1"})
+
+    assert response.status_code == 200
+    assert captured["space_id"] is None
+    assert captured["folder_id"] == "F1"
+
+
+def test_get_lists_without_space_or_folder_returns_400():
+    response = client.get("/api/clickup/lists")
+
+    assert response.status_code == 400
+
+
+def test_get_folders_passes_space_id(monkeypatch):
+    captured = {}
+
+    def fake_list_folders(space_id, **kw):
+        captured["space_id"] = space_id
+        return [{"id": "F1", "name": "Project-1"}]
+
+    monkeypatch.setattr("meta_harness.webapp.routes_clickup.list_clickup_folders", fake_list_folders)
+
+    response = client.get("/api/clickup/folders", params={"space_id": "S1"})
+
+    assert response.status_code == 200
+    assert captured["space_id"] == "S1"
+    assert response.json() == [{"id": "F1", "name": "Project-1"}]
+
+
 def test_get_tasks_passes_list_id(monkeypatch):
     captured = {}
 

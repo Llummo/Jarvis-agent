@@ -63,8 +63,33 @@ def list_clickup_spaces(team_id: str, *, project_path: Optional[Path] = None) ->
     return payload
 
 
-def list_clickup_lists(space_id: str, *, project_path: Optional[Path] = None) -> List[dict]:
-    payload = _run_harness_json(["clickup", "lists", "--space-id", space_id], project_path=project_path)
+def list_clickup_folders(space_id: str, *, project_path: Optional[Path] = None) -> List[dict]:
+    payload = _run_harness_json(["clickup", "folders", "--space-id", space_id], project_path=project_path)
+    if not isinstance(payload, list):
+        raise ClickUpReadError(f"Expected a JSON array of folders, got: {payload!r}")
+    return payload
+
+
+def list_clickup_lists(
+    space_id: Optional[str] = None,
+    *,
+    folder_id: Optional[str] = None,
+    project_path: Optional[Path] = None,
+) -> List[dict]:
+    """List lists in a space or a folder.
+
+    ClickUp's /space/{id}/list only returns "folderless" lists — lists
+    nested inside a folder (e.g. a "Project-1" folder) need --folder-id
+    instead, which is why both are supported here.
+    """
+    if folder_id:
+        args = ["clickup", "lists", "--folder-id", folder_id]
+    elif space_id:
+        args = ["clickup", "lists", "--space-id", space_id]
+    else:
+        raise ValueError("Provide either space_id or folder_id")
+
+    payload = _run_harness_json(args, project_path=project_path)
     if not isinstance(payload, list):
         raise ClickUpReadError(f"Expected a JSON array of lists, got: {payload!r}")
     return payload

@@ -6,6 +6,7 @@ from meta_harness.clickup_bridge import (
     ClickUpReadError,
     ClickUpTicketError,
     create_clickup_ticket,
+    list_clickup_folders,
     list_clickup_lists,
     list_clickup_spaces,
     list_clickup_tasks,
@@ -127,6 +128,45 @@ def test_list_clickup_lists_builds_correct_command(tmp_path, monkeypatch):
     assert lists == [{"id": "L1", "name": "List 1"}]
     assert calls[0] == [
         str(tmp_path / ".venv" / "bin" / "harness"), "clickup", "lists", "--space-id", "S1",
+    ]
+
+
+def test_list_clickup_lists_by_folder_id(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps([{"id": "L2", "name": "Sprint backlog"}]))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    lists = list_clickup_lists(folder_id="F1", project_path=tmp_path)
+
+    assert lists == [{"id": "L2", "name": "Sprint backlog"}]
+    assert calls[0] == [
+        str(tmp_path / ".venv" / "bin" / "harness"), "clickup", "lists", "--folder-id", "F1",
+    ]
+
+
+def test_list_clickup_lists_requires_space_or_folder(tmp_path):
+    with pytest.raises(ValueError, match="Provide either space_id or folder_id"):
+        list_clickup_lists(project_path=tmp_path)
+
+
+def test_list_clickup_folders_builds_correct_command(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps([{"id": "F1", "name": "Project-1"}]))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    folders = list_clickup_folders("S1", project_path=tmp_path)
+
+    assert folders == [{"id": "F1", "name": "Project-1"}]
+    assert calls[0] == [
+        str(tmp_path / ".venv" / "bin" / "harness"), "clickup", "folders", "--space-id", "S1",
     ]
 
 

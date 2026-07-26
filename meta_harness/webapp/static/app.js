@@ -137,42 +137,70 @@ function renderList(elementId, items, labelFn, onClick) {
   }
 }
 
+async function selectClickupList(list) {
+  try {
+    const tasks = await fetchJson(`/api/clickup/tasks?list_id=${encodeURIComponent(list.id)}`);
+    showClickupError(null);
+    renderList(
+      "clickup-tasks", tasks,
+      (t) => `${t.name} (${t.status ? t.status.status : "-"})`,
+      () => {},
+    );
+  } catch (err) {
+    showClickupError(err.message);
+  }
+}
+
+async function selectClickupFolder(folder) {
+  document.getElementById("clickup-tasks").innerHTML = "";
+  try {
+    const lists = await fetchJson(`/api/clickup/lists?folder_id=${encodeURIComponent(folder.id)}`);
+    showClickupError(null);
+    renderList("clickup-lists", lists, (l) => l.name, selectClickupList);
+  } catch (err) {
+    showClickupError(err.message);
+  }
+}
+
+async function selectClickupSpace(space) {
+  document.getElementById("clickup-folders").innerHTML = "";
+  document.getElementById("clickup-lists").innerHTML = "";
+  document.getElementById("clickup-tasks").innerHTML = "";
+  try {
+    // ClickUp splits a space's lists into folders (Projects) and
+    // "folderless" lists shown directly — fetch both, since a list like
+    // "Sprint backlog" only shows up once you look inside its folder.
+    const [folders, folderlessLists] = await Promise.all([
+      fetchJson(`/api/clickup/folders?space_id=${encodeURIComponent(space.id)}`),
+      fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(space.id)}`),
+    ]);
+    showClickupError(null);
+    renderList("clickup-folders", folders, (f) => f.name, selectClickupFolder);
+    renderList("clickup-lists", folderlessLists, (l) => l.name, selectClickupList);
+  } catch (err) {
+    showClickupError(err.message);
+  }
+}
+
+async function selectClickupTeam(team) {
+  document.getElementById("clickup-spaces").innerHTML = "";
+  document.getElementById("clickup-folders").innerHTML = "";
+  document.getElementById("clickup-lists").innerHTML = "";
+  document.getElementById("clickup-tasks").innerHTML = "";
+  try {
+    const spaces = await fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`);
+    showClickupError(null);
+    renderList("clickup-spaces", spaces, (s) => s.name, selectClickupSpace);
+  } catch (err) {
+    showClickupError(err.message);
+  }
+}
+
 async function initClickupBrowser() {
   try {
     const teams = await fetchJson("/api/clickup/teams");
     showClickupError(null);
-    renderList("clickup-teams", teams, (t) => t.name, async (team) => {
-      document.getElementById("clickup-lists").innerHTML = "";
-      document.getElementById("clickup-tasks").innerHTML = "";
-      try {
-        const spaces = await fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`);
-        showClickupError(null);
-        renderList("clickup-spaces", spaces, (s) => s.name, async (space) => {
-          document.getElementById("clickup-tasks").innerHTML = "";
-          try {
-            const lists = await fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(space.id)}`);
-            showClickupError(null);
-            renderList("clickup-lists", lists, (l) => l.name, async (list) => {
-              try {
-                const tasks = await fetchJson(`/api/clickup/tasks?list_id=${encodeURIComponent(list.id)}`);
-                showClickupError(null);
-                renderList(
-                  "clickup-tasks", tasks,
-                  (t) => `${t.name} (${t.status ? t.status.status : "-"})`,
-                  () => {},
-                );
-              } catch (err) {
-                showClickupError(err.message);
-              }
-            });
-          } catch (err) {
-            showClickupError(err.message);
-          }
-        });
-      } catch (err) {
-        showClickupError(err.message);
-      }
-    });
+    renderList("clickup-teams", teams, (t) => t.name, selectClickupTeam);
   } catch (err) {
     showClickupError(err.message);
   }
