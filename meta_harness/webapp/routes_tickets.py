@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpTicketError, create_clickup_ticket
 from meta_harness.ticket_generator import (
@@ -18,6 +18,7 @@ from meta_harness.ticket_generator import (
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
+    apply_category_numbering,
     generate_tickets_from_file,
 )
 from meta_harness.webapp.deps import get_clickup_project_path
@@ -33,14 +34,33 @@ router = APIRouter()
 
 
 @router.post("/generate", response_model=GenerateTicketsOut)
-def post_generate_tickets(file: UploadFile = File(...)) -> GenerateTicketsOut:
+def post_generate_tickets(
+    file: UploadFile = File(...),
+    start_mundane: int = Form(1),
+    start_backend: int = Form(1),
+    start_frontend: int = Form(1),
+    start_deployment: int = Form(1),
+) -> GenerateTicketsOut:
     content = file.file.read()
     try:
         tickets, warnings = generate_tickets_from_file(file.filename or "document", content)
     except TicketExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (ClaudeNotFoundError, TicketGenerationError, TicketParseError) as exc:
+    except ClaudeNotFoundError as exc:
+        # A configuration/availability problem (no claude on PATH), distinct
+        # from the agent running but producing a bad result.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (TicketGenerationError, TicketParseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    start_numbers = {
+        "mundane": start_mundane,
+        "backend": start_backend,
+        "frontend": start_frontend,
+        "deployment": start_deployment,
+    }
+    tickets = apply_category_numbering(tickets, start_numbers)
+
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
 
 

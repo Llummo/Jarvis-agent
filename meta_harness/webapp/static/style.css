@@ -41,7 +41,7 @@ h1 { font-size: 1.25rem; margin: 0; }
 
 .counts { font-size: 0.9rem; color: #444; margin-bottom: 0.75rem; }
 
-.inline-form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+.inline-form { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
 .inline-form input, .inline-form select { padding: 0.35rem; }
 
 .stacked-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
@@ -90,6 +90,37 @@ th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee
   color: #fff;
   cursor: pointer;
 }
+#tickets-actions button:disabled,
+.inline-form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #3949ab;
+  font-size: 0.9rem;
+}
+
+.spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid #c5cae9;
+  border-top-color: #3949ab;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .tickets-grid { display: grid; gap: 0.75rem; margin-top: 1rem; }
 .ticket-card {
@@ -107,7 +138,7 @@ th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee
   cursor: pointer;
 }
 
-.priority-badge {
+.priority-badge, .category-badge {
   font-size: 0.7rem; padding: 0.1rem 0.5rem; border-radius: 999px; text-transform: uppercase;
 }
 .priority-urgent { background: #fdecea; color: #b00020; }
@@ -115,6 +146,22 @@ th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee
 .priority-normal { background: #eef2ff; color: #3949ab; }
 .priority-low { background: #eee; color: #555; }
 
+.category-mundane { background: #f3e8ff; color: #7c3aed; }
+.category-backend { background: #e6f4ea; color: #1a7f37; }
+.category-frontend { background: #e3f2fd; color: #1565c0; }
+.category-deployment { background: #fff3e0; color: #e65100; }
+
 .ticket-status { font-size: 0.85rem; margin: 0.3rem 0; }
 .ticket-status-ok { color: #1a7f37; }
 .ticket-status-error { color: #b00020; }
+
+.category-start-numbers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+  color: #444;
+}
+.category-start-numbers label { display: flex; align-items: center; gap: 0.35rem; }
+.category-start-numbers input { width: 4rem; padding: 0.25rem; }

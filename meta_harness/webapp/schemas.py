@@ -49,6 +49,7 @@ class ProposedTicketOut(BaseModel):
     description: str
     acceptance_criteria: list[str]
     priority: str
+    category: str
 
 
 class GenerateTicketsOut(BaseModel):
@@ -61,6 +62,7 @@ class ProposedTicketIn(BaseModel):
     description: str
     acceptance_criteria: list[str] = []
     priority: str = "normal"
+    category: str = "mundane"
 
 
 class CreateTicketsIn(BaseModel):

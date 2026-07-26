@@ -103,6 +103,18 @@
           <button type="submit">Analyze</button>
         </form>
 
+        <div class="category-start-numbers">
+          <label>TAM (mundane) starts at <input type="number" id="start-mundane" min="1" value="1"></label>
+          <label>TAB (backend) starts at <input type="number" id="start-backend" min="1" value="1"></label>
+          <label>TAF (frontend) starts at <input type="number" id="start-frontend" min="1" value="1"></label>
+          <label>TAD (deployment) starts at <input type="number" id="start-deployment" min="1" value="1"></label>
+        </div>
+        <p class="hint">Each ticket is auto-classified and named "{TAM,TAB,TAF,TAD}-NN | title" — set a start number above to continue an existing sequence (e.g. TAM already at 01).</p>
+
+        <div id="tickets-thinking" class="thinking-indicator" hidden>
+          <span class="spinner"></span>
+          <span class="thinking-text"></span>
+        </div>
         <div id="tickets-error" class="error-banner" hidden></div>
         <div id="tickets-warnings" class="error-banner" hidden></div>
 

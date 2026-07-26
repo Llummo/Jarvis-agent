@@ -296,13 +296,38 @@ reviewed, organized batch of proposed tickets, created in ClickUp
 individually or all at once — the "Generate Tickets" tab in `meta-harness
 ui`. An LLM (the local, already-authenticated Claude Code CLI — no
 separate API key) analyzes the document and proposes tickets in a fixed
-shape (title, description, acceptance criteria, priority); nothing is
-created until you review and confirm.
+shape (title, description, acceptance criteria, priority, category);
+nothing is created until you review and confirm.
+
+Each ticket is auto-classified into one of four categories, each with its
+own naming sequence:
+
+| Category | Prefix |
+|---|---|
+| mundane (general/cross-cutting/planning) | `TAM` |
+| backend | `TAB` |
+| frontend | `TAF` |
+| deployment | `TAD` |
 
 ```bash
-meta-harness tickets generate --file requirements.pdf --json-output proposed.json
+meta-harness tickets generate --file requirements.pdf --start-mundane 2 --json-output proposed.json
 meta-harness tickets create-all --from-json proposed.json --list-id <id>
 ```
+
+Titles come out as `"{PREFIX}-{NN} | {title}"` — e.g. `TAM-02 | Build login
+page` — numbered independently per category in the order tickets are
+proposed, so `--start-mundane`/`--start-backend`/`--start-frontend`/
+`--start-deployment` (or the matching web UI fields) let you continue an
+existing sequence in just one category without disturbing the others.
+
+The generation call is harnessed for reliability, not a single blind
+attempt: if Claude's output fails JSON/shape validation, the specific
+error is fed back into a follow-up prompt asking it to self-correct, up
+to 3 attempts total, before giving up. The web UI shows a visible
+"thinking" indicator while analysis/creation requests are in flight, and
+surfaces errors with a status-code-specific label (e.g. "Invalid
+request", "Upstream service failed", "Service unavailable") alongside the
+backend's detail message.
 
 Priority (`urgent`/`high`/`normal`/`low`) is set as ClickUp's native
 priority field, not just text in the description. Bulk creation reports a

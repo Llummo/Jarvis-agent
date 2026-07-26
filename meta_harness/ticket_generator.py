@@ -13,9 +13,9 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pypdf
 
@@ -26,6 +26,15 @@ DEFAULT_CLAUDE_TIMEOUT_S = 180.0
 PRIORITIES = ("urgent", "high", "normal", "low")
 DEFAULT_PRIORITY = "normal"
 
+CATEGORIES = ("mundane", "backend", "frontend", "deployment")
+DEFAULT_CATEGORY = "mundane"
+CATEGORY_PREFIXES = {
+    "mundane": "TAM",
+    "backend": "TAB",
+    "frontend": "TAF",
+    "deployment": "TAD",
+}
+
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
 TICKET_EXTRACTION_PROMPT = (
@@ -33,7 +42,12 @@ TICKET_EXTRACTION_PROMPT = (
     'Each ticket must be a JSON object with exactly these fields: '
     '"title" (string), "description" (string), '
     '"acceptance_criteria" (array of strings), '
-    '"priority" (one of: "urgent", "high", "normal", "low"). '
+    '"priority" (one of: "urgent", "high", "normal", "low"), '
+    '"category" (one of: "backend", "frontend", "deployment", "mundane" — classify by the '
+    'primary type of work: "backend" for server/API/database/business-logic work, '
+    '"frontend" for UI/client-side work, "deployment" for CI/CD, infra, release, or ops work, '
+    'and "mundane" for anything general, cross-cutting, or planning-oriented that does not '
+    "clearly fit the other three). "
     "Output ONLY the JSON array — no prose, no markdown code fences, no explanation."
 )
 
@@ -62,6 +76,7 @@ class ProposedTicket:
     description: str
     acceptance_criteria: List[str] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
+    category: str = DEFAULT_CATEGORY
 
 
 def extract_document_text(filename: str, content: bytes) -> str:
@@ -155,11 +170,19 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         )
         priority = DEFAULT_PRIORITY
 
+    category = raw.get("category")
+    if category not in CATEGORIES:
+        warnings.append(
+            f"Ticket #{index} ('{title}'): invalid category {category!r}, defaulted to '{DEFAULT_CATEGORY}'"
+        )
+        category = DEFAULT_CATEGORY
+
     return ProposedTicket(
         title=title.strip(),
         description=description,
         acceptance_criteria=acceptance_criteria,
         priority=priority,
+        category=category,
     )
 
 
@@ -195,28 +218,58 @@ def parse_proposed_tickets(raw_output: str) -> Tuple[List[ProposedTicket], List[
     return tickets, warnings
 
 
-def generate_tickets_from_text(
-    document_text: str, *, timeout_s: Optional[float] = None
-) -> Tuple[List[ProposedTicket], List[str]]:
-    """Run `claude -p <prompt>` with the document piped via stdin; parse the result."""
-    claude_path = _find_claude()
-    resolved_timeout = (
-        timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
-    )
-    command = [claude_path, "-p", TICKET_EXTRACTION_PROMPT, "--output-format", "text"]
+MAX_GENERATION_ATTEMPTS = 3
+
+
+def _run_claude(claude_path: str, prompt: str, document_text: str, timeout_s: float) -> str:
+    command = [claude_path, "-p", prompt, "--output-format", "text"]
     try:
         completed = subprocess.run(
-            command, input=document_text, capture_output=True, text=True, timeout=resolved_timeout
+            command, input=document_text, capture_output=True, text=True, timeout=timeout_s
         )
     except subprocess.TimeoutExpired as exc:
-        raise TicketGenerationError(
-            f"Claude CLI timed out after {resolved_timeout}s analyzing the document"
-        ) from exc
+        raise TicketGenerationError(f"Claude CLI timed out after {timeout_s}s analyzing the document") from exc
 
     if completed.returncode != 0:
         raise TicketGenerationError(f"Claude CLI failed ({completed.returncode}): {completed.stderr.strip()}")
 
-    return parse_proposed_tickets(completed.stdout)
+    return completed.stdout
+
+
+def generate_tickets_from_text(
+    document_text: str, *, timeout_s: Optional[float] = None, max_attempts: int = MAX_GENERATION_ATTEMPTS
+) -> Tuple[List[ProposedTicket], List[str]]:
+    """Run `claude -p <prompt>` with the document piped via stdin; parse the result.
+
+    This is the harness around the model call: if Claude's output fails
+    JSON/shape validation, the specific parse error is fed back into a
+    follow-up prompt asking it to self-correct, up to `max_attempts`
+    total tries, instead of failing the whole batch on the first bad
+    response. A malformed-but-fixable response is far more common than a
+    genuinely bad document, so this materially improves real output
+    quality without masking a document that's truly unusable.
+    """
+    claude_path = _find_claude()
+    resolved_timeout = (
+        timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
+    )
+
+    prompt = TICKET_EXTRACTION_PROMPT
+    last_error: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        if last_error is not None:
+            prompt = (
+                f"{TICKET_EXTRACTION_PROMPT}\n\nYour previous response was invalid: {last_error} "
+                "Fix this and output ONLY the corrected JSON array."
+            )
+        raw_output = _run_claude(claude_path, prompt, document_text, resolved_timeout)
+        try:
+            return parse_proposed_tickets(raw_output)
+        except TicketParseError as exc:
+            last_error = str(exc)
+            if attempt == max_attempts:
+                raise
+    raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
 
 
 def generate_tickets_from_file(
@@ -225,3 +278,26 @@ def generate_tickets_from_file(
     """End-to-end: extract text from an uploaded file, then generate tickets."""
     text = extract_document_text(filename, content)
     return generate_tickets_from_text(text, timeout_s=timeout_s)
+
+
+def apply_category_numbering(
+    tickets: List[ProposedTicket], start_numbers: Optional[Dict[str, int]] = None
+) -> List[ProposedTicket]:
+    """Rename tickets in order using a per-category prefix and counter:
+    TAM (mundane), TAB (backend), TAF (frontend), TAD (deployment).
+
+    Each category counts independently in the order tickets appear, so an
+    existing sequence (e.g. TAM already at 01) can be continued via
+    `start_numbers={"mundane": 2}` without disturbing the other three,
+    each of which still starts at 1 by default. Returns a new list — the
+    input tickets are not mutated.
+    """
+    counters: Dict[str, int] = dict(start_numbers or {})
+    numbered = []
+    for ticket in tickets:
+        category = ticket.category if ticket.category in CATEGORIES else DEFAULT_CATEGORY
+        prefix = CATEGORY_PREFIXES[category]
+        number = counters.get(category, 1)
+        counters[category] = number + 1
+        numbered.append(replace(ticket, title=f"{prefix}-{number:02d} | {ticket.title}"))
+    return numbered

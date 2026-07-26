@@ -4,9 +4,11 @@ import pytest
 
 from meta_harness.ticket_generator import (
     ClaudeNotFoundError,
+    ProposedTicket,
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
+    apply_category_numbering,
     extract_document_text,
     generate_tickets_from_text,
     parse_proposed_tickets,
@@ -86,6 +88,7 @@ def _valid_ticket(**overrides):
         "description": "Add a login form.",
         "acceptance_criteria": ["Has email field", "Has password field"],
         "priority": "high",
+        "category": "backend",
     }
     ticket.update(overrides)
     return ticket
@@ -99,7 +102,18 @@ def test_parse_proposed_tickets_happy_path():
     assert len(tickets) == 1
     assert tickets[0].title == "Build login page"
     assert tickets[0].priority == "high"
+    assert tickets[0].category == "backend"
     assert warnings == []
+
+
+def test_parse_proposed_tickets_invalid_category_defaults_to_mundane():
+    raw = json.dumps([{**_valid_ticket(), "category": "database-admin"}])
+
+    tickets, warnings = parse_proposed_tickets(raw)
+
+    assert len(tickets) == 1
+    assert tickets[0].category == "mundane"
+    assert any("category" in w for w in warnings)
 
 
 def test_parse_proposed_tickets_strips_code_fences():
@@ -220,3 +234,143 @@ def test_generate_tickets_from_text_raises_on_timeout(monkeypatch):
 
     with pytest.raises(TicketGenerationError, match="timed out"):
         generate_tickets_from_text("some text", timeout_s=5)
+
+
+# ---------------------------------------------------------------------------
+# generate_tickets_from_text — retry-with-repair harness
+# ---------------------------------------------------------------------------
+
+
+def test_generate_tickets_retries_and_recovers_from_bad_json(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        if len(calls) == 1:
+            return Result(stdout="not valid json")
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    tickets, warnings = generate_tickets_from_text("Build a login page.", timeout_s=5)
+
+    assert len(calls) == 2
+    assert tickets[0].title == "Build login page"
+    # the retry prompt must reference the specific failure so Claude can self-correct
+    second_prompt = calls[1][2]
+    assert "previous response was invalid" in second_prompt
+    assert "did not return valid JSON" in second_prompt
+
+
+def test_generate_tickets_gives_up_after_max_attempts(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        return Result(stdout="still not valid json")
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    with pytest.raises(TicketParseError, match="did not return valid JSON"):
+        generate_tickets_from_text("some text", timeout_s=5, max_attempts=3)
+
+    assert len(calls) == 3
+
+
+def test_generate_tickets_succeeds_first_try_does_not_retry(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_text("some text", timeout_s=5)
+
+    assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# apply_category_numbering
+# ---------------------------------------------------------------------------
+
+
+def _ticket(title, category="mundane"):
+    return ProposedTicket(title=title, description="d", acceptance_criteria=[], priority="normal", category=category)
+
+
+def test_apply_category_numbering_single_category_default_start():
+    tickets = [_ticket("Do thing one", "mundane"), _ticket("Do thing two", "mundane")]
+
+    numbered = apply_category_numbering(tickets)
+
+    assert numbered[0].title == "TAM-01 | Do thing one"
+    assert numbered[1].title == "TAM-02 | Do thing two"
+
+
+def test_apply_category_numbering_uses_correct_prefix_per_category():
+    tickets = [
+        _ticket("General planning", "mundane"),
+        _ticket("Build API endpoint", "backend"),
+        _ticket("Build login page", "frontend"),
+        _ticket("Set up CI pipeline", "deployment"),
+    ]
+
+    numbered = apply_category_numbering(tickets)
+
+    assert numbered[0].title == "TAM-01 | General planning"
+    assert numbered[1].title == "TAB-01 | Build API endpoint"
+    assert numbered[2].title == "TAF-01 | Build login page"
+    assert numbered[3].title == "TAD-01 | Set up CI pipeline"
+
+
+def test_apply_category_numbering_counts_independently_per_category():
+    tickets = [
+        _ticket("Backend one", "backend"),
+        _ticket("Frontend one", "frontend"),
+        _ticket("Backend two", "backend"),
+        _ticket("Backend three", "backend"),
+        _ticket("Frontend two", "frontend"),
+    ]
+
+    numbered = apply_category_numbering(tickets)
+
+    assert [t.title for t in numbered] == [
+        "TAB-01 | Backend one",
+        "TAF-01 | Frontend one",
+        "TAB-02 | Backend two",
+        "TAB-03 | Backend three",
+        "TAF-02 | Frontend two",
+    ]
+
+
+def test_apply_category_numbering_respects_per_category_start_numbers():
+    tickets = [_ticket("Existing series continues", "mundane"), _ticket("Fresh backend series", "backend")]
+
+    numbered = apply_category_numbering(tickets, start_numbers={"mundane": 2})
+
+    assert numbered[0].title == "TAM-02 | Existing series continues"
+    assert numbered[1].title == "TAB-01 | Fresh backend series"
+
+
+def test_apply_category_numbering_does_not_mutate_input():
+    tickets = [_ticket("Do thing", "mundane")]
+
+    apply_category_numbering(tickets, start_numbers={"mundane": 5})
+
+    assert tickets[0].title == "Do thing"
+
+
+def test_apply_category_numbering_preserves_other_fields():
+    tickets = [ProposedTicket(title="t1", description="desc", acceptance_criteria=["a"], priority="urgent", category="backend")]
+
+    numbered = apply_category_numbering(tickets)
+
+    assert numbered[0].description == "desc"
+    assert numbered[0].acceptance_criteria == ["a"]
+    assert numbered[0].priority == "urgent"
+    assert numbered[0].category == "backend"

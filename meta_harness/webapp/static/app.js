@@ -18,12 +18,37 @@ function escapeHtml(value) {
   return div.innerHTML;
 }
 
+const STATUS_CODE_LABELS = {
+  400: "Invalid request",
+  404: "Not found",
+  409: "Conflict",
+  422: "Invalid request data",
+  502: "Upstream service failed",
+  503: "Service unavailable",
+  500: "Internal server error",
+};
+
+function statusCodeLabel(status) {
+  return STATUS_CODE_LABELS[status] || `Request failed (HTTP ${status})`;
+}
+
+function formatErrorDetail(body) {
+  if (body && typeof body.detail === "string") return body.detail;
+  if (body && Array.isArray(body.detail)) {
+    // FastAPI/Pydantic validation errors: a list of {msg, loc, ...} objects.
+    return body.detail.map((entry) => entry.msg || JSON.stringify(entry)).join("; ");
+  }
+  if (body && Object.keys(body).length) return JSON.stringify(body);
+  return null;
+}
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const detail = body.detail || `Request failed (${response.status})`;
-    throw new Error(detail);
+    const label = statusCodeLabel(response.status);
+    const detail = formatErrorDetail(body);
+    throw new Error(detail ? `${label}: ${detail}` : label);
   }
   return body;
 }
@@ -236,6 +261,12 @@ function renderTicketWarnings(warnings) {
   }
 }
 
+function setThinking(visible, message) {
+  const el = document.getElementById("tickets-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
 async function onGenerateTickets(event) {
   event.preventDefault();
   const file = document.getElementById("tickets-file-input").files[0];
@@ -244,6 +275,14 @@ async function onGenerateTickets(event) {
   renderTicketWarnings([]);
   const formData = new FormData();
   formData.append("file", file);
+  formData.append("start_mundane", document.getElementById("start-mundane").value || "1");
+  formData.append("start_backend", document.getElementById("start-backend").value || "1");
+  formData.append("start_frontend", document.getElementById("start-frontend").value || "1");
+  formData.append("start_deployment", document.getElementById("start-deployment").value || "1");
+
+  const submitButton = event.target.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  setThinking(true, "Claude is analyzing your document — this can take a minute…");
   try {
     const body = await fetchJson("/api/tickets/generate", { method: "POST", body: formData });
     proposedTickets = body.tickets.map((ticket) => ({ ticket, status: "pending" }));
@@ -252,6 +291,9 @@ async function onGenerateTickets(event) {
     renderProposedTickets();
   } catch (err) {
     showTicketsError(err.message);
+  } finally {
+    submitButton.disabled = false;
+    setThinking(false);
   }
 }
 
@@ -289,6 +331,9 @@ async function onCreateAllTickets() {
   if (!pending.length) return;
   pending.forEach((e) => (e.status = "creating"));
   renderProposedTickets();
+  const createAllButton = document.getElementById("tickets-create-all");
+  createAllButton.disabled = true;
+  setThinking(true, `Creating ${pending.length} ticket(s) in ClickUp…`);
   const listId = document.getElementById("tickets-list-id").value || null;
   try {
     const body = await fetchJson("/api/tickets/create", {
@@ -301,6 +346,8 @@ async function onCreateAllTickets() {
     showTicketsError(err.message);
     pending.forEach((e) => (e.status = "pending"));
   }
+  createAllButton.disabled = false;
+  setThinking(false);
   renderProposedTickets();
 }
 
@@ -312,8 +359,11 @@ function renderProposedTickets() {
     card.className = "ticket-card";
     const acItems = entry.ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
     const priority = escapeHtml(entry.ticket.priority);
+    const category = escapeHtml(entry.ticket.category);
     card.innerHTML =
-      `<h3>${escapeHtml(entry.ticket.title)} <span class="priority-badge priority-${priority}">${priority}</span></h3>` +
+      `<h3>${escapeHtml(entry.ticket.title)} ` +
+      `<span class="priority-badge priority-${priority}">${priority}</span> ` +
+      `<span class="category-badge category-${category}">${category}</span></h3>` +
       `<p>${escapeHtml(entry.ticket.description)}</p>` +
       (acItems ? `<ul>${acItems}</ul>` : "") +
       `<div class="ticket-status"></div>`;
