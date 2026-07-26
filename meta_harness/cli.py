@@ -20,6 +20,13 @@ from meta_harness.frontier import FrontierStore
 from meta_harness.hermes_compat import inspect_hermes_compatibility
 from meta_harness.models import BenchmarkRunSpec
 from meta_harness.mutation import builtin_mutations, safe_slug
+from meta_harness.playbook import (
+    AgentPlaybook,
+    init_project,
+    list_agent_playbooks,
+    load_agent_playbook,
+    run_complete,
+)
 from meta_harness.search import StructuredSearchRequest, run_structured_search
 
 console = Console()
@@ -651,3 +658,66 @@ def show_run_cmd(run_dir: str) -> None:
         indent=2,
         sort_keys=True,
     ))
+
+
+@main.group("playbook")
+def playbook_group() -> None:
+    """Initialize and run per-project agent playbooks."""
+
+
+def _emit_step_results(title: str, results) -> bool:
+    table = Table(title=title)
+    table.add_column("Command")
+    table.add_column("Status")
+    ok = True
+    for result in results:
+        status = "ok" if result.ok else f"failed ({result.returncode})"
+        if not result.ok:
+            ok = False
+        table.add_row(" ".join(result.command), status)
+    console.print(table)
+    for result in results:
+        if not result.ok:
+            console.print(f"[red]{result.stderr.strip()}[/red]")
+    return ok
+
+
+@playbook_group.command("list")
+def playbook_list_cmd() -> None:
+    """List available agent playbooks."""
+    playbooks: list[AgentPlaybook] = list_agent_playbooks()
+    if not playbooks:
+        console.print("No agent playbooks found in agents/.")
+        return
+    table = Table(title="Agent Playbooks")
+    table.add_column("Agent", style="bold")
+    table.add_column("Description")
+    table.add_column("Project Env Var")
+    for playbook in playbooks:
+        table.add_row(playbook.name, playbook.description, playbook.project_env_var)
+    console.print(table)
+
+
+@playbook_group.command("init")
+@click.argument("agent")
+def playbook_init_cmd(agent: str) -> None:
+    """Run an agent playbook's setup steps only."""
+    playbook = load_agent_playbook(agent)
+    results = init_project(playbook)
+    ok = _emit_step_results(f"Init: {playbook.name}", results)
+    if not ok:
+        raise click.ClickException(f"Setup failed for agent '{agent}'.")
+
+
+@playbook_group.command("run")
+@click.argument("agent")
+def playbook_run_cmd(agent: str) -> None:
+    """Run an agent playbook's complete flow: setup, then the flow steps."""
+    playbook = load_agent_playbook(agent)
+    setup_results, flow_results = run_complete(playbook)
+    setup_ok = _emit_step_results(f"Setup: {playbook.name}", setup_results)
+    if not setup_ok:
+        raise click.ClickException(f"Setup failed for agent '{agent}'.")
+    flow_ok = _emit_step_results(f"Flow: {playbook.name}", flow_results)
+    if not flow_ok:
+        raise click.ClickException(f"Flow failed for agent '{agent}'.")

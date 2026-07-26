@@ -201,6 +201,7 @@ meta_harness/
 ├── hermes_compat.py
 ├── models.py
 ├── mutation.py
+├── playbook.py
 ├── search.py
 └── __main__.py
 ```
@@ -209,6 +210,22 @@ Candidate files can live in `candidates/`, with an example in `candidates/templa
 
 Two local benchmark configs are also included in `configs/` for smoke-testing
 against an Ollama OpenAI-compatible endpoint on `http://localhost:11434/v1`.
+
+## Agent Playbooks
+
+Beyond Hermes candidate evaluation, this repo also hosts generic per-project
+playbooks — one JSON config per agent under `agents/`, each scoped to its own
+project instead of sharing a global config. A playbook can initialize its
+target project (venv, install, env file) and run that project's complete
+end-to-end flow:
+
+```bash
+meta-harness playbook list
+meta-harness playbook init clickup   # setup only
+meta-harness playbook run clickup    # setup, then the complete flow
+```
+
+See [`agents/README.md`](agents/README.md) for the config format.
 
 ## Best Practices Notes
 
