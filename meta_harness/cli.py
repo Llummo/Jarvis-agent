@@ -30,6 +30,16 @@ from meta_harness.playbook import (
     resolve_project_path,
     run_and_record_flow,
 )
+from meta_harness.qa_findings import (
+    SEVERITIES,
+    STATUSES,
+    QAFinding,
+    QAFindingNotFoundError,
+    QAFindingStore,
+    close_qa_issue,
+    list_qa_issues,
+    report_qa_issue,
+)
 from meta_harness.run_archive import RunArchive
 from meta_harness.search import StructuredSearchRequest, run_structured_search
 
@@ -777,3 +787,106 @@ def playbook_replay_cmd(agent: str, run_id: str) -> None:
     )
     if not flow_ok:
         raise click.ClickException(f"Replay failed for agent '{agent}'.")
+
+
+@main.group("qa")
+def qa_group() -> None:
+    """Track and triage QA review findings."""
+
+
+def _qa_store(db_path: Optional[str]) -> QAFindingStore:
+    return QAFindingStore(Path(db_path).expanduser().resolve() if db_path else None)
+
+
+def _emit_findings_table(title: str, findings: "list[QAFinding]") -> None:
+    table = Table(title=title)
+    table.add_column("ID", justify="right")
+    table.add_column("Project", style="bold")
+    table.add_column("Route")
+    table.add_column("Severity")
+    table.add_column("Status")
+    table.add_column("ClickUp Task")
+    table.add_column("Created At")
+    severity_style = {"critical": "bold red", "major": "yellow", "minor": "default"}
+    for finding in findings:
+        table.add_row(
+            str(finding.id),
+            finding.project,
+            finding.route,
+            f"[{severity_style.get(finding.severity, 'default')}]{finding.severity}[/]",
+            finding.status,
+            finding.clickup_task_id or "-",
+            finding.created_at,
+        )
+    console.print(table)
+
+
+@qa_group.command("report-issue")
+@click.option("--project", required=True)
+@click.option("--route", required=True, help="Route or endpoint the finding applies to.")
+@click.option("--observation", required=True, help="What was observed.")
+@click.option("--severity", required=True, type=click.Choice(SEVERITIES))
+@click.option("--screenshot", default=None, help="Optional path to a screenshot for this finding.")
+@click.option("--clickup-list-id", default=None, help="Override the ClickUp list id used for critical tickets.")
+@click.option("--no-ticket", is_flag=True, help="Skip ClickUp ticket auto-creation even for critical severity.")
+@click.option("--db-path", default=None, help="Override the QA findings database path.")
+def qa_report_issue_cmd(
+    project: str,
+    route: str,
+    observation: str,
+    severity: str,
+    screenshot: Optional[str],
+    clickup_list_id: Optional[str],
+    no_ticket: bool,
+    db_path: Optional[str],
+) -> None:
+    """Report a QA finding. Critical severity auto-creates a ClickUp ticket."""
+    store = _qa_store(db_path)
+    try:
+        finding = report_qa_issue(
+            project,
+            route,
+            observation,
+            severity,
+            screenshot_path=screenshot,
+            clickup_list_id=clickup_list_id,
+            auto_escalate=not no_ticket,
+            store=store,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    _emit_findings_table("QA Finding Reported", [finding])
+    if finding.severity == "critical" and not finding.clickup_task_id and not no_ticket:
+        console.print("[yellow]Finding was acknowledged, but ClickUp ticket creation failed — see logs.[/yellow]")
+
+
+@qa_group.command("list-issues")
+@click.option("--project", default=None)
+@click.option("--severity", default=None, type=click.Choice(SEVERITIES))
+@click.option("--status", default=None, type=click.Choice(STATUSES))
+@click.option("--db-path", default=None)
+def qa_list_issues_cmd(
+    project: Optional[str], severity: Optional[str], status: Optional[str], db_path: Optional[str]
+) -> None:
+    """List QA findings, optionally filtered by project/severity/status."""
+    findings = list_qa_issues(project=project, severity=severity, status=status, store=_qa_store(db_path))
+    if not findings:
+        console.print("No QA findings match the given filters.")
+        return
+    _emit_findings_table("QA Findings", findings)
+
+
+@qa_group.command("close-issue")
+@click.argument("finding_id", type=int)
+@click.option("--note", required=True, help="Correction note describing the fix.")
+@click.option("--db-path", default=None)
+def qa_close_issue_cmd(finding_id: int, note: str, db_path: Optional[str]) -> None:
+    """Close a QA finding with a correction note."""
+    try:
+        finding = close_qa_issue(finding_id, note, store=_qa_store(db_path))
+    except QAFindingNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _emit_findings_table("QA Finding Closed", [finding])

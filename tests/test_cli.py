@@ -245,3 +245,93 @@ def test_search_candidates_cli_reports_runtime_errors(monkeypatch, tmp_path):
     assert result.exit_code != 0
     assert "Error: baseline failed" in result.output
     assert "Traceback" not in result.output
+
+
+def test_qa_report_issue_cli_minor(tmp_path):
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "qa", "report-issue",
+            "--project", "sigo-front",
+            "--route", "/checkout",
+            "--observation", "misaligned button",
+            "--severity", "minor",
+            "--db-path", str(tmp_path / "findings.db"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "open" in result.output
+
+
+def test_qa_report_issue_cli_critical_creates_ticket(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "meta_harness.qa_findings.clickup_bridge.create_clickup_ticket", lambda **kw: "CU-1"
+    )
+    runner = CliRunner(env={"COLUMNS": "200"})
+    result = runner.invoke(
+        main,
+        [
+            "qa", "report-issue",
+            "--project", "sigo-front",
+            "--route", "/pay",
+            "--observation", "500 on submit",
+            "--severity", "critical",
+            "--db-path", str(tmp_path / "findings.db"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "acknowledged" in result.output
+    assert "CU-1" in result.output
+
+
+def test_qa_report_issue_cli_rejects_invalid_severity(tmp_path):
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "qa", "report-issue",
+            "--project", "p",
+            "--route", "/r",
+            "--observation", "o",
+            "--severity", "blocker",
+            "--db-path", str(tmp_path / "findings.db"),
+        ],
+    )
+
+    assert result.exit_code != 0
+
+
+def test_qa_list_issues_cli_filters_by_severity(tmp_path):
+    runner = CliRunner(env={"COLUMNS": "200"})
+    db_path = str(tmp_path / "findings.db")
+    runner.invoke(main, [
+        "qa", "report-issue", "--project", "p", "--route", "/a",
+        "--observation", "obs a", "--severity", "minor", "--db-path", db_path,
+    ])
+    runner.invoke(main, [
+        "qa", "report-issue", "--project", "p", "--route", "/b",
+        "--observation", "obs b", "--severity", "major", "--db-path", db_path,
+    ])
+
+    result = runner.invoke(main, ["qa", "list-issues", "--severity", "major", "--db-path", db_path])
+
+    assert result.exit_code == 0
+    assert "/b" in result.output
+    assert "/a" not in result.output
+
+
+def test_qa_close_issue_cli(tmp_path):
+    runner = CliRunner(env={"COLUMNS": "200"})
+    db_path = str(tmp_path / "findings.db")
+    runner.invoke(main, [
+        "qa", "report-issue", "--project", "p", "--route", "/a",
+        "--observation", "obs a", "--severity", "minor", "--db-path", db_path,
+    ])
+
+    result = runner.invoke(main, ["qa", "close-issue", "1", "--note", "fixed it", "--db-path", db_path])
+
+    assert result.exit_code == 0
+    assert "closed" in result.output

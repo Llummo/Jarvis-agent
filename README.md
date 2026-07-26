@@ -233,6 +233,25 @@ be replayed later against the same subject to check it still reproduces.
 
 See [`agents/README.md`](agents/README.md) for the config format.
 
+## QA Findings
+
+A SQLite-backed QA Review layer for tracking findings (project, route,
+observation, severity, status, correction note) — the persistence/triage
+half of a deprecated internal tool ("Seyren"), reproduced here. Critical
+findings auto-escalate into a linked ClickUp correction ticket via the
+existing `clickup` playbook; a failed ClickUp call never blocks a finding
+from being saved.
+
+```bash
+meta-harness qa report-issue --project sigo-front --route /checkout \
+    --observation "500 on submit" --severity critical
+meta-harness qa list-issues --severity critical --status open
+meta-harness qa close-issue <id> --note "fixed the null check"
+```
+
+`--severity` is one of `minor`/`major`/`critical`. The database defaults to
+`qa/findings.db` (gitignored); override with `--db-path`.
+
 ## Best Practices Notes
 
 See [`docs/META_HARNESS_BEST_PRACTICES.md`](docs/META_HARNESS_BEST_PRACTICES.md)
