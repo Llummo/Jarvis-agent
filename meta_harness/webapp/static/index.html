@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Meta-Harness QA Review</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Meta-Harness QA Review</h1>
+    <nav class="tabs">
+      <button class="tab-button active" data-tab="clickup">ClickUp</button>
+      <button class="tab-button" data-tab="linear" disabled title="Coming soon">Linear</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="tab-clickup" class="tab-panel">
+      <section class="panel" id="qa-panel">
+        <h2>QA Findings</h2>
+
+        <div id="qa-counts" class="counts"></div>
+
+        <form id="qa-filters" class="inline-form">
+          <input type="text" name="project" placeholder="project">
+          <select name="severity">
+            <option value="">any severity</option>
+            <option value="minor">minor</option>
+            <option value="major">major</option>
+            <option value="critical">critical</option>
+          </select>
+          <select name="status">
+            <option value="">any status</option>
+            <option value="open">open</option>
+            <option value="acknowledged">acknowledged</option>
+            <option value="closed">closed</option>
+          </select>
+          <button type="submit">Filter</button>
+        </form>
+
+        <table id="qa-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Project</th><th>Route</th><th>Severity</th>
+              <th>Status</th><th>ClickUp Task</th><th>Observation</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <h3>Report a Finding</h3>
+        <form id="qa-report-form" class="stacked-form">
+          <input type="text" name="project" placeholder="project" required>
+          <input type="text" name="route" placeholder="route or endpoint" required>
+          <input type="text" name="observation" placeholder="observation" required>
+          <select name="severity" required>
+            <option value="minor">minor</option>
+            <option value="major">major</option>
+            <option value="critical">critical</option>
+          </select>
+          <button type="submit">Report Finding</button>
+          <span id="qa-report-error" class="error-text"></span>
+        </form>
+      </section>
+
+      <section class="panel" id="clickup-panel">
+        <h2>ClickUp Ticket Browser</h2>
+        <div id="clickup-error" class="error-banner" hidden></div>
+        <div class="clickup-columns">
+          <div>
+            <h3>Teams</h3>
+            <ul id="clickup-teams" class="click-list"></ul>
+          </div>
+          <div>
+            <h3>Spaces</h3>
+            <ul id="clickup-spaces" class="click-list"></ul>
+          </div>
+          <div>
+            <h3>Lists</h3>
+            <ul id="clickup-lists" class="click-list"></ul>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section id="tab-linear" class="tab-panel" hidden>
+      <p>Linear support is coming soon.</p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

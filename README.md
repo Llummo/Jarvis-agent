@@ -195,15 +195,19 @@ meta_harness/
 ├── benchmark_runner.py
 ├── candidate_registry.py
 ├── cli.py
+├── clickup_bridge.py
 ├── comparison.py
 ├── config.py
 ├── frontier.py
 ├── hermes_compat.py
+├── mcp_server/          # real MCP server: QA findings + CDP/adb/macOS screenshot tools
 ├── models.py
 ├── mutation.py
 ├── playbook.py
+├── qa_findings.py
 ├── run_archive.py
 ├── search.py
+├── webapp/               # localhost UI: FastAPI + static vanilla-JS frontend
 └── __main__.py
 ```
 
@@ -251,6 +255,38 @@ meta-harness qa close-issue <id> --note "fixed the null check"
 
 `--severity` is one of `minor`/`major`/`critical`. The database defaults to
 `qa/findings.db` (gitignored); override with `--db-path`.
+
+## Localhost UI
+
+```bash
+meta-harness ui --host 127.0.0.1 --port 8877
+```
+
+Opens a browser dashboard on `http://127.0.0.1:8877` (FastAPI + a static,
+vanilla-JS frontend — no build step). The "ClickUp" tab shows the QA
+findings dashboard (filter/report/close, same data as the CLI) alongside a
+live ClickUp ticket browser (teams → spaces → lists, hitting your real
+ClickUp account). A "Linear" tab is present but disabled — coming once
+Linear access is available.
+
+## MCP Server
+
+```bash
+meta-harness mcp-server
+```
+
+Runs an MCP server over stdio exposing Seyren's original toolkit as real
+MCP tools: `report_qa_issue`, `list_qa_issues`, `close_qa_issue`,
+`screenshot_url` (captures a URL screenshot by driving a headless Chromium
+binary directly over the Chrome DevTools Protocol — no Playwright
+dependency), `screenshot_device` (Android via `adb`), `screenshot_desktop`
+(macOS via `screencapture`), `list_images`, and `read_image`. Every tool is
+a thin wrapper around the same functions the CLI and web UI use.
+
+`screenshot_device`/`screenshot_desktop` are implemented and unit-tested
+via mocks, but require hardware/an OS this repo isn't developed on to run
+for real (no `adb`, not macOS) — they fail with a clear, typed error when
+unavailable rather than silently no-op'ing.
 
 ## Best Practices Notes
 

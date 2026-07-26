@@ -890,3 +890,21 @@ def qa_close_issue_cmd(finding_id: int, note: str, db_path: Optional[str]) -> No
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _emit_findings_table("QA Finding Closed", [finding])
+
+
+@main.command("ui")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8877, show_default=True, type=int)
+def ui_cmd(host: str, port: int) -> None:
+    """Launch the local Meta-Harness web UI (FastAPI + static frontend)."""
+    import uvicorn
+
+    uvicorn.run("meta_harness.webapp.app:app", host=host, port=port)
+
+
+@main.command("mcp-server")
+def mcp_server_cmd() -> None:
+    """Launch the Meta-Harness MCP server over stdio."""
+    from meta_harness.mcp_server.server import main as run_mcp_server
+
+    run_mcp_server()

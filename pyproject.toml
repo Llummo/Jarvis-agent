@@ -28,6 +28,10 @@ dependencies = [
     "click>=8.0",
     "filelock>=3.16",
     "rich>=13.0",
+    "mcp>=1.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+    "websockets>=12.0",
 ]
 
 [project.urls]
@@ -45,6 +49,9 @@ meta-harness = "meta_harness.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["meta_harness*"]
+
+[tool.setuptools.package-data]
+"meta_harness.webapp" = ["static/*.html", "static/*.js", "static/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
