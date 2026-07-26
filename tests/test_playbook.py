@@ -5,13 +5,17 @@ import pytest
 
 from meta_harness.playbook import (
     AgentPlaybook,
+    flow_requires_subject,
     init_project,
     list_agent_playbooks,
     load_agent_playbook,
+    replay_run,
     resolve_project_path,
+    run_and_record_flow,
     run_complete,
     run_flow,
 )
+from meta_harness.run_archive import RunArchive
 
 
 def _write_playbook(agents_dir: Path, payload: dict) -> Path:
@@ -211,3 +215,98 @@ def test_run_complete_skips_flow_when_setup_fails(tmp_path, monkeypatch):
 
     assert setup_results and not setup_results[-1].ok
     assert flow_results == []
+
+
+def _subject_playbook(**overrides) -> AgentPlaybook:
+    return _playbook(flow=[[".venv/bin/harness", "clickup", "get-task", "--task-id", "{subject_id}"]], **overrides)
+
+
+def test_flow_requires_subject_true_when_placeholder_present():
+    assert flow_requires_subject(_subject_playbook()) is True
+
+
+def test_flow_requires_subject_false_for_static_flow():
+    assert flow_requires_subject(_playbook(flow=[["harness", "clickup", "teams"]])) is False
+
+
+def test_run_flow_raises_without_subject_when_required(tmp_path):
+    with pytest.raises(ValueError, match="pass subject_id"):
+        run_flow(_subject_playbook(), project_path=tmp_path)
+
+
+def test_run_flow_substitutes_subject_id(tmp_path, monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result()
+
+    monkeypatch.setattr("meta_harness.playbook.subprocess.run", fake_run)
+
+    run_flow(_subject_playbook(), project_path=tmp_path, subject_id="ticket-123")
+
+    assert calls == [[".venv/bin/harness", "clickup", "get-task", "--task-id", "ticket-123"]]
+
+
+def test_run_and_record_flow_persists_to_archive(tmp_path, monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = '{"id": "ticket-123"}'
+        stderr = ""
+
+    monkeypatch.setattr("meta_harness.playbook.subprocess.run", lambda *a, **k: Result())
+    archive = RunArchive("clickup", directory=tmp_path)
+
+    results, record = run_and_record_flow(
+        _subject_playbook(), subject_id="ticket-123", project_path=tmp_path, archive=archive
+    )
+
+    assert results[0].ok
+    assert record.subject_id == "ticket-123"
+    assert record.ok is True
+    stored = archive.load()
+    assert len(stored) == 1
+    assert stored[0].run_id == record.run_id
+
+
+def test_replay_run_reruns_same_subject(tmp_path, monkeypatch):
+    seen_subjects = []
+
+    class Result:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def fake_run(command, cwd, capture_output, text):
+        seen_subjects.append(command[-1])
+        return Result()
+
+    monkeypatch.setattr("meta_harness.playbook.subprocess.run", fake_run)
+    monkeypatch.setattr("meta_harness.playbook.resolve_project_path", lambda playbook: tmp_path)
+    archive = RunArchive("clickup", directory=tmp_path)
+
+    playbook = _subject_playbook()
+    _, original_record = run_and_record_flow(
+        playbook, subject_id="ticket-123", project_path=tmp_path, archive=archive
+    )
+
+    original, results, replayed = replay_run(playbook, original_record.run_id, archive=archive)
+
+    assert original.run_id == original_record.run_id
+    assert results[0].ok
+    assert replayed.subject_id == "ticket-123"
+    assert replayed.run_id != original.run_id
+    assert seen_subjects == ["ticket-123", "ticket-123"]
+    assert len(archive.load()) == 2
+
+
+def test_replay_run_missing_run_id_raises(tmp_path):
+    archive = RunArchive("clickup", directory=tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="No recorded run 'missing'"):
+        replay_run(_subject_playbook(), "missing", archive=archive)

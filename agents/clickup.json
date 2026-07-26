@@ -10,6 +10,6 @@
   "env_example": ".env.example",
   "env_file": ".env",
   "flow": [
-    [".venv/bin/harness", "clickup", "teams"]
+    [".venv/bin/harness", "clickup", "get-task", "--task-id", "{subject_id}"]
   ]
 }

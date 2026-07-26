@@ -22,11 +22,15 @@ from meta_harness.models import BenchmarkRunSpec
 from meta_harness.mutation import builtin_mutations, safe_slug
 from meta_harness.playbook import (
     AgentPlaybook,
+    flow_requires_subject,
     init_project,
     list_agent_playbooks,
     load_agent_playbook,
-    run_complete,
+    replay_run,
+    resolve_project_path,
+    run_and_record_flow,
 )
+from meta_harness.run_archive import RunArchive
 from meta_harness.search import StructuredSearchRequest, run_structured_search
 
 console = Console()
@@ -711,13 +715,65 @@ def playbook_init_cmd(agent: str) -> None:
 
 @playbook_group.command("run")
 @click.argument("agent")
-def playbook_run_cmd(agent: str) -> None:
+@click.option(
+    "--subject",
+    default=None,
+    help="Subject id (e.g. a ticket id) substituted into {subject_id} flow steps. "
+    "The run is recorded and can later be replayed with `playbook replay`.",
+)
+def playbook_run_cmd(agent: str, subject: Optional[str]) -> None:
     """Run an agent playbook's complete flow: setup, then the flow steps."""
     playbook = load_agent_playbook(agent)
-    setup_results, flow_results = run_complete(playbook)
+    if flow_requires_subject(playbook) and not subject:
+        raise click.UsageError(
+            f"Agent '{agent}' processes one subject at a time — pass --subject (e.g. a ticket id)."
+        )
+    project_path = resolve_project_path(playbook)
+    setup_results = init_project(playbook, project_path=project_path)
     setup_ok = _emit_step_results(f"Setup: {playbook.name}", setup_results)
     if not setup_ok:
         raise click.ClickException(f"Setup failed for agent '{agent}'.")
+
+    flow_results, record = run_and_record_flow(playbook, subject_id=subject, project_path=project_path)
     flow_ok = _emit_step_results(f"Flow: {playbook.name}", flow_results)
+    console.print(f"\n[bold]Run recorded:[/bold] {record.run_id}"
+                  + (f" (subject: {subject})" if subject else ""))
     if not flow_ok:
         raise click.ClickException(f"Flow failed for agent '{agent}'.")
+
+
+@playbook_group.command("runs")
+@click.argument("agent")
+def playbook_runs_cmd(agent: str) -> None:
+    """List recorded flow runs for an agent, most recent last."""
+    playbook = load_agent_playbook(agent)
+    records = RunArchive(playbook.name).load()
+    if not records:
+        console.print(f"No recorded runs for agent '{agent}'. Use `playbook run {agent} --subject ...`.")
+        return
+    table = Table(title=f"Runs: {playbook.name}")
+    table.add_column("Run ID", style="bold")
+    table.add_column("Subject")
+    table.add_column("Started At")
+    table.add_column("Status")
+    for record in records:
+        table.add_row(record.run_id, record.subject_id or "-", record.started_at, "ok" if record.ok else "failed")
+    console.print(table)
+
+
+@playbook_group.command("replay")
+@click.argument("agent")
+@click.argument("run_id")
+def playbook_replay_cmd(agent: str, run_id: str) -> None:
+    """Repeat a previously recorded flow run against the same subject."""
+    playbook = load_agent_playbook(agent)
+    original, flow_results, replayed = replay_run(playbook, run_id)
+    console.print(f"Replaying run [bold]{run_id}[/bold] (subject: {original.subject_id or '-'})")
+    flow_ok = _emit_step_results(f"Replay: {playbook.name}", flow_results)
+    reproduced = replayed.ok == original.ok
+    console.print(
+        f"\n[bold]New run recorded:[/bold] {replayed.run_id} — "
+        + ("[green]reproduced original result[/green]" if reproduced else "[yellow]result differs from original[/yellow]")
+    )
+    if not flow_ok:
+        raise click.ClickException(f"Replay failed for agent '{agent}'.")

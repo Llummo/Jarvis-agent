@@ -20,17 +20,36 @@ A playbook describes:
   "setup": [["python3", "-m", "venv", ".venv"]],
   "env_example": ".env.example",
   "env_file": ".env",
-  "flow": [[".venv/bin/harness", "clickup", "teams"]]
+  "flow": [[".venv/bin/harness", "clickup", "get-task", "--task-id", "{subject_id}"]]
 }
 ```
+
+A flow step can reference `{subject_id}` — a placeholder for whatever single
+item the agent is processing (a ticket id, an issue id, ...). If any flow
+step uses it, `playbook run` requires `--subject`.
 
 Use it from the CLI:
 
 ```bash
 python -m meta_harness playbook list
 python -m meta_harness playbook init clickup
-python -m meta_harness playbook run clickup
+python -m meta_harness playbook run clickup --subject <ticket-id>
 ```
 
 `playbook init` only runs `setup`. `playbook run` runs `setup` then `flow` —
-the complete flow.
+the complete flow — and records the result.
+
+## Replay
+
+Every `playbook run --subject ...` is archived (per agent, under `runs/`,
+gitignored — it can contain real ticket content). List and repeat past runs:
+
+```bash
+python -m meta_harness playbook runs clickup      # list recorded runs
+python -m meta_harness playbook replay clickup <run-id>
+```
+
+`replay` looks up the recorded run's subject, re-runs the flow against that
+same subject, and records the replay as a new run — so you can check
+whether a QA flow still reproduces the same result after changing a
+prompt, a heuristic, or the underlying code.

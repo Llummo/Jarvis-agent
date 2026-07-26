@@ -11,9 +11,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Sequence
+
+from meta_harness.run_archive import RunArchive, RunRecord, RunStepRecord
+
+SUBJECT_PLACEHOLDER = "{subject_id}"
 
 
 def agents_dir() -> Path:
@@ -147,13 +153,40 @@ def init_project(playbook: AgentPlaybook, *, project_path: Optional[Path] = None
     return results
 
 
-def run_flow(playbook: AgentPlaybook, *, project_path: Optional[Path] = None) -> List[StepResult]:
-    """Run an agent playbook's flow steps against its resolved project."""
+def flow_requires_subject(playbook: AgentPlaybook) -> bool:
+    """Whether any flow step references {subject_id} and so needs one."""
+    return any(SUBJECT_PLACEHOLDER in token for command in playbook.flow for token in command)
+
+
+def _substitute_subject(command: Sequence[str], subject_id: Optional[str]) -> List[str]:
+    if subject_id is None:
+        return list(command)
+    return [token.replace(SUBJECT_PLACEHOLDER, subject_id) for token in command]
+
+
+def run_flow(
+    playbook: AgentPlaybook,
+    *,
+    project_path: Optional[Path] = None,
+    subject_id: Optional[str] = None,
+) -> List[StepResult]:
+    """Run an agent playbook's flow steps against its resolved project.
+
+    If `subject_id` is given, any `{subject_id}` token in a flow command is
+    substituted with it (e.g. a specific ticket id to fetch and process).
+    """
+    if flow_requires_subject(playbook) and subject_id is None:
+        raise ValueError(
+            f"Agent '{playbook.name}' flow steps reference {SUBJECT_PLACEHOLDER}; pass subject_id."
+        )
     project_path = project_path if project_path is not None else resolve_project_path(playbook)
-    return _run_steps(playbook.flow, project_path)
+    commands = [_substitute_subject(command, subject_id) for command in playbook.flow]
+    return _run_steps(commands, project_path)
 
 
-def run_complete(playbook: AgentPlaybook) -> "tuple[List[StepResult], List[StepResult]]":
+def run_complete(
+    playbook: AgentPlaybook, *, subject_id: Optional[str] = None
+) -> "tuple[List[StepResult], List[StepResult]]":
     """Initialize an agent's project, then run its complete flow.
 
     Flow steps only run if setup succeeded (or had nothing to do).
@@ -162,5 +195,55 @@ def run_complete(playbook: AgentPlaybook) -> "tuple[List[StepResult], List[StepR
     setup_results = init_project(playbook, project_path=project_path)
     if setup_results and not setup_results[-1].ok:
         return setup_results, []
-    flow_results = run_flow(playbook, project_path=project_path)
+    flow_results = run_flow(playbook, project_path=project_path, subject_id=subject_id)
     return setup_results, flow_results
+
+
+def run_and_record_flow(
+    playbook: AgentPlaybook,
+    *,
+    subject_id: Optional[str] = None,
+    project_path: Optional[Path] = None,
+    archive: Optional[RunArchive] = None,
+) -> "tuple[List[StepResult], RunRecord]":
+    """Run an agent's flow against a subject and archive the result.
+
+    This is what makes a run replayable later: the subject id and every
+    step's outcome are recorded so `replay_run` can repeat this exact flow.
+    """
+    results = run_flow(playbook, project_path=project_path, subject_id=subject_id)
+    record = RunRecord(
+        run_id=uuid.uuid4().hex[:12],
+        agent=playbook.name,
+        subject_id=subject_id,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        ok=all(result.ok for result in results) if results else True,
+        steps=[
+            RunStepRecord(
+                command=result.command,
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+            for result in results
+        ],
+    )
+    store = archive if archive is not None else RunArchive(playbook.name)
+    store.append(record)
+    return results, record
+
+
+def replay_run(
+    playbook: AgentPlaybook, run_id: str, *, archive: Optional[RunArchive] = None
+) -> "tuple[RunRecord, List[StepResult], RunRecord]":
+    """Re-run a previously recorded flow using the same subject.
+
+    Repeats the QA flow for whatever ticket the original run used, and
+    records the replay as a new archive entry. Returns the original
+    record plus the fresh results and the new record, so callers can
+    compare "did it reproduce?".
+    """
+    store = archive if archive is not None else RunArchive(playbook.name)
+    original = store.get(run_id)
+    results, replayed = run_and_record_flow(playbook, subject_id=original.subject_id, archive=store)
+    return original, results, replayed

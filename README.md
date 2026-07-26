@@ -202,6 +202,7 @@ meta_harness/
 ├── models.py
 ├── mutation.py
 ├── playbook.py
+├── run_archive.py
 ├── search.py
 └── __main__.py
 ```
@@ -221,9 +222,14 @@ end-to-end flow:
 
 ```bash
 meta-harness playbook list
-meta-harness playbook init clickup   # setup only
-meta-harness playbook run clickup    # setup, then the complete flow
+meta-harness playbook init clickup                      # setup only
+meta-harness playbook run clickup --subject <ticket-id>  # setup, then the complete flow
+meta-harness playbook runs clickup                       # list recorded runs
+meta-harness playbook replay clickup <run-id>             # repeat a recorded run
 ```
+
+Every `run` against a subject (e.g. a ticket) is archived, so a QA flow can
+be replayed later against the same subject to check it still reproduces.
 
 See [`agents/README.md`](agents/README.md) for the config format.
 
