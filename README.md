@@ -296,18 +296,29 @@ reviewed, organized batch of proposed tickets, created in ClickUp
 individually or all at once — the "Generate Tickets" tab in `meta-harness
 ui`. An LLM (the local, already-authenticated Claude Code CLI — no
 separate API key) analyzes the document and proposes tickets in a fixed
-shape (title, description, acceptance criteria, priority); nothing is
-created until you review and confirm.
+shape (title, description, acceptance criteria, priority, category);
+nothing is created until you review and confirm.
+
+Each ticket is auto-classified into one of four categories, each with its
+own naming sequence:
+
+| Category | Prefix |
+|---|---|
+| mundane (general/cross-cutting/planning) | `TAM` |
+| backend | `TAB` |
+| frontend | `TAF` |
+| deployment | `TAD` |
 
 ```bash
-meta-harness tickets generate --file requirements.pdf --prefix TAM --start-number 2 --json-output proposed.json
+meta-harness tickets generate --file requirements.pdf --start-mundane 2 --json-output proposed.json
 meta-harness tickets create-all --from-json proposed.json --list-id <id>
 ```
 
-`--prefix`/`--start-number` (or the matching fields in the web UI) name each
-ticket in order as `"{prefix}-{NN} | {title}"` — e.g. `TAM-02 | Build login
-page`, continuing a project's existing numbering. Omit `--prefix` to keep
-the raw generated titles.
+Titles come out as `"{PREFIX}-{NN} | {title}"` — e.g. `TAM-02 | Build login
+page` — numbered independently per category in the order tickets are
+proposed, so `--start-mundane`/`--start-backend`/`--start-frontend`/
+`--start-deployment` (or the matching web UI fields) let you continue an
+existing sequence in just one category without disturbing the others.
 
 The generation call is harnessed for reliability, not a single blind
 attempt: if Claude's output fails JSON/shape validation, the specific

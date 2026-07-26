@@ -275,11 +275,10 @@ async function onGenerateTickets(event) {
   renderTicketWarnings([]);
   const formData = new FormData();
   formData.append("file", file);
-  const prefix = document.getElementById("tickets-prefix").value.trim();
-  if (prefix) {
-    formData.append("ticket_prefix", prefix);
-    formData.append("ticket_start_number", document.getElementById("tickets-start-number").value || "1");
-  }
+  formData.append("start_mundane", document.getElementById("start-mundane").value || "1");
+  formData.append("start_backend", document.getElementById("start-backend").value || "1");
+  formData.append("start_frontend", document.getElementById("start-frontend").value || "1");
+  formData.append("start_deployment", document.getElementById("start-deployment").value || "1");
 
   const submitButton = event.target.querySelector('button[type="submit"]');
   submitButton.disabled = true;
@@ -360,8 +359,11 @@ function renderProposedTickets() {
     card.className = "ticket-card";
     const acItems = entry.ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
     const priority = escapeHtml(entry.ticket.priority);
+    const category = escapeHtml(entry.ticket.category);
     card.innerHTML =
-      `<h3>${escapeHtml(entry.ticket.title)} <span class="priority-badge priority-${priority}">${priority}</span></h3>` +
+      `<h3>${escapeHtml(entry.ticket.title)} ` +
+      `<span class="priority-badge priority-${priority}">${priority}</span> ` +
+      `<span class="category-badge category-${category}">${category}</span></h3>` +
       `<p>${escapeHtml(entry.ticket.description)}</p>` +
       (acItems ? `<ul>${acItems}</ul>` : "") +
       `<div class="ticket-status"></div>`;

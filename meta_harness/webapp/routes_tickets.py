@@ -18,7 +18,7 @@ from meta_harness.ticket_generator import (
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
-    apply_ticket_numbering,
+    apply_category_numbering,
     generate_tickets_from_file,
 )
 from meta_harness.webapp.deps import get_clickup_project_path
@@ -36,8 +36,10 @@ router = APIRouter()
 @router.post("/generate", response_model=GenerateTicketsOut)
 def post_generate_tickets(
     file: UploadFile = File(...),
-    ticket_prefix: Optional[str] = Form(None),
-    ticket_start_number: int = Form(1),
+    start_mundane: int = Form(1),
+    start_backend: int = Form(1),
+    start_frontend: int = Form(1),
+    start_deployment: int = Form(1),
 ) -> GenerateTicketsOut:
     content = file.file.read()
     try:
@@ -51,8 +53,13 @@ def post_generate_tickets(
     except (TicketGenerationError, TicketParseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    if ticket_prefix:
-        tickets = apply_ticket_numbering(tickets, ticket_prefix, ticket_start_number)
+    start_numbers = {
+        "mundane": start_mundane,
+        "backend": start_backend,
+        "frontend": start_frontend,
+        "deployment": start_deployment,
+    }
+    tickets = apply_category_numbering(tickets, start_numbers)
 
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
 

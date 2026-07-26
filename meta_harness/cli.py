@@ -49,7 +49,7 @@ from meta_harness.ticket_generator import (
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
-    apply_ticket_numbering,
+    apply_category_numbering,
     generate_tickets_from_file,
 )
 
@@ -931,33 +931,52 @@ def _proposed_ticket_to_dict(ticket: ProposedTicket) -> dict:
         "description": ticket.description,
         "acceptance_criteria": ticket.acceptance_criteria,
         "priority": ticket.priority,
+        "category": ticket.category,
     }
 
 
 @tickets_group.command("generate")
 @click.option("--file", "file_path", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--json-output", default=None, help="Optional path to write proposed tickets as JSON.")
-@click.option("--prefix", default=None, help="Ticket name prefix, e.g. TAM -> 'TAM-01 | <title>'.")
-@click.option("--start-number", default=1, show_default=True, type=int, help="First number in the sequence.")
+@click.option("--start-mundane", default=1, show_default=True, type=int, help="First number for TAM (mundane).")
+@click.option("--start-backend", default=1, show_default=True, type=int, help="First number for TAB (backend).")
+@click.option("--start-frontend", default=1, show_default=True, type=int, help="First number for TAF (frontend).")
+@click.option("--start-deployment", default=1, show_default=True, type=int, help="First number for TAD (deployment).")
 def tickets_generate_cmd(
-    file_path: str, json_output: Optional[str], prefix: Optional[str], start_number: int
+    file_path: str,
+    json_output: Optional[str],
+    start_mundane: int,
+    start_backend: int,
+    start_frontend: int,
+    start_deployment: int,
 ) -> None:
-    """Analyze a document and propose tickets (not yet created anywhere)."""
+    """Analyze a document and propose tickets (not yet created anywhere).
+
+    Each ticket is auto-classified (mundane/backend/frontend/deployment) and
+    named "{TAM,TAB,TAF,TAD}-NN | <title>", numbered independently per
+    category in the order tickets are proposed.
+    """
     path = Path(file_path)
     try:
         tickets, warnings = generate_tickets_from_file(path.name, path.read_bytes())
     except (TicketExtractionError, ClaudeNotFoundError, TicketGenerationError, TicketParseError) as exc:
         raise click.ClickException(str(exc)) from exc
 
-    if prefix:
-        tickets = apply_ticket_numbering(tickets, prefix, start_number)
+    start_numbers = {
+        "mundane": start_mundane,
+        "backend": start_backend,
+        "frontend": start_frontend,
+        "deployment": start_deployment,
+    }
+    tickets = apply_category_numbering(tickets, start_numbers)
 
     table = Table(title="Proposed Tickets")
     table.add_column("Title", style="bold")
+    table.add_column("Category")
     table.add_column("Priority")
     table.add_column("Acceptance Criteria")
     for ticket in tickets:
-        table.add_row(ticket.title, ticket.priority, "; ".join(ticket.acceptance_criteria))
+        table.add_row(ticket.title, ticket.category, ticket.priority, "; ".join(ticket.acceptance_criteria))
     console.print(table)
     for warning in warnings:
         console.print(f"[yellow]{warning}[/yellow]")

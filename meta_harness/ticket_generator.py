@@ -15,7 +15,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pypdf
 
@@ -26,6 +26,15 @@ DEFAULT_CLAUDE_TIMEOUT_S = 180.0
 PRIORITIES = ("urgent", "high", "normal", "low")
 DEFAULT_PRIORITY = "normal"
 
+CATEGORIES = ("mundane", "backend", "frontend", "deployment")
+DEFAULT_CATEGORY = "mundane"
+CATEGORY_PREFIXES = {
+    "mundane": "TAM",
+    "backend": "TAB",
+    "frontend": "TAF",
+    "deployment": "TAD",
+}
+
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
 TICKET_EXTRACTION_PROMPT = (
@@ -33,7 +42,12 @@ TICKET_EXTRACTION_PROMPT = (
     'Each ticket must be a JSON object with exactly these fields: '
     '"title" (string), "description" (string), '
     '"acceptance_criteria" (array of strings), '
-    '"priority" (one of: "urgent", "high", "normal", "low"). '
+    '"priority" (one of: "urgent", "high", "normal", "low"), '
+    '"category" (one of: "backend", "frontend", "deployment", "mundane" — classify by the '
+    'primary type of work: "backend" for server/API/database/business-logic work, '
+    '"frontend" for UI/client-side work, "deployment" for CI/CD, infra, release, or ops work, '
+    'and "mundane" for anything general, cross-cutting, or planning-oriented that does not '
+    "clearly fit the other three). "
     "Output ONLY the JSON array — no prose, no markdown code fences, no explanation."
 )
 
@@ -62,6 +76,7 @@ class ProposedTicket:
     description: str
     acceptance_criteria: List[str] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
+    category: str = DEFAULT_CATEGORY
 
 
 def extract_document_text(filename: str, content: bytes) -> str:
@@ -155,11 +170,19 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         )
         priority = DEFAULT_PRIORITY
 
+    category = raw.get("category")
+    if category not in CATEGORIES:
+        warnings.append(
+            f"Ticket #{index} ('{title}'): invalid category {category!r}, defaulted to '{DEFAULT_CATEGORY}'"
+        )
+        category = DEFAULT_CATEGORY
+
     return ProposedTicket(
         title=title.strip(),
         description=description,
         acceptance_criteria=acceptance_criteria,
         priority=priority,
+        category=category,
     )
 
 
@@ -257,17 +280,24 @@ def generate_tickets_from_file(
     return generate_tickets_from_text(text, timeout_s=timeout_s)
 
 
-def apply_ticket_numbering(
-    tickets: List[ProposedTicket], prefix: str, start_number: int = 1
+def apply_category_numbering(
+    tickets: List[ProposedTicket], start_numbers: Optional[Dict[str, int]] = None
 ) -> List[ProposedTicket]:
-    """Rename tickets in order as "{prefix}-{NN} | {title}" (e.g. TAM-02, TAM-03, ...).
+    """Rename tickets in order using a per-category prefix and counter:
+    TAM (mundane), TAB (backend), TAF (frontend), TAD (deployment).
 
-    Returns a new list — the input tickets are not mutated. Numbering
-    follows the tickets' existing order (their position in the list),
-    starting at `start_number`, so it stays stable regardless of which
-    ones later get created.
+    Each category counts independently in the order tickets appear, so an
+    existing sequence (e.g. TAM already at 01) can be continued via
+    `start_numbers={"mundane": 2}` without disturbing the other three,
+    each of which still starts at 1 by default. Returns a new list — the
+    input tickets are not mutated.
     """
-    return [
-        replace(ticket, title=f"{prefix}-{start_number + index:02d} | {ticket.title}")
-        for index, ticket in enumerate(tickets)
-    ]
+    counters: Dict[str, int] = dict(start_numbers or {})
+    numbered = []
+    for ticket in tickets:
+        category = ticket.category if ticket.category in CATEGORIES else DEFAULT_CATEGORY
+        prefix = CATEGORY_PREFIXES[category]
+        number = counters.get(category, 1)
+        counters[category] = number + 1
+        numbered.append(replace(ticket, title=f"{prefix}-{number:02d} | {ticket.title}"))
+    return numbered
