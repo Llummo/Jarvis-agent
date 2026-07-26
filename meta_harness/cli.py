@@ -14,6 +14,7 @@ from meta_harness.archive_reader import load_run_summary
 from meta_harness.baseline import resolve_baseline_selection
 from meta_harness.benchmark_runner import BenchmarkRunResult, run_benchmark
 from meta_harness.candidate_registry import list_builtin_candidates
+from meta_harness.clickup_bridge import ClickUpTicketError, create_clickup_ticket
 from meta_harness.comparison import build_comparison_report
 from meta_harness.config import MetaHarnessConfig, parse_command_prefix
 from meta_harness.frontier import FrontierStore
@@ -42,6 +43,14 @@ from meta_harness.qa_findings import (
 )
 from meta_harness.run_archive import RunArchive
 from meta_harness.search import StructuredSearchRequest, run_structured_search
+from meta_harness.ticket_generator import (
+    ClaudeNotFoundError,
+    ProposedTicket,
+    TicketExtractionError,
+    TicketGenerationError,
+    TicketParseError,
+    generate_tickets_from_file,
+)
 
 console = Console()
 
@@ -908,3 +917,74 @@ def mcp_server_cmd() -> None:
     from meta_harness.mcp_server.server import main as run_mcp_server
 
     run_mcp_server()
+
+
+@main.group("tickets")
+def tickets_group() -> None:
+    """Generate proposed tickets from a document and create them in ClickUp."""
+
+
+def _proposed_ticket_to_dict(ticket: ProposedTicket) -> dict:
+    return {
+        "title": ticket.title,
+        "description": ticket.description,
+        "acceptance_criteria": ticket.acceptance_criteria,
+        "priority": ticket.priority,
+    }
+
+
+@tickets_group.command("generate")
+@click.option("--file", "file_path", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--json-output", default=None, help="Optional path to write proposed tickets as JSON.")
+def tickets_generate_cmd(file_path: str, json_output: Optional[str]) -> None:
+    """Analyze a document and propose tickets (not yet created anywhere)."""
+    path = Path(file_path)
+    try:
+        tickets, warnings = generate_tickets_from_file(path.name, path.read_bytes())
+    except (TicketExtractionError, ClaudeNotFoundError, TicketGenerationError, TicketParseError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    table = Table(title="Proposed Tickets")
+    table.add_column("Title", style="bold")
+    table.add_column("Priority")
+    table.add_column("Acceptance Criteria")
+    for ticket in tickets:
+        table.add_row(ticket.title, ticket.priority, "; ".join(ticket.acceptance_criteria))
+    console.print(table)
+    for warning in warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    if json_output:
+        _write_json(Path(json_output).expanduser().resolve(), [_proposed_ticket_to_dict(t) for t in tickets])
+
+
+@tickets_group.command("create-all")
+@click.option("--from-json", "from_json_path", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--list-id", default=None, help="Defaults to CLICKUP_LIST_ID from .env.")
+def tickets_create_all_cmd(from_json_path: str, list_id: Optional[str]) -> None:
+    """Create every ticket in a proposed-tickets JSON file in ClickUp."""
+    raw = json.loads(Path(from_json_path).read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise click.ClickException(f"Expected a JSON array of tickets in {from_json_path}")
+
+    table = Table(title="Ticket Creation Results")
+    table.add_column("Title", style="bold")
+    table.add_column("Status")
+    ok_count = 0
+    for item in raw:
+        title = item.get("title", "(untitled)")
+        description = item.get("description", "")
+        criteria = item.get("acceptance_criteria", [])
+        lines = [description, "", "Acceptance Criteria:"]
+        lines += [f"- {c}" for c in criteria] or ["- (none specified)"]
+        try:
+            task_id = create_clickup_ticket(
+                title, "\n".join(lines), list_id=list_id, priority=item.get("priority")
+            )
+        except (ClickUpTicketError, ValueError) as exc:
+            table.add_row(title, f"[red]failed: {exc}[/red]")
+        else:
+            table.add_row(title, f"[green]created: {task_id}[/green]")
+            ok_count += 1
+    console.print(table)
+    console.print(f"\n[bold]{ok_count}/{len(raw)} tickets created.[/bold]")

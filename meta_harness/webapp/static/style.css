@@ -78,3 +78,43 @@ th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee
   cursor: pointer;
 }
 .click-list button:hover { background: #f0f0f0; }
+
+.hint { color: #666; font-size: 0.9rem; margin-top: -0.25rem; }
+
+#tickets-actions { margin-bottom: 1rem; }
+#tickets-actions button {
+  padding: 0.5rem 1rem;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #fff;
+  cursor: pointer;
+}
+
+.tickets-grid { display: grid; gap: 0.75rem; margin-top: 1rem; }
+.ticket-card {
+  border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; background: #fff;
+}
+.ticket-card h3 { margin: 0 0 0.4rem; display: flex; align-items: center; gap: 0.5rem; font-size: 1rem; }
+.ticket-card p { margin: 0.3rem 0; }
+.ticket-card ul { margin: 0.4rem 0; padding-left: 1.2rem; }
+.ticket-card button {
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.priority-badge {
+  font-size: 0.7rem; padding: 0.1rem 0.5rem; border-radius: 999px; text-transform: uppercase;
+}
+.priority-urgent { background: #fdecea; color: #b00020; }
+.priority-high { background: #fff4e5; color: #b26a00; }
+.priority-normal { background: #eef2ff; color: #3949ab; }
+.priority-low { background: #eee; color: #555; }
+
+.ticket-status { font-size: 0.85rem; margin: 0.3rem 0; }
+.ticket-status-ok { color: #1a7f37; }
+.ticket-status-error { color: #b00020; }

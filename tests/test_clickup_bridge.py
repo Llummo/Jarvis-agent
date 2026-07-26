@@ -82,6 +82,40 @@ def test_create_clickup_ticket_raises_when_id_missing(tmp_path, monkeypatch):
         create_clickup_ticket("name", "desc", project_path=tmp_path)
 
 
+def test_create_clickup_ticket_passes_priority(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps({"id": "CU-1"}))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    create_clickup_ticket("name", "desc", priority="urgent", project_path=tmp_path)
+
+    assert "--priority" in calls[0]
+    assert "urgent" in calls[0]
+
+
+def test_create_clickup_ticket_omits_priority_when_not_given(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps({"id": "CU-1"}))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    create_clickup_ticket("name", "desc", project_path=tmp_path)
+
+    assert "--priority" not in calls[0]
+
+
+def test_create_clickup_ticket_rejects_invalid_priority(tmp_path):
+    with pytest.raises(ValueError, match="priority must be one of"):
+        create_clickup_ticket("name", "desc", priority="urgentish", project_path=tmp_path)
+
+
 def test_list_clickup_teams_builds_correct_command(tmp_path, monkeypatch):
     calls = []
 

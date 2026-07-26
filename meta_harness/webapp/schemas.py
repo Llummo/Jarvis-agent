@@ -40,3 +40,40 @@ class ReportFindingIn(BaseModel):
 
 class CloseFindingIn(BaseModel):
     correction_note: str
+
+
+class ProposedTicketOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    title: str
+    description: str
+    acceptance_criteria: list[str]
+    priority: str
+
+
+class GenerateTicketsOut(BaseModel):
+    tickets: list[ProposedTicketOut]
+    warnings: list[str]
+
+
+class ProposedTicketIn(BaseModel):
+    title: str
+    description: str
+    acceptance_criteria: list[str] = []
+    priority: str = "normal"
+
+
+class CreateTicketsIn(BaseModel):
+    tickets: list[ProposedTicketIn]
+    list_id: Optional[str] = None
+
+
+class TicketCreateResult(BaseModel):
+    ticket: ProposedTicketIn
+    ok: bool
+    clickup_task_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CreateTicketsOut(BaseModel):
+    results: list[TicketCreateResult]

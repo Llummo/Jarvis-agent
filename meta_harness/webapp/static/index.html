@@ -10,6 +10,7 @@
     <h1>Meta-Harness QA Review</h1>
     <nav class="tabs">
       <button class="tab-button active" data-tab="clickup">ClickUp</button>
+      <button class="tab-button" data-tab="tickets">Generate Tickets</button>
       <button class="tab-button" data-tab="linear" disabled title="Coming soon">Linear</button>
     </nav>
   </header>
@@ -88,6 +89,28 @@
             <ul id="clickup-tasks" class="click-list"></ul>
           </div>
         </div>
+      </section>
+    </section>
+
+    <section id="tab-tickets" class="tab-panel" hidden>
+      <section class="panel" id="tickets-panel">
+        <h2>Generate Tickets from a Requirements Document</h2>
+        <p class="hint">Upload a PDF, .txt, or .md document. Claude analyzes it and proposes a batch of tickets — review them, then create individually or all at once.</p>
+
+        <form id="tickets-generate-form" class="inline-form">
+          <input type="file" id="tickets-file-input" name="file" accept=".pdf,.txt,.md" required>
+          <input type="text" id="tickets-list-id" placeholder="ClickUp list id (optional, defaults to Sprint backlog)">
+          <button type="submit">Analyze</button>
+        </form>
+
+        <div id="tickets-error" class="error-banner" hidden></div>
+        <div id="tickets-warnings" class="error-banner" hidden></div>
+
+        <div id="tickets-actions" hidden>
+          <button id="tickets-create-all">Add all tickets automatically</button>
+        </div>
+
+        <div id="tickets-list" class="tickets-grid"></div>
       </section>
     </section>
 

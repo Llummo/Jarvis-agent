@@ -207,6 +207,7 @@ meta_harness/
 ├── qa_findings.py
 ├── run_archive.py
 ├── search.py
+├── ticket_generator.py
 ├── webapp/               # localhost UI: FastAPI + static vanilla-JS frontend
 └── __main__.py
 ```
@@ -287,6 +288,25 @@ a thin wrapper around the same functions the CLI and web UI use.
 via mocks, but require hardware/an OS this repo isn't developed on to run
 for real (no `adb`, not macOS) — they fail with a clear, typed error when
 unavailable rather than silently no-op'ing.
+
+## Generate Tickets
+
+Upload a requirements document (PDF, `.txt`, or `.md`) and get back a
+reviewed, organized batch of proposed tickets, created in ClickUp
+individually or all at once — the "Generate Tickets" tab in `meta-harness
+ui`. An LLM (the local, already-authenticated Claude Code CLI — no
+separate API key) analyzes the document and proposes tickets in a fixed
+shape (title, description, acceptance criteria, priority); nothing is
+created until you review and confirm.
+
+```bash
+meta-harness tickets generate --file requirements.pdf --json-output proposed.json
+meta-harness tickets create-all --from-json proposed.json --list-id <id>
+```
+
+Priority (`urgent`/`high`/`normal`/`low`) is set as ClickUp's native
+priority field, not just text in the description. Bulk creation reports a
+per-ticket result — one failure never aborts the rest of the batch.
 
 ## Best Practices Notes
 
