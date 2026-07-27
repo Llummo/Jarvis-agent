@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -43,6 +44,8 @@ CATEGORY_PREFIXES = {
 }
 
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
+
+SPRINT_LENGTH_DAYS = 28  # Scrum: fixed 4-week sprints
 
 TICKET_EXTRACTION_PROMPT = (
     "Extract a JSON array of tickets from the requirements document provided via stdin. "
@@ -79,7 +82,13 @@ TICKET_EXTRACTION_PROMPT = (
     'primary type of work: "backend" for server/API/database/business-logic work, '
     '"frontend" for UI/client-side work, "deployment" for CI/CD, infra, release, or ops work, '
     'and "mundane" for anything general, cross-cutting, or planning-oriented that does not '
-    "clearly fit the other three). "
+    "clearly fit the other three), "
+    '"sprint" (integer, 1 or higher — which 4-week Scrum sprint this ticket is planned for. '
+    "Reason about this like a sprint-planning session: work through the backlog in priority "
+    "and dependency order, and don't overload a single sprint — a small team can realistically "
+    "finish somewhere around 8-15 right-sized tickets in one 4-week sprint, fewer if they're "
+    "larger or more complex, so once a sprint is full move on to the next one. A ticket can "
+    "never be scheduled in an earlier sprint than a ticket it depends on). "
     "Output ONLY the JSON array — no prose, no markdown code fences, no explanation."
 )
 
@@ -110,6 +119,11 @@ class ProposedTicket:
     acceptance_criteria: List[str] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
     category: str = DEFAULT_CATEGORY
+    sprint: int = 1
+    due_date: Optional[str] = None  # ISO date, set by apply_sprint_due_dates
+    assignee_user_id: Optional[int] = None
+    assignee_email: Optional[str] = None
+    assignee_name: Optional[str] = None
 
 
 def extract_document_text(filename: str, content: bytes) -> str:
@@ -215,6 +229,11 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         )
         category = DEFAULT_CATEGORY
 
+    sprint = raw.get("sprint")
+    if not isinstance(sprint, int) or isinstance(sprint, bool) or sprint < 1:
+        warnings.append(f"Ticket #{index} ('{title}'): missing/invalid 'sprint', defaulted to 1")
+        sprint = 1
+
     return ProposedTicket(
         title=title.strip(),
         description=description,
@@ -222,6 +241,7 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         acceptance_criteria=acceptance_criteria,
         priority=priority,
         category=category,
+        sprint=sprint,
     )
 
 
@@ -355,3 +375,20 @@ def apply_category_numbering(
         counters[category] = number + 1
         numbered.append(replace(ticket, title=f"{prefix}-{number:02d} | {ticket.title}"))
     return numbered
+
+
+def apply_sprint_due_dates(
+    tickets: List[ProposedTicket], *, sprint_start: Optional[date] = None
+) -> List[ProposedTicket]:
+    """Convert each ticket's LLM-assigned `sprint` number into a concrete
+    due date: a ticket is due at the end of its assigned 4-week sprint,
+    counted from sprint_start (today by default). Returns a new list —
+    the input tickets are not mutated.
+    """
+    start = sprint_start if sprint_start is not None else date.today()
+    dated = []
+    for ticket in tickets:
+        sprint = ticket.sprint if ticket.sprint >= 1 else 1
+        due = start + timedelta(days=SPRINT_LENGTH_DAYS * sprint)
+        dated.append(replace(ticket, due_date=due.isoformat()))
+    return dated

@@ -32,16 +32,15 @@ def test_generate_tickets_returns_proposed_tickets(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["tickets"] == [
-        {
-            "title": "TAB-01 | Build login page",
-            "user_story": "As a user, I want to log in, so I can access my account.",
-            "description": "desc",
-            "acceptance_criteria": ["Given ..., when ..., then ..."],
-            "priority": "high",
-            "category": "backend",
-        }
-    ]
+    assert len(body["tickets"]) == 1
+    ticket = body["tickets"][0]
+    assert ticket["title"] == "TAB-01 | Build login page"
+    assert ticket["user_story"] == "As a user, I want to log in, so I can access my account."
+    assert ticket["description"] == "desc"
+    assert ticket["acceptance_criteria"] == ["Given ..., when ..., then ..."]
+    assert ticket["priority"] == "high"
+    assert ticket["category"] == "backend"
+    assert ticket["due_date"] is not None  # apply_sprint_due_dates always sets this
     assert body["warnings"] == ["some warning"]
 
 
@@ -124,7 +123,7 @@ def test_generate_tickets_parse_error_returns_502(monkeypatch):
 
 
 def test_create_tickets_partial_failure_reports_both_results(monkeypatch):
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None):
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
         if name == "Ticket A":
             return "CU-1"
         raise ClickUpTicketError("ClickUp API error 500")
@@ -153,7 +152,7 @@ def test_create_tickets_partial_failure_reports_both_results(monkeypatch):
 def test_create_tickets_passes_list_id_and_priority(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None):
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
         captured["list_id"] = list_id
         captured["priority"] = priority
         return "CU-1"
@@ -178,7 +177,7 @@ def test_create_tickets_passes_list_id_and_priority(monkeypatch):
 def test_create_tickets_description_includes_acceptance_criteria(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None):
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
         captured["description"] = description
         return "CU-1"
 
@@ -206,7 +205,7 @@ def test_create_tickets_description_includes_acceptance_criteria(monkeypatch):
 def test_create_tickets_description_includes_user_story(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None):
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
         captured["description"] = description
         return "CU-1"
 
@@ -233,7 +232,7 @@ def test_create_tickets_description_includes_user_story(monkeypatch):
 def test_create_tickets_description_omits_user_story_line_when_absent(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None):
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
         captured["description"] = description
         return "CU-1"
 
@@ -249,3 +248,132 @@ def test_create_tickets_description_omits_user_story_line_when_absent(monkeypatc
     )
 
     assert captured["description"].startswith("Do the thing.")
+
+
+def test_create_tickets_passes_assignees_and_due_date(monkeypatch):
+    captured = {}
+
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+        captured["assignees"] = kwargs.get("assignees")
+        captured["due_date_ms"] = kwargs.get("due_date_ms")
+        return "CU-1"
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.create_clickup_ticket", fake_create)
+
+    client.post(
+        "/api/tickets/create",
+        json={
+            "tickets": [
+                {
+                    "title": "Ticket A", "description": "d", "acceptance_criteria": [], "priority": "normal",
+                    "assignee_user_id": 138194537, "due_date": "2026-08-24",
+                },
+            ]
+        },
+    )
+
+    assert captured["assignees"] == [138194537]
+    assert captured["due_date_ms"] is not None
+
+
+def test_create_tickets_omits_assignees_and_due_date_when_absent(monkeypatch):
+    captured = {}
+
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+        captured["assignees"] = kwargs.get("assignees")
+        captured["due_date_ms"] = kwargs.get("due_date_ms")
+        return "CU-1"
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.create_clickup_ticket", fake_create)
+
+    client.post(
+        "/api/tickets/create",
+        json={"tickets": [{"title": "Ticket A", "description": "d", "acceptance_criteria": [], "priority": "normal"}]},
+    )
+
+    assert captured["assignees"] is None
+    assert captured["due_date_ms"] is None
+
+
+def test_verify_team_returns_verified_and_not_found(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.verify_team_emails",
+        lambda emails: ([{"id": 1, "email": "alice@example.com", "username": "Alice"}], ["ghost@example.com"]),
+    )
+
+    response = client.post("/api/tickets/verify-team", json={"emails_text": "alice@example.com, ghost@example.com"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["verified"] == [{"user_id": 1, "email": "alice@example.com", "username": "Alice"}]
+    assert body["not_found"] == ["ghost@example.com"]
+
+
+def test_generate_tickets_with_team_emails_assigns_members(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_file",
+        lambda filename, content, **kw: (
+            [ProposedTicket(title="Do the thing", description="d", acceptance_criteria=[], category="mundane")],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.verify_team_emails",
+        lambda emails: ([{"id": 1, "email": "alice@example.com", "username": "Alice"}], []),
+    )
+
+    response = client.post(
+        "/api/tickets/generate",
+        files={"file": ("spec.txt", b"some text", "text/plain")},
+        data={"team_emails_text": "alice@example.com"},
+    )
+
+    assert response.status_code == 200
+    ticket = response.json()["tickets"][0]
+    assert ticket["assignee_user_id"] == 1
+    assert ticket["assignee_email"] == "alice@example.com"
+
+
+def test_generate_tickets_with_unmatched_team_emails_adds_warning(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_file",
+        lambda filename, content, **kw: (
+            [ProposedTicket(title="Do the thing", description="d", acceptance_criteria=[], category="mundane")],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.verify_team_emails",
+        lambda emails: ([], ["ghost@example.com"]),
+    )
+
+    response = client.post(
+        "/api/tickets/generate",
+        files={"file": ("spec.txt", b"some text", "text/plain")},
+        data={"team_emails_text": "ghost@example.com"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tickets"][0]["assignee_user_id"] is None
+    assert any("ghost@example.com" in w for w in body["warnings"])
+
+
+def test_generate_tickets_without_team_emails_leaves_tickets_unassigned(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_file",
+        lambda filename, content, **kw: (
+            [ProposedTicket(title="Do the thing", description="d", acceptance_criteria=[], category="mundane")],
+            [],
+        ),
+    )
+
+    def boom(emails):
+        raise AssertionError("must not verify team emails when none were given")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.verify_team_emails", boom)
+
+    response = client.post("/api/tickets/generate", files={"file": ("spec.txt", b"some text", "text/plain")})
+
+    assert response.status_code == 200
+    assert response.json()["tickets"][0]["assignee_user_id"] is None

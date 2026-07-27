@@ -7,18 +7,21 @@ them" flow.
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpTicketError, create_clickup_ticket
+from meta_harness.team_assignment import assign_random_members, parse_emails, verify_team_emails
 from meta_harness.ticket_generator import (
     ClaudeNotFoundError,
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
     apply_category_numbering,
+    apply_sprint_due_dates,
     generate_tickets_from_file,
 )
 from meta_harness.webapp import progress
@@ -28,7 +31,10 @@ from meta_harness.webapp.schemas import (
     CreateTicketsOut,
     GenerateTicketsOut,
     ProposedTicketIn,
+    TeamMemberOut,
     TicketCreateResult,
+    VerifyTeamIn,
+    VerifyTeamOut,
 )
 
 router = APIRouter()
@@ -41,6 +47,7 @@ def post_generate_tickets(
     start_backend: int = Form(1),
     start_frontend: int = Form(1),
     start_deployment: int = Form(1),
+    team_emails_text: Optional[str] = Form(None),
     progress_token: Optional[str] = Form(None),
 ) -> GenerateTicketsOut:
     content = file.file.read()
@@ -68,10 +75,39 @@ def post_generate_tickets(
         "deployment": start_deployment,
     }
     tickets = apply_category_numbering(tickets, start_numbers)
+
+    if on_step:
+        on_step("Assigning sprint due dates…")
+    tickets = apply_sprint_due_dates(tickets)
+
+    if team_emails_text and team_emails_text.strip():
+        if on_step:
+            on_step("Verifying team members…")
+        emails = parse_emails(team_emails_text)
+        verified, not_found = verify_team_emails(emails)
+        if verified:
+            if on_step:
+                on_step(f"Randomly assigning {len(verified)} verified member(s) to tickets…")
+            tickets = assign_random_members(tickets, verified)
+        elif emails:
+            warnings.append("None of the given team emails matched a real ClickUp workspace member — tickets left unassigned.")
+        if not_found:
+            warnings.append(f"Team emails not found in ClickUp: {', '.join(not_found)}")
+
     if on_step:
         on_step("Done.")
 
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
+
+
+@router.post("/verify-team", response_model=VerifyTeamOut)
+def post_verify_team(body: VerifyTeamIn) -> VerifyTeamOut:
+    emails = parse_emails(body.emails_text)
+    verified, not_found = verify_team_emails(emails)
+    return VerifyTeamOut(
+        verified=[TeamMemberOut(user_id=m["id"], email=m["email"], username=m["username"]) for m in verified],
+        not_found=not_found,
+    )
 
 
 def _format_description(ticket: ProposedTicketIn) -> str:
@@ -81,6 +117,15 @@ def _format_description(ticket: ProposedTicketIn) -> str:
     lines += [ticket.description, "", "Acceptance Criteria:"]
     lines += [f"- {criterion}" for criterion in ticket.acceptance_criteria] or ["- (none specified)"]
     return "\n".join(lines)
+
+
+def _due_date_ms(due_date_iso: Optional[str]) -> Optional[int]:
+    """Convert an ISO date string (e.g. from apply_sprint_due_dates) into
+    the Unix-milliseconds timestamp ClickUp's API expects."""
+    if not due_date_iso:
+        return None
+    parsed = date.fromisoformat(due_date_iso)
+    return int(datetime.combine(parsed, time()).timestamp() * 1000)
 
 
 @router.post("/create", response_model=CreateTicketsOut)
@@ -96,6 +141,8 @@ def post_create_tickets(
                 _format_description(ticket),
                 list_id=body.list_id,
                 priority=ticket.priority,
+                assignees=[ticket.assignee_user_id] if ticket.assignee_user_id else None,
+                due_date_ms=_due_date_ms(ticket.due_date),
                 project_path=project_path,
             )
         except (ClickUpTicketError, ValueError) as exc:

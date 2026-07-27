@@ -278,6 +278,8 @@ async function onGenerateTickets(event) {
   formData.append("start_backend", document.getElementById("start-backend").value || "1");
   formData.append("start_frontend", document.getElementById("start-frontend").value || "1");
   formData.append("start_deployment", document.getElementById("start-deployment").value || "1");
+  const teamEmailsText = document.getElementById("tickets-team-emails").value.trim();
+  if (teamEmailsText) formData.append("team_emails_text", teamEmailsText);
   const token = newProgressToken();
   formData.append("progress_token", token);
 
@@ -378,6 +380,13 @@ function renderProposedTickets() {
     const userStory = entry.ticket.user_story
       ? `<p class="user-story">${escapeHtml(entry.ticket.user_story)}</p>`
       : "";
+    const planningRows = [];
+    if (entry.ticket.sprint) planningRows.push(`<strong>Sprint:</strong> ${entry.ticket.sprint}`);
+    if (entry.ticket.due_date) planningRows.push(`<strong>Due:</strong> ${escapeHtml(entry.ticket.due_date)}`);
+    if (entry.ticket.assignee_name) {
+      planningRows.push(`<strong>Assigned to:</strong> ${escapeHtml(entry.ticket.assignee_name)} (${escapeHtml(entry.ticket.assignee_email)})`);
+    }
+    const planning = planningRows.length ? `<div class="evidence">${planningRows.map((r) => `<div>${r}</div>`).join("")}</div>` : "";
     card.innerHTML =
       `<h3>${escapeHtml(entry.ticket.title)} ` +
       `<span class="priority-badge priority-${priority}">${priority}</span> ` +
@@ -385,6 +394,7 @@ function renderProposedTickets() {
       userStory +
       `<p>${escapeHtml(entry.ticket.description)}</p>` +
       (acItems ? `<ul>${acItems}</ul>` : "") +
+      planning +
       `<div class="ticket-status"></div>`;
 
     const statusEl = card.querySelector(".ticket-status");
@@ -454,9 +464,43 @@ async function loadTicketsListOptions() {
   }
 }
 
+async function onVerifyTeam() {
+  const emailsText = document.getElementById("tickets-team-emails").value;
+  const resultEl = document.getElementById("tickets-team-verify-result");
+  const verifyBtn = document.getElementById("tickets-verify-team-btn");
+  if (!emailsText.trim()) {
+    resultEl.hidden = false;
+    resultEl.innerHTML = '<div class="error-text">Paste at least one email first.</div>';
+    return;
+  }
+  verifyBtn.disabled = true;
+  try {
+    const body = await fetchJson("/api/tickets/verify-team", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emails_text: emailsText }),
+    });
+    const rows = [];
+    for (const member of body.verified) {
+      rows.push(`<div class="success-text">✓ ${escapeHtml(member.email)} — ${escapeHtml(member.username)}</div>`);
+    }
+    for (const email of body.not_found) {
+      rows.push(`<div class="error-text">✗ ${escapeHtml(email)} — no matching ClickUp workspace member</div>`);
+    }
+    resultEl.innerHTML = rows.join("") || '<div class="hint">No emails found in the text above.</div>';
+    resultEl.hidden = false;
+  } catch (err) {
+    resultEl.innerHTML = `<div class="error-text">${escapeHtml(err.message)}</div>`;
+    resultEl.hidden = false;
+  } finally {
+    verifyBtn.disabled = false;
+  }
+}
+
 function initTicketsTab() {
   document.getElementById("tickets-generate-form").addEventListener("submit", onGenerateTickets);
   document.getElementById("tickets-create-all").addEventListener("click", onCreateAllTickets);
+  document.getElementById("tickets-verify-team-btn").addEventListener("click", onVerifyTeam);
   loadTicketsListOptions();
 }
 

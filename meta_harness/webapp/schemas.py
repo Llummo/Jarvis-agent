@@ -54,6 +54,11 @@ class ProposedTicketOut(BaseModel):
     acceptance_criteria: list[str]
     priority: str
     category: str
+    sprint: int = 1
+    due_date: Optional[str] = None
+    assignee_user_id: Optional[int] = None
+    assignee_email: Optional[str] = None
+    assignee_name: Optional[str] = None
 
 
 class GenerateTicketsOut(BaseModel):
@@ -68,6 +73,26 @@ class ProposedTicketIn(BaseModel):
     acceptance_criteria: list[str] = []
     priority: str = "normal"
     category: str = "mundane"
+    sprint: int = 1
+    due_date: Optional[str] = None
+    assignee_user_id: Optional[int] = None
+    assignee_email: Optional[str] = None
+    assignee_name: Optional[str] = None
+
+
+class VerifyTeamIn(BaseModel):
+    emails_text: str
+
+
+class TeamMemberOut(BaseModel):
+    user_id: int
+    email: str
+    username: str
+
+
+class VerifyTeamOut(BaseModel):
+    verified: list[TeamMemberOut]
+    not_found: list[str]
 
 
 class CreateTicketsIn(BaseModel):

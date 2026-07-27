@@ -184,6 +184,14 @@
         </div>
         <p class="hint">Each ticket is auto-classified and named "{TAM,TAB,TAF,TAD}-NN | title" — set a start number above to continue an existing sequence (e.g. TAM already at 01).</p>
 
+        <h3>Team Members</h3>
+        <p class="hint">Paste team member emails (one per line, or comma/semicolon/space separated). Each is verified against the real ClickUp workspace roster, then generated tickets get a random verified member assigned automatically.</p>
+        <textarea id="tickets-team-emails" rows="4" placeholder="alice@example.com&#10;bob@example.com"></textarea>
+        <div class="inline-form">
+          <button type="button" id="tickets-verify-team-btn">Verify Team</button>
+        </div>
+        <div id="tickets-team-verify-result" class="evidence" hidden></div>
+
         <div id="tickets-thinking" class="thinking-indicator" hidden>
           <span class="spinner"></span>
           <div>
