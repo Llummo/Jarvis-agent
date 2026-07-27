@@ -50,6 +50,7 @@ class ProposedTicketOut(BaseModel):
 
     title: str
     description: str
+    user_story: str = ""
     acceptance_criteria: list[str]
     priority: str
     category: str
@@ -63,6 +64,7 @@ class GenerateTicketsOut(BaseModel):
 class ProposedTicketIn(BaseModel):
     title: str
     description: str
+    user_story: str = ""
     acceptance_criteria: list[str] = []
     priority: str = "normal"
     category: str = "mundane"

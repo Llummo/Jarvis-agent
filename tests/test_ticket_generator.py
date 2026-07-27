@@ -3,6 +3,7 @@ import json
 import pytest
 
 from meta_harness.ticket_generator import (
+    TICKET_EXTRACTION_PROMPT,
     ClaudeNotFoundError,
     ProposedTicket,
     TicketExtractionError,
@@ -86,8 +87,9 @@ def test_extract_document_text_invalid_utf8_txt():
 def _valid_ticket(**overrides):
     ticket = {
         "title": "Build login page",
+        "user_story": "As a user, I want to log in, so I can access my account.",
         "description": "Add a login form.",
-        "acceptance_criteria": ["Has email field", "Has password field"],
+        "acceptance_criteria": ["Given a valid email and password, when the user submits the form, then they are logged in."],
         "priority": "high",
         "category": "backend",
     }
@@ -102,9 +104,30 @@ def test_parse_proposed_tickets_happy_path():
 
     assert len(tickets) == 1
     assert tickets[0].title == "Build login page"
+    assert tickets[0].user_story == "As a user, I want to log in, so I can access my account."
     assert tickets[0].priority == "high"
     assert tickets[0].category == "backend"
     assert warnings == []
+
+
+def test_parse_proposed_tickets_missing_user_story_keeps_ticket_with_warning():
+    raw = json.dumps([{**_valid_ticket(), "user_story": None}])
+
+    tickets, warnings = parse_proposed_tickets(raw)
+
+    assert len(tickets) == 1
+    assert tickets[0].user_story == ""
+    assert any("user_story" in w for w in warnings)
+
+
+def test_parse_proposed_tickets_empty_user_story_keeps_ticket_with_warning():
+    raw = json.dumps([{**_valid_ticket(), "user_story": "   "}])
+
+    tickets, warnings = parse_proposed_tickets(raw)
+
+    assert len(tickets) == 1
+    assert tickets[0].user_story == ""
+    assert any("user_story" in w for w in warnings)
 
 
 def test_parse_proposed_tickets_invalid_category_defaults_to_mundane():
@@ -179,6 +202,31 @@ def test_parse_proposed_tickets_non_object_item_dropped():
 
     assert len(tickets) == 1
     assert any("not a JSON object" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# TICKET_EXTRACTION_PROMPT — locks in the required content shape so this
+# can't silently regress (it did once already, per direct user feedback).
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_requires_english_user_story_template():
+    assert "user_story" in TICKET_EXTRACTION_PROMPT
+    assert "As a <role>, I want to <goal>, so I can <benefit>" in TICKET_EXTRACTION_PROMPT
+
+
+def test_prompt_requires_gherkin_acceptance_criteria():
+    assert "Gherkin" in TICKET_EXTRACTION_PROMPT
+    assert "Given <context>, when <action>, then <expected outcome>" in TICKET_EXTRACTION_PROMPT
+
+
+def test_prompt_requires_a_brief_description_distinct_from_user_story():
+    assert "description" in TICKET_EXTRACTION_PROMPT
+    assert "distinct from" in TICKET_EXTRACTION_PROMPT
+
+
+def test_prompt_requires_logical_task_ordering():
+    assert "logical implementation sequence" in TICKET_EXTRACTION_PROMPT
 
 
 # ---------------------------------------------------------------------------

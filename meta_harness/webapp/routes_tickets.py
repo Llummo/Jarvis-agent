@@ -75,7 +75,10 @@ def post_generate_tickets(
 
 
 def _format_description(ticket: ProposedTicketIn) -> str:
-    lines = [ticket.description, "", "Acceptance Criteria:"]
+    lines = []
+    if ticket.user_story:
+        lines += [ticket.user_story, ""]
+    lines += [ticket.description, "", "Acceptance Criteria:"]
     lines += [f"- {criterion}" for criterion in ticket.acceptance_criteria] or ["- (none specified)"]
     return "\n".join(lines)
 
