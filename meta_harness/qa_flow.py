@@ -185,11 +185,25 @@ def review_qa_ticket(
 
     finding = None
     if persist:
-        finding = report_qa_issue(
-            project, ticket_name, review.observation, review.severity,
-            clickup_list_id=clickup_list_id, store=store,
-        )
+        finding = persist_review(review, project=project, clickup_list_id=clickup_list_id, store=store)
     return review, finding
+
+
+def persist_review(
+    review: QATicketReview,
+    *,
+    project: str,
+    clickup_list_id: Optional[str] = None,
+    store: Optional[QAFindingStore] = None,
+) -> QAFinding:
+    """Report an already-computed review as a real finding, without
+    re-fetching or re-analyzing the ticket — what you saw in the dry-run
+    is exactly what gets saved, not a fresh (possibly different) analysis.
+    """
+    return report_qa_issue(
+        project, review.ticket_name, review.observation, review.severity,
+        clickup_list_id=clickup_list_id, store=store,
+    )
 
 
 def _record_review(

@@ -1,5 +1,9 @@
 // Vanilla JS, no build step, no framework — tab switching + fetch calls.
 
+let currentSpaceName = null; // last-browsed ClickUp space, used as the default review project
+let selectedTicket = null; // { id, name } — set by clicking a task in the ClickUp browser
+let knownProjects = []; // distinct project names seen in existing QA findings, for the dropdown
+
 function initTabs() {
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
@@ -175,7 +179,7 @@ async function selectClickupList(list) {
     renderList(
       "clickup-tasks", tasks,
       (t) => `${t.name} (${t.status ? t.status.status : "-"})`,
-      () => {},
+      selectClickupTask,
     );
   } catch (err) {
     showClickupError(err.message);
@@ -194,6 +198,7 @@ async function selectClickupFolder(folder) {
 }
 
 async function selectClickupSpace(space) {
+  currentSpaceName = space.name;
   document.getElementById("clickup-folders").innerHTML = "";
   document.getElementById("clickup-lists").innerHTML = "";
   document.getElementById("clickup-tasks").innerHTML = "";
@@ -394,6 +399,175 @@ function initTicketsTab() {
   document.getElementById("tickets-create-all").addEventListener("click", onCreateAllTickets);
 }
 
+// --- Review Ticket (QA Flow) panel ------------------------------------------
+
+async function refreshKnownProjects() {
+  try {
+    const data = await fetchJson("/api/qa/findings");
+    const projects = new Set(data.findings.map((f) => f.project));
+    knownProjects = Array.from(projects).sort();
+  } catch (err) {
+    knownProjects = [];
+  }
+  renderProjectDropdown();
+}
+
+function renderProjectDropdown() {
+  const select = document.getElementById("qa-review-project");
+  const options = new Set(knownProjects);
+  if (currentSpaceName) options.add(currentSpaceName);
+  const previousValue = select.value;
+  select.innerHTML = "";
+  for (const project of options) {
+    const option = document.createElement("option");
+    option.value = project;
+    option.textContent = project;
+    select.appendChild(option);
+  }
+  if (options.has(previousValue)) {
+    select.value = previousValue;
+  } else if (currentSpaceName && options.has(currentSpaceName)) {
+    select.value = currentSpaceName;
+  }
+}
+
+function selectClickupTask(task) {
+  selectedTicket = { id: task.id, name: task.name };
+  document.getElementById("qa-review-selected").textContent = `Selected: ${task.name} (${task.id})`;
+  document.getElementById("qa-review-analyze-btn").disabled = false;
+  document.getElementById("qa-review-result").hidden = true;
+  showQaReviewError(null);
+  renderProjectDropdown();
+}
+
+function showQaReviewError(message) {
+  const el = document.getElementById("qa-review-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function setReviewThinking(visible, message) {
+  const el = document.getElementById("qa-review-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
+function renderReviewResult(runId, review, finding) {
+  const container = document.getElementById("qa-review-result");
+  container.hidden = false;
+  const severity = escapeHtml(review.severity);
+  container.innerHTML =
+    `<h3>${escapeHtml(review.ticket_name)} <span class="priority-badge priority-${severity}">${severity}</span></h3>` +
+    `<p>${escapeHtml(review.observation)}</p>` +
+    `<div class="ticket-status"></div>`;
+
+  const statusEl = container.querySelector(".ticket-status");
+  if (finding) {
+    statusEl.textContent = `Persisted: finding #${finding.id}${finding.clickup_task_id ? ` (ClickUp: ${finding.clickup_task_id})` : ""}`;
+    statusEl.classList.add("ticket-status-ok");
+  } else {
+    statusEl.textContent = "Not persisted (dry-run)";
+    const button = document.createElement("button");
+    button.textContent = "Persist this finding";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const persistedFinding = await fetchJson("/api/qa/reviews/commit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ticket_id: review.ticket_id,
+            ticket_name: review.ticket_name,
+            observation: review.observation,
+            severity: review.severity,
+            project: document.getElementById("qa-review-project").value,
+          }),
+        });
+        renderReviewResult(runId, review, persistedFinding);
+        refreshKnownProjects();
+        loadFindings();
+      } catch (err) {
+        button.disabled = false;
+        showQaReviewError(err.message);
+      }
+    });
+    container.appendChild(button);
+  }
+}
+
+async function onAnalyzeReview(event) {
+  event.preventDefault();
+  if (!selectedTicket) return;
+  showQaReviewError(null);
+  const project = document.getElementById("qa-review-project").value;
+  if (!project) {
+    showQaReviewError("Pick a project first.");
+    return;
+  }
+  setReviewThinking(true, "Claude is analyzing this ticket…");
+  try {
+    const result = await fetchJson("/api/qa/reviews", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket_id: selectedTicket.id, project, persist: false }),
+    });
+    renderReviewResult(result.run_id, result.review, result.finding);
+    await loadReviewRuns();
+  } catch (err) {
+    showQaReviewError(err.message);
+  } finally {
+    setReviewThinking(false);
+  }
+}
+
+async function loadReviewRuns() {
+  const select = document.getElementById("qa-review-runs-select");
+  try {
+    const runs = await fetchJson("/api/qa/reviews");
+    select.innerHTML = "";
+    for (const run of runs) {
+      const option = document.createElement("option");
+      option.value = run.run_id;
+      option.textContent = `${run.run_id} — ${run.ticket_id || "-"} (${run.started_at})`;
+      select.appendChild(option);
+    }
+  } catch (err) {
+    showQaReviewError(err.message);
+  }
+}
+
+async function onReplayReview() {
+  const select = document.getElementById("qa-review-runs-select");
+  const runId = select.value;
+  if (!runId) return;
+  showQaReviewError(null);
+  setReviewThinking(true, "Replaying — re-fetching and re-analyzing the same ticket…");
+  try {
+    const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ persist: false }),
+    });
+    renderReviewResult(result.run_id, result.review, result.finding);
+    await loadReviewRuns();
+  } catch (err) {
+    showQaReviewError(err.message);
+  } finally {
+    setReviewThinking(false);
+  }
+}
+
+function initQaReviewPanel() {
+  document.getElementById("qa-review-form").addEventListener("submit", onAnalyzeReview);
+  document.getElementById("qa-review-replay-btn").addEventListener("click", onReplayReview);
+  refreshKnownProjects();
+  loadReviewRuns();
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   initQaFilters();
@@ -401,4 +575,5 @@ document.addEventListener("DOMContentLoaded", () => {
   loadFindings();
   initClickupBrowser();
   initTicketsTab();
+  initQaReviewPanel();
 });

@@ -5,9 +5,11 @@ import pytest
 from meta_harness.qa_findings import QAFindingStore
 from meta_harness.qa_flow import (
     ClaudeNotFoundError,
+    QATicketReview,
     ReviewGenerationError,
     ReviewParseError,
     analyze_ticket,
+    persist_review,
     replay_qa_review,
     review_and_record,
     review_qa_ticket,
@@ -225,3 +227,31 @@ def test_replay_qa_review_missing_run_id_raises(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         replay_qa_review("missing", archive=archive)
+
+
+# ---------------------------------------------------------------------------
+# persist_review — commit an already-computed review without re-analyzing
+# ---------------------------------------------------------------------------
+
+
+def test_persist_review_saves_exact_reviewed_content(tmp_path):
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="major")
+
+    finding = persist_review(review, project="sigo-front", store=store)
+
+    assert finding.project == "sigo-front"
+    assert finding.route == "Fix login bug"
+    assert finding.observation == "Check login"
+    assert finding.severity == "major"
+
+
+def test_persist_review_does_not_call_claude(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("persist_review must not re-analyze")
+
+    monkeypatch.setattr("meta_harness.qa_flow.subprocess.run", boom)
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="minor")
+
+    persist_review(review, project="sigo-front", store=store)

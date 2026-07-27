@@ -279,6 +279,15 @@ whether it reproduces. The analysis call is harnessed the same way ticket
 generation is (bounded retry with the specific validation error fed back
 on a malformed response).
 
+**Also available in the web UI** — the "Review Ticket (QA Flow)" panel
+under the ClickUp tab. No typing required: click a task in the ClickUp
+browser above it to select it, pick a project from the dropdown (prefilled
+with the currently-browsed ClickUp space plus any project already used in
+existing findings), then "Analyze". Persisting from the UI saves *exactly*
+what was previewed — it doesn't silently re-run the analysis, so what you
+review is what gets saved. Past reviews are listed in a dropdown with a
+"Replay" button.
+
 ## Localhost UI
 
 ```bash
