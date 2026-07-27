@@ -440,3 +440,80 @@ def test_generate_tickets_rejects_invalid_date_format():
     )
 
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# /api/tickets/from-idea — the chat generation path
+# ---------------------------------------------------------------------------
+
+
+def test_from_idea_returns_numbered_tickets(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (
+            [ProposedTicket(title="Exportar candidatos", description="d", acceptance_criteria=[], category="backend")],
+            [],
+        ),
+    )
+
+    response = client.post("/api/tickets/from-idea", json={"idea": "exportar candidatos a excel"})
+
+    assert response.status_code == 200
+    assert response.json()["tickets"][0]["title"] == "TAB-01 | Exportar candidatos"
+
+
+def test_from_idea_passes_idea_and_history(monkeypatch):
+    captured = {}
+
+    def fake_generate(idea, **kw):
+        captured["idea"] = idea
+        captured["history"] = kw.get("history")
+        return ([ProposedTicket(title="t", description="d", acceptance_criteria=[])], [])
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", fake_generate)
+
+    client.post(
+        "/api/tickets/from-idea",
+        json={"idea": "sepáralo en dos", "history": [{"role": "user", "content": "exportar candidatos"}]},
+    )
+
+    assert captured["idea"] == "sepáralo en dos"
+    assert captured["history"] == [{"role": "user", "content": "exportar candidatos"}]
+
+
+def test_from_idea_respects_category_start_numbers(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (
+            [ProposedTicket(title="Exportar", description="d", acceptance_criteria=[], category="backend")],
+            [],
+        ),
+    )
+
+    response = client.post(
+        "/api/tickets/from-idea", json={"idea": "exportar", "start_backend": 7}
+    )
+
+    assert response.json()["tickets"][0]["title"] == "TAB-07 | Exportar"
+
+
+def test_from_idea_parse_error_returns_502(monkeypatch):
+    def boom(idea, **kw):
+        raise TicketParseError("no usable tickets")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", boom)
+
+    response = client.post("/api/tickets/from-idea", json={"idea": "algo"})
+
+    assert response.status_code == 502
+
+
+def test_from_idea_claude_missing_returns_503(monkeypatch):
+    def boom(idea, **kw):
+        raise ClaudeNotFoundError("no claude binary")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", boom)
+
+    response = client.post("/api/tickets/from-idea", json={"idea": "algo"})
+
+    assert response.status_code == 503

@@ -110,6 +110,21 @@ class VerifyTeamOut(BaseModel):
     not_found: list[str]
 
 
+class ChatTurnIn(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class GenerateFromIdeaIn(BaseModel):
+    idea: str
+    history: list[ChatTurnIn] = []
+    start_mundane: int = 1
+    start_backend: int = 1
+    start_frontend: int = 1
+    start_deployment: int = 1
+    progress_token: Optional[str] = None
+
+
 class CreateTicketsIn(BaseModel):
     tickets: list[ProposedTicketIn]
     list_id: Optional[str] = None

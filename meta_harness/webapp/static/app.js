@@ -1,24 +1,11 @@
-// Vanilla JS, no build step, no framework — tab switching + fetch calls.
+// Vanilla JS, no build step, no framework.
+//
+// The ClickUp and Linear tabs are the SAME code: everything below is written
+// once against a tracker descriptor (see TRACKERS) and then instantiated once
+// per tracker. That's what keeps the two tabs structurally identical — a
+// change to the flow lands in both automatically instead of being copied.
 
-let currentSpaceName = null; // last-picked ClickUp space, used as the default review project
-let selectedTicket = null; // { id, name } — set by picking a ticket in the cascading dropdowns
-let knownProjects = []; // distinct project names seen in existing QA findings, for the dropdown
-
-let clickupSpaces = []; // [{ id, name }] flattened across every team
-let clickupFoldersOrLists = []; // [{ id, name, kind: "folder"|"list" }] for the selected space
-let clickupTickets = []; // tasks currently loaded for the selected folder/list
-
-function initTabs() {
-  document.querySelectorAll(".tab-button").forEach((button) => {
-    button.addEventListener("click", () => {
-      if (button.disabled) return;
-      document.querySelectorAll(".tab-button").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach((p) => (p.hidden = true));
-      button.classList.add("active");
-      document.getElementById(`tab-${button.dataset.tab}`).hidden = false;
-    });
-  });
-}
+// --- Shared helpers ---------------------------------------------------------
 
 function escapeHtml(value) {
   const div = document.createElement("div");
@@ -66,15 +53,11 @@ function newProgressToken() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-// Polls GET /api/progress/{token} while a long agent call (Claude, ClickUp
-// fetch, retry-with-repair) is in flight, so the loading indicator can show
-// what's actually happening instead of a single static message. onSteps
-// receives the FULL list of steps so far (not just the latest one) — a
-// message that only shows the last step flashes by too fast to read on a
-// fast operation, which is why "Starting…" was all that was ever visible.
-// Returns a stop function — call it once the main request settles; it does
-// one final read first, to catch a step recorded just before the response
-// landed.
+// Polls GET /api/progress/{token} while a long agent call is in flight, so the
+// loading indicator shows what's actually happening. onSteps receives the FULL
+// list of steps so far. Returns a stop function — call it once the main request
+// settles; it does one final read first, to catch a step recorded just before
+// the response landed.
 function pollProgress(token, onSteps) {
   let stopped = false;
   let timer = null;
@@ -96,16 +79,9 @@ function pollProgress(token, onSteps) {
       const data = await fetchJson(`/api/progress/${encodeURIComponent(token)}`);
       if (data.steps && data.steps.length) onSteps(data.steps);
     } catch (err) {
-      // ignore — this is just a best-effort final flush
+      // ignore — best-effort final flush
     }
   };
-}
-
-function renderPhaseLog(logId, steps) {
-  const el = document.getElementById(logId);
-  if (!el) return;
-  el.innerHTML = steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
-  el.scrollTop = el.scrollHeight;
 }
 
 function downloadTextFile(filename, content, mimeType = "text/markdown") {
@@ -126,699 +102,41 @@ function severityClass(severity) {
   return "severity-minor";
 }
 
-async function loadFindings() {
-  const form = document.getElementById("qa-filters");
-  const params = new URLSearchParams(new FormData(form));
-  for (const [key, value] of [...params.entries()]) {
-    if (!value) params.delete(key);
-  }
-
-  const data = await fetchJson(`/api/qa/findings?${params.toString()}`);
-  renderCounts(data.counts);
-  renderFindings(data.findings);
+function screenshotUrl(screenshotPath) {
+  const name = screenshotPath.split("/").pop();
+  return `/api/qa/screenshots/${encodeURIComponent(name)}`;
 }
 
-function renderCounts(counts) {
-  const el = document.getElementById("qa-counts");
-  el.textContent =
-    `total: ${counts.total} | open: ${counts.open} | acknowledged: ${counts.acknowledged} | ` +
-    `closed: ${counts.closed} | critical: ${counts.critical} | major: ${counts.major} | minor: ${counts.minor}`;
+// Mirrors qa_flow.review_passed on the backend: minor counts as a pass,
+// major/critical as a fail. Only used to preview the proposed move.
+const PASSING_SEVERITIES = ["minor"];
+function reviewPassed(severity) {
+  return PASSING_SEVERITIES.includes(severity);
 }
 
-function renderFindings(findings) {
-  const tbody = document.querySelector("#qa-table tbody");
-  tbody.innerHTML = "";
-  for (const finding of findings) {
-    const row = document.createElement("tr");
-
-    const closeCell = document.createElement("td");
-    if (finding.status !== "closed") {
-      const input = document.createElement("input");
-      input.type = "text";
-      input.placeholder = "correction note";
-      const button = document.createElement("button");
-      button.textContent = "Close";
-      const feedback = document.createElement("div");
-      feedback.className = "error-text";
-      button.addEventListener("click", async () => {
-        if (!input.value) return;
-        feedback.textContent = "";
-        feedback.className = "error-text";
-        button.disabled = true;
-        try {
-          await fetchJson(`/api/qa/findings/${finding.id}/close`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ correction_note: input.value }),
-          });
-          await loadFindings();
-        } catch (err) {
-          feedback.textContent = err.message;
-          button.disabled = false;
-        }
-      });
-      closeCell.append(input, button, feedback);
-    }
-
-    row.innerHTML =
-      `<td>${escapeHtml(finding.id)}</td><td>${escapeHtml(finding.project)}</td><td>${escapeHtml(finding.route)}</td>` +
-      `<td class="${severityClass(finding.severity)}">${escapeHtml(finding.severity)}</td>` +
-      `<td>${escapeHtml(finding.status)}</td><td>${escapeHtml(finding.clickup_task_id || "-")}</td>` +
-      `<td>${escapeHtml(finding.observation)}</td>`;
-    row.appendChild(closeCell);
-    tbody.appendChild(row);
-  }
-}
-
-function initQaFilters() {
-  document.getElementById("qa-filters").addEventListener("submit", (event) => {
-    event.preventDefault();
-    loadFindings();
-  });
-}
-
-function showQaReportSuccess(message) {
-  const el = document.getElementById("qa-report-success");
-  el.textContent = message || "";
-}
-
-function initQaReportForm() {
-  const form = document.getElementById("qa-report-form");
-  const errorEl = document.getElementById("qa-report-error");
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    errorEl.textContent = "";
-    showQaReportSuccess(null);
-    const data = Object.fromEntries(new FormData(form));
-    try {
-      await fetchJson("/api/qa/findings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      form.reset();
-      showQaReportSuccess("Finding reported.");
-      await loadFindings();
-    } catch (err) {
-      errorEl.textContent = err.message;
-    }
-  });
-}
-
-// --- Generate Tickets tab -------------------------------------------------
-
-let proposedTickets = []; // [{ ticket, status: "pending"|"creating"|"created"|"error", clickup_task_id, error }]
-
-function showTicketsError(message) {
-  const el = document.getElementById("tickets-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function showTicketsSuccess(message) {
-  const el = document.getElementById("tickets-success");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function renderTicketWarnings(warnings) {
-  const el = document.getElementById("tickets-warnings");
-  if (warnings && warnings.length) {
-    el.textContent = `Warnings: ${warnings.join("; ")}`;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function setThinking(visible, message) {
-  const el = document.getElementById("tickets-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
-
-async function onGenerateTickets(event) {
-  event.preventDefault();
-  const file = document.getElementById("tickets-file-input").files[0];
-  if (!file) return;
-  showTicketsError(null);
-  showTicketsSuccess(null);
-  renderTicketWarnings([]);
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("start_mundane", document.getElementById("start-mundane").value || "1");
-  formData.append("start_backend", document.getElementById("start-backend").value || "1");
-  formData.append("start_frontend", document.getElementById("start-frontend").value || "1");
-  formData.append("start_deployment", document.getElementById("start-deployment").value || "1");
-  const teamEmailsText = document.getElementById("tickets-team-emails").value.trim();
-  if (teamEmailsText) formData.append("team_emails_text", teamEmailsText);
-  const linearTeamId = document.getElementById("tickets-linear-team").value;
-  if (linearTeamId) formData.append("linear_team_id", linearTeamId);
-  const projectStart = document.getElementById("tickets-project-start").value;
-  const projectEnd = document.getElementById("tickets-project-end").value;
-  if (projectStart) formData.append("project_start", projectStart);
-  if (projectEnd) formData.append("project_end", projectEnd);
-  const token = newProgressToken();
-  formData.append("progress_token", token);
-
-  const submitButton = event.target.querySelector('button[type="submit"]');
-  submitButton.disabled = true;
-  setThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("tickets-phase-log", steps);
-  });
-  try {
-    const body = await fetchJson("/api/tickets/generate", { method: "POST", body: formData });
-    proposedTickets = body.tickets.map((ticket) => ({ ticket, status: "pending" }));
-    renderTicketWarnings(body.warnings);
-    document.getElementById("tickets-actions").hidden = proposedTickets.length === 0;
-    renderProposedTickets();
-    showTicketsSuccess(`Analyzed document — ${proposedTickets.length} ticket(s) proposed for review below.`);
-  } catch (err) {
-    showTicketsError(err.message);
-  } finally {
-    await stopPolling();
-    submitButton.disabled = false;
-    setThinking(false);
-  }
-}
-
-function applyTicketResult(entry, result) {
-  if (result.ok) {
-    entry.status = "created";
-    entry.clickup_task_id = result.clickup_task_id;
-  } else {
-    entry.status = "error";
-    entry.error = result.error;
-  }
-}
-
-async function createOneTicket(index) {
-  const entry = proposedTickets[index];
-  entry.status = "creating";
-  renderProposedTickets();
-  const listId = document.getElementById("tickets-list-id").value || null;
-  try {
-    const body = await fetchJson("/api/tickets/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tickets: [entry.ticket], list_id: listId }),
-    });
-    applyTicketResult(entry, body.results[0]);
-  } catch (err) {
-    entry.status = "error";
-    entry.error = err.message;
-  }
-  renderProposedTickets();
-}
-
-async function onCreateAllTickets() {
-  const pending = proposedTickets.filter((e) => e.status !== "created");
-  if (!pending.length) return;
-  showTicketsSuccess(null);
-  pending.forEach((e) => (e.status = "creating"));
-  renderProposedTickets();
-  const createAllButton = document.getElementById("tickets-create-all");
-  createAllButton.disabled = true;
-  setThinking(true, `Creating ${pending.length} ticket(s) in ClickUp…`);
-  const listId = document.getElementById("tickets-list-id").value || null;
-  try {
-    const body = await fetchJson("/api/tickets/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tickets: pending.map((e) => e.ticket), list_id: listId }),
-    });
-    pending.forEach((entry, i) => applyTicketResult(entry, body.results[i]));
-    const created = pending.filter((e) => e.status === "created").length;
-    const failed = pending.length - created;
-    showTicketsSuccess(
-      failed
-        ? `Created ${created} of ${pending.length} ticket(s) — ${failed} failed, see details below.`
-        : `Created ${created} ticket(s) in ClickUp.`,
-    );
-  } catch (err) {
-    showTicketsError(err.message);
-    pending.forEach((e) => (e.status = "pending"));
-  }
-  createAllButton.disabled = false;
-  setThinking(false);
-  renderProposedTickets();
-}
-
-function renderProposedTickets() {
-  const container = document.getElementById("tickets-list");
-  container.innerHTML = "";
-  proposedTickets.forEach((entry, index) => {
-    const card = document.createElement("div");
-    card.className = "ticket-card";
-    const acItems = entry.ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
-    const priority = escapeHtml(entry.ticket.priority);
-    const category = escapeHtml(entry.ticket.category);
-    const userStory = entry.ticket.user_story
-      ? `<p class="user-story">${escapeHtml(entry.ticket.user_story).replace(/\n/g, "<br>")}</p>`
-      : "";
-    const epicLine = entry.ticket.epic ? `<p class="hint">📄 ${escapeHtml(entry.ticket.epic)}</p>` : "";
-    const routeRows = [];
-    if (entry.ticket.ui_route) routeRows.push(`<strong>📍 Ruta/Vista UI:</strong> ${escapeHtml(entry.ticket.ui_route)}`);
-    if (entry.ticket.backend_endpoint) routeRows.push(`<strong>🔌 Endpoint:</strong> ${escapeHtml(entry.ticket.backend_endpoint)}`);
-    const routes = routeRows.length ? `<div class="evidence">${routeRows.map((r) => `<div>${r}</div>`).join("")}</div>` : "";
-    const technicalNotes = entry.ticket.technical_notes
-      ? `<p class="hint">🛠️ ${escapeHtml(entry.ticket.technical_notes)}</p>`
-      : "";
-    const planningRows = [];
-    if (entry.ticket.sprint) planningRows.push(`<strong>Sprint:</strong> ${entry.ticket.sprint}`);
-    if (entry.ticket.due_date) planningRows.push(`<strong>Due:</strong> ${escapeHtml(entry.ticket.due_date)}`);
-    if (entry.ticket.assignee_name) {
-      planningRows.push(`<strong>Assigned to:</strong> ${escapeHtml(entry.ticket.assignee_name)} (${escapeHtml(entry.ticket.assignee_email)})`);
-    }
-    const planning = planningRows.length ? `<div class="evidence">${planningRows.map((r) => `<div>${r}</div>`).join("")}</div>` : "";
-    card.innerHTML =
-      `<h3>${escapeHtml(entry.ticket.title)} ` +
-      `<span class="priority-badge priority-${priority}">${priority}</span> ` +
-      `<span class="category-badge category-${category}">${category}</span></h3>` +
-      epicLine +
-      routes +
-      userStory +
-      `<p>${escapeHtml(entry.ticket.description)}</p>` +
-      (acItems ? `<ul>${acItems}</ul>` : "") +
-      technicalNotes +
-      planning +
-      `<div class="ticket-status"></div>`;
-
-    const statusEl = card.querySelector(".ticket-status");
-    if (entry.status === "created") {
-      statusEl.textContent = `Created: ${entry.clickup_task_id}`;
-      statusEl.classList.add("ticket-status-ok");
-    } else if (entry.status === "error") {
-      statusEl.textContent = `Failed: ${entry.error}`;
-      statusEl.classList.add("ticket-status-error");
-    } else if (entry.status === "creating") {
-      statusEl.textContent = "Creating...";
-    }
-
-    if (entry.status !== "created" && entry.status !== "creating") {
-      const button = document.createElement("button");
-      button.textContent = "Create";
-      button.addEventListener("click", () => createOneTicket(index));
-      card.appendChild(button);
-    }
-    container.appendChild(card);
-  });
-}
-
-async function loadTicketsListOptions() {
-  // Every real ClickUp list across every space/folder, flattened into one
-  // dropdown labeled "space / folder / list" — replaces having to know and
-  // type a raw ClickUp list id by hand.
-  const select = document.getElementById("tickets-list-id");
-  try {
-    const teams = await fetchJson("/api/clickup/teams");
-    const spacesByTeam = await Promise.all(
-      teams.map((team) => fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`)),
-    );
-    const spaces = spacesByTeam.flat();
-    const perSpace = await Promise.all(
-      spaces.map(async (space) => {
-        const [folders, folderlessLists] = await Promise.all([
-          fetchJson(`/api/clickup/folders?space_id=${encodeURIComponent(space.id)}`),
-          fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(space.id)}`),
-        ]);
-        const entries = folderlessLists.map((list) => ({ id: list.id, label: `${space.name} / ${list.name}` }));
-        const listsByFolder = await Promise.all(
-          folders.map((folder) => fetchJson(`/api/clickup/lists?folder_id=${encodeURIComponent(folder.id)}`)),
-        );
-        folders.forEach((folder, i) => {
-          for (const list of listsByFolder[i]) {
-            entries.push({ id: list.id, label: `${space.name} / ${folder.name} / ${list.name}` });
-          }
-        });
-        return entries;
-      }),
-    );
-    const listOptions = perSpace.flat();
-    select.innerHTML = "";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Default (Sprint backlog)";
-    select.appendChild(placeholder);
-    for (const entry of listOptions) {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = entry.label;
-      select.appendChild(option);
-    }
-  } catch (err) {
-    showTicketsError(`Could not load ClickUp lists: ${err.message}`);
-  }
-}
-
-async function onVerifyTeam() {
-  const emailsText = document.getElementById("tickets-team-emails").value;
-  const resultEl = document.getElementById("tickets-team-verify-result");
-  const verifyBtn = document.getElementById("tickets-verify-team-btn");
-  if (!emailsText.trim()) {
-    resultEl.hidden = false;
-    resultEl.innerHTML = '<div class="error-text">Paste at least one email first.</div>';
-    return;
-  }
-  verifyBtn.disabled = true;
-  const linearTeamId = document.getElementById("tickets-linear-team").value || null;
-  try {
-    const body = await fetchJson("/api/tickets/verify-team", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ emails_text: emailsText, linear_team_id: linearTeamId }),
-    });
-    const rows = [];
-    for (const member of body.verified) {
-      const trackers = [member.clickup_id ? "ClickUp" : null, member.linear_id ? "Linear" : null].filter(Boolean).join(" + ");
-      rows.push(`<div class="success-text">✓ ${escapeHtml(member.email)} — ${escapeHtml(member.username)} (${trackers})</div>`);
-    }
-    for (const email of body.not_found) {
-      rows.push(`<div class="error-text">✗ ${escapeHtml(email)} — no matching ClickUp/Linear workspace member</div>`);
-    }
-    resultEl.innerHTML = rows.join("") || '<div class="hint">No emails found in the text above.</div>';
-    resultEl.hidden = false;
-  } catch (err) {
-    resultEl.innerHTML = `<div class="error-text">${escapeHtml(err.message)}</div>`;
-    resultEl.hidden = false;
-  } finally {
-    verifyBtn.disabled = false;
-  }
-}
-
-async function loadTicketsLinearTeamOptions() {
-  const select = document.getElementById("tickets-linear-team");
-  try {
-    const teams = await fetchJson("/api/linear/teams");
-    select.innerHTML = "";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "(ClickUp only)";
-    select.appendChild(placeholder);
-    for (const team of teams) {
-      const option = document.createElement("option");
-      option.value = team.id;
-      option.textContent = `${team.name} (${team.key})`;
-      select.appendChild(option);
-    }
-  } catch (err) {
-    // Linear may not be configured — the ClickUp-only path still works fine.
-  }
-}
-
-function initTicketsTab() {
-  document.getElementById("tickets-generate-form").addEventListener("submit", onGenerateTickets);
-  document.getElementById("tickets-create-all").addEventListener("click", onCreateAllTickets);
-  document.getElementById("tickets-verify-team-btn").addEventListener("click", onVerifyTeam);
-  loadTicketsListOptions();
-  loadTicketsLinearTeamOptions();
-}
-
-// --- Review Ticket (QA Flow) panel ------------------------------------------
-
-function showPickerError(message) {
-  const el = document.getElementById("qa-picker-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function setPickerThinking(visible, message) {
-  const el = document.getElementById("qa-picker-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
-
-function resetSelectedTicket() {
-  selectedTicket = null;
-  document.getElementById("qa-review-selected").textContent = "No ticket selected.";
-  document.getElementById("qa-review-analyze-btn").disabled = true;
-  document.getElementById("qa-review-result").hidden = true;
-  showQaReviewError(null);
-  showQaReviewSuccess(null);
-}
-
-async function loadPickerSpaces() {
-  const spaceSelect = document.getElementById("qa-picker-space");
-  showPickerError(null);
-  setPickerThinking(true, "Loading ClickUp spaces…");
-  try {
-    const teams = await fetchJson("/api/clickup/teams");
-    const spacesByTeam = await Promise.all(
-      teams.map((team) => fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`)),
-    );
-    clickupSpaces = spacesByTeam.flat();
-    renderProjectDropdowns();
-    spaceSelect.innerHTML = "";
-    if (!clickupSpaces.length) {
-      spaceSelect.innerHTML = '<option value="">No spaces found</option>';
-      return;
-    }
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select a space…";
-    spaceSelect.appendChild(placeholder);
-    for (const space of clickupSpaces) {
-      const option = document.createElement("option");
-      option.value = space.id;
-      option.textContent = space.name;
-      spaceSelect.appendChild(option);
-    }
-  } catch (err) {
-    showPickerError(err.message);
-    spaceSelect.innerHTML = '<option value="">Failed to load spaces</option>';
-  } finally {
-    setPickerThinking(false);
-  }
-}
-
-function populateStatusSelect(select, statuses) {
-  const previousValue = select.value;
+// The placeholder is always the first (empty-valued) option, including when
+// there is nothing to choose — for optional dropdowns like Linear's project
+// that empty state IS the valid answer ("No project"), so it must not be
+// relabelled as an error.
+function fillSelect(select, options, placeholder, { keepValue = true } = {}) {
+  const previous = select.value;
   select.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "(leave as-is)";
-  select.appendChild(placeholder);
-  for (const st of statuses) {
-    const option = document.createElement("option");
-    option.value = st.status;
-    option.textContent = st.status;
-    select.appendChild(option);
+  const first = document.createElement("option");
+  first.value = "";
+  first.textContent = placeholder;
+  select.appendChild(first);
+  for (const option of options) {
+    const el = document.createElement("option");
+    el.value = option.value;
+    el.textContent = option.label;
+    select.appendChild(el);
   }
-  if (statuses.some((st) => st.status === previousValue)) select.value = previousValue;
+  if (keepValue && options.some((o) => String(o.value) === previous)) select.value = previous;
 }
 
-function populateStatusSelectsForSpace(spaceId) {
-  // ClickUp status names are per-space (lists inherit their space's status
-  // workflow unless overridden), and the space objects already carry a
-  // `statuses` array — no extra fetch needed.
-  const space = clickupSpaces.find((s) => String(s.id) === String(spaceId));
-  const statuses = (space && space.statuses) || [];
-  populateStatusSelect(document.getElementById("qa-status-pass"), statuses);
-  populateStatusSelect(document.getElementById("qa-status-fail"), statuses);
-}
-
-async function onPickerSpaceChange() {
-  const spaceSelect = document.getElementById("qa-picker-space");
-  const folderSelect = document.getElementById("qa-picker-folder");
-  const ticketSelect = document.getElementById("qa-picker-ticket");
-  const spaceId = spaceSelect.value;
-  const space = clickupSpaces.find((s) => String(s.id) === spaceId);
-  currentSpaceName = space ? space.name : null;
-  renderProjectDropdowns();
-  populateStatusSelectsForSpace(spaceId);
-
-  folderSelect.innerHTML = '<option value="">Select a space first</option>';
-  folderSelect.disabled = true;
-  ticketSelect.innerHTML = '<option value="">Select a folder/list first</option>';
-  ticketSelect.disabled = true;
-  document.getElementById("qa-bulk-run-btn").disabled = true;
-  hideBulkResults();
-  resetSelectedTicket();
-
-  if (!spaceId) return;
-
-  showPickerError(null);
-  setPickerThinking(true, "Loading folders and lists…");
-  try {
-    const [folders, folderlessLists] = await Promise.all([
-      fetchJson(`/api/clickup/folders?space_id=${encodeURIComponent(spaceId)}`),
-      fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(spaceId)}`),
-    ]);
-    clickupFoldersOrLists = [
-      ...folders.map((f) => ({ id: f.id, name: f.name, kind: "folder" })),
-      ...folderlessLists.map((l) => ({ id: l.id, name: l.name, kind: "list" })),
-    ];
-    folderSelect.innerHTML = "";
-    if (!clickupFoldersOrLists.length) {
-      folderSelect.innerHTML = '<option value="">No folders or lists found</option>';
-      return;
-    }
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select a folder or list…";
-    folderSelect.appendChild(placeholder);
-    for (const entry of clickupFoldersOrLists) {
-      const option = document.createElement("option");
-      option.value = `${entry.kind}:${entry.id}`;
-      option.textContent = entry.kind === "folder" ? `${entry.name} (folder)` : entry.name;
-      folderSelect.appendChild(option);
-    }
-    folderSelect.disabled = false;
-  } catch (err) {
-    showPickerError(err.message);
-    folderSelect.innerHTML = '<option value="">Failed to load</option>';
-  } finally {
-    setPickerThinking(false);
-  }
-}
-
-async function onPickerFolderChange() {
-  const folderSelect = document.getElementById("qa-picker-folder");
-  const ticketSelect = document.getElementById("qa-picker-ticket");
-  const value = folderSelect.value;
-  ticketSelect.innerHTML = '<option value="">Select a folder/list first</option>';
-  ticketSelect.disabled = true;
-  document.getElementById("qa-bulk-run-btn").disabled = true;
-  hideBulkResults();
-  resetSelectedTicket();
-  if (!value) return;
-
-  const [kind, id] = value.split(":");
-  showPickerError(null);
-  setPickerThinking(true, "Loading tickets…");
-  try {
-    // A folderless list is already a single list; a folder (ClickUp "Project")
-    // can contain several lists, so fetch and merge tasks across all of them —
-    // this is what lets the user go straight from folder to ticket without an
-    // extra "pick a list" step in the common single-list case.
-    const lists = kind === "list" ? [{ id, name: null }] : await fetchJson(`/api/clickup/lists?folder_id=${encodeURIComponent(id)}`);
-    if (!lists.length) {
-      ticketSelect.innerHTML = '<option value="">No lists found in this folder</option>';
-      return;
-    }
-    const tasksByList = await Promise.all(
-      lists.map((list) => fetchJson(`/api/clickup/tasks?list_id=${encodeURIComponent(list.id)}`)),
-    );
-    clickupTickets = [];
-    tasksByList.forEach((tasks, i) => {
-      for (const task of tasks) {
-        clickupTickets.push({ ...task, __listName: lists[i].name });
-      }
-    });
-    ticketSelect.innerHTML = "";
-    if (!clickupTickets.length) {
-      ticketSelect.innerHTML = '<option value="">No tickets found</option>';
-      return;
-    }
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select a ticket…";
-    ticketSelect.appendChild(placeholder);
-    const multipleLists = lists.length > 1;
-    for (const task of clickupTickets) {
-      const option = document.createElement("option");
-      option.value = task.id;
-      const status = task.status ? task.status.status : "-";
-      const prefix = multipleLists && task.__listName ? `[${task.__listName}] ` : "";
-      option.textContent = `${prefix}${task.name} (${status})`;
-      ticketSelect.appendChild(option);
-    }
-    ticketSelect.disabled = false;
-    document.getElementById("qa-bulk-run-btn").disabled = false;
-  } catch (err) {
-    showPickerError(err.message);
-    ticketSelect.innerHTML = '<option value="">Failed to load</option>';
-  } finally {
-    setPickerThinking(false);
-  }
-}
-
-function onPickerTicketChange() {
-  const ticketSelect = document.getElementById("qa-picker-ticket");
-  const taskId = ticketSelect.value;
-  if (!taskId) {
-    resetSelectedTicket();
-    return;
-  }
-  const task = clickupTickets.find((t) => String(t.id) === taskId);
-  if (task) selectClickupTask(task);
-}
-
-function initTicketPicker() {
-  document.getElementById("qa-picker-space").addEventListener("change", onPickerSpaceChange);
-  document.getElementById("qa-picker-folder").addEventListener("change", onPickerFolderChange);
-  document.getElementById("qa-picker-ticket").addEventListener("change", onPickerTicketChange);
-  loadPickerSpaces();
-}
-
-async function refreshKnownProjects() {
-  try {
-    const data = await fetchJson("/api/qa/findings");
-    const projects = new Set(data.findings.map((f) => f.project));
-    knownProjects = Array.from(projects).sort();
-  } catch (err) {
-    knownProjects = [];
-  }
-  renderProjectDropdowns();
-}
-
-function projectOptionsUnion() {
-  // Every project name this app actually knows about: previously reported/
-  // reviewed findings, every real ClickUp space, and every real Linear
-  // team — a fixed, enumerable set, which is exactly what makes this a
-  // dropdown instead of free text.
-  const options = new Set(knownProjects);
-  for (const space of clickupSpaces) options.add(space.name);
-  for (const team of linearTeams) options.add(team.name);
-  return Array.from(options).sort();
-}
-
-function populateProjectSelect(select, { includeAnyOption = false, preferredValue = null } = {}) {
-  const options = projectOptionsUnion();
-  const previousValue = select.value;
-  const hadPlaceholder = select.querySelector('option[value=""][disabled]') !== null;
-  select.innerHTML = "";
-  if (includeAnyOption) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "any project";
-    select.appendChild(option);
-  } else if (hadPlaceholder || !options.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.disabled = true;
-    option.textContent = "Select a project…";
-    if (!options.includes(previousValue)) option.selected = true;
-    select.appendChild(option);
-  }
-  for (const project of options) {
-    const option = document.createElement("option");
-    option.value = project;
-    option.textContent = project;
-    select.appendChild(option);
-  }
-  if (options.includes(previousValue)) {
-    select.value = previousValue;
-  } else if (preferredValue && options.includes(preferredValue)) {
-    select.value = preferredValue;
-  }
-}
-
-let projectBaseUrls = {}; // { projectName: baseUrl } — enables real screenshot + status-code checks
+// Base URLs are shared across both tabs — one project can be reviewed from
+// either tracker, and it should keep the same app URL either way.
+let projectBaseUrls = {};
 
 async function loadProjectConfig() {
   try {
@@ -827,1265 +145,1278 @@ async function loadProjectConfig() {
   } catch (err) {
     projectBaseUrls = {};
   }
-  updateBaseUrlField();
 }
 
-function updateBaseUrlField() {
-  const project = document.getElementById("qa-review-project").value;
-  document.getElementById("qa-project-base-url").value = projectBaseUrls[project] || "";
-  document.getElementById("qa-project-base-url-status").textContent = "";
-}
+// --- Tracker descriptors ----------------------------------------------------
+// Everything tracker-specific lives here. The panel code below never mentions
+// ClickUp or Linear directly.
 
-async function onSaveProjectBaseUrl() {
-  const project = document.getElementById("qa-review-project").value;
-  const baseUrl = document.getElementById("qa-project-base-url").value.trim();
-  const statusEl = document.getElementById("qa-project-base-url-status");
-  statusEl.textContent = "";
-  statusEl.className = "success-text";
-  if (!project) {
-    statusEl.textContent = "Pick a project first.";
-    statusEl.className = "error-text";
-    return;
-  }
-  if (!baseUrl) {
-    statusEl.textContent = "Enter a URL first.";
-    statusEl.className = "error-text";
-    return;
-  }
-  try {
-    const data = await fetchJson("/api/qa/project-config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project, base_url: baseUrl }),
-    });
-    projectBaseUrls = data.projects || {};
-    statusEl.textContent = "Saved.";
-  } catch (err) {
-    statusEl.textContent = err.message;
-    statusEl.className = "error-text";
-  }
-}
+const TRACKERS = {
+  clickup: {
+    key: "clickup",
+    label: "ClickUp",
+    noun: "ticket",
+    Noun: "Ticket",
+    createdIdField: "clickup_task_id",
 
-function renderProjectDropdowns() {
-  populateProjectSelect(document.getElementById("qa-review-project"), { preferredValue: currentSpaceName });
-  populateProjectSelect(document.getElementById("qa-report-project"));
-  populateProjectSelect(document.getElementById("qa-filter-project"), { includeAnyOption: true });
-  updateBaseUrlField();
-  const linearQaProjectSelect = document.getElementById("linear-qa-review-project");
-  if (linearQaProjectSelect) {
-    populateProjectSelect(linearQaProjectSelect, { preferredValue: currentLinearTeamName });
-    updateLinearQaBaseUrlField();
-  }
-}
+    async loadScopes() {
+      const teams = await fetchJson("/api/clickup/teams");
+      const spacesByTeam = await Promise.all(
+        teams.map((team) => fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`)),
+      );
+      return spacesByTeam.flat().map((space) => ({
+        id: space.id,
+        name: space.name,
+        statuses: (space.statuses || []).map((st) => ({ value: st.status, label: st.status })),
+      }));
+    },
 
-function selectClickupTask(task) {
-  selectedTicket = { id: task.id, name: task.name };
-  document.getElementById("qa-review-selected").textContent = `Selected: ${task.name} (${task.id})`;
-  document.getElementById("qa-review-analyze-btn").disabled = false;
-  document.getElementById("qa-review-result").hidden = true;
-  showQaReviewError(null);
-  showQaReviewSuccess(null);
-  renderProjectDropdowns();
-}
-
-function showQaReviewError(message) {
-  const el = document.getElementById("qa-review-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function showQaReviewSuccess(message) {
-  const el = document.getElementById("qa-review-success");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function setReviewThinking(visible, message) {
-  const el = document.getElementById("qa-review-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
-
-function screenshotUrl(screenshotPath) {
-  const name = screenshotPath.split("/").pop();
-  return `/api/qa/screenshots/${encodeURIComponent(name)}`;
-}
-
-function renderReviewResult(runId, review, finding, reportMarkdown) {
-  const container = document.getElementById("qa-review-result");
-  container.hidden = false;
-  const severity = escapeHtml(review.severity);
-
-  let html =
-    `<h3>${escapeHtml(review.ticket_name)} <span class="priority-badge priority-${severity}">${severity}</span></h3>` +
-    `<p>${escapeHtml(review.observation)}</p>`;
-
-  const evidenceRows = [];
-  if (review.route) evidenceRows.push(`<strong>Route checked:</strong> ${escapeHtml(review.route)}`);
-  if (review.status_code != null) evidenceRows.push(`<strong>HTTP status:</strong> ${review.status_code}`);
-  if (review.http_error) evidenceRows.push(`<strong class="error-text">Error:</strong> ${escapeHtml(review.http_error)}`);
-  if (evidenceRows.length) {
-    html += `<div class="evidence">${evidenceRows.map((row) => `<div>${row}</div>`).join("")}</div>`;
-  }
-  if (review.screenshot_path) {
-    html += `<img class="evidence-image" src="${screenshotUrl(review.screenshot_path)}" alt="Screenshot evidence">`;
-  }
-
-  html += `<div class="ticket-status"></div><div class="report-actions"></div>`;
-  container.innerHTML = html;
-
-  const reportActions = container.querySelector(".report-actions");
-  if (finding) {
-    const mdLink = document.createElement("a");
-    mdLink.href = `/api/qa/findings/${finding.id}/report.md`;
-    mdLink.textContent = "⬇ Markdown";
-    mdLink.setAttribute("download", "");
-    const pdfLink = document.createElement("a");
-    pdfLink.href = `/api/qa/findings/${finding.id}/report.pdf`;
-    pdfLink.textContent = "⬇ PDF";
-    pdfLink.setAttribute("download", "");
-    reportActions.append(mdLink, pdfLink);
-  } else if (reportMarkdown) {
-    const mdButton = document.createElement("button");
-    mdButton.type = "button";
-    mdButton.textContent = "⬇ Markdown";
-    mdButton.addEventListener("click", () => downloadTextFile(`qa-review-${review.ticket_id}.md`, reportMarkdown));
-    reportActions.appendChild(mdButton);
-  }
-
-  const statusEl = container.querySelector(".ticket-status");
-  if (finding) {
-    statusEl.textContent = `Persisted: finding #${finding.id}${finding.clickup_task_id ? ` (ClickUp: ${finding.clickup_task_id})` : ""}`;
-    statusEl.classList.add("ticket-status-ok");
-  } else {
-    statusEl.textContent = "Not persisted (dry-run)";
-    const button = document.createElement("button");
-    button.textContent = "Persist this finding";
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      showQaReviewSuccess(null);
-      showQaReviewError(null);
-      const token = newProgressToken();
-      let lastStep = "";
-      setReviewThinking(true, "Persisting…");
-      const stopPolling = pollProgress(token, (steps) => {
-        lastStep = steps[steps.length - 1];
-        setReviewThinking(true, lastStep);
-        renderPhaseLog("qa-review-phase-log", steps);
+    // ClickUp nests lists under optional folders; flattened into one labeled
+    // dropdown so the user never has to make two separate picks.
+    async loadContainers(scope) {
+      const [folders, looseLists] = await Promise.all([
+        fetchJson(`/api/clickup/folders?space_id=${encodeURIComponent(scope.id)}`),
+        fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(scope.id)}`),
+      ]);
+      const containers = looseLists.map((list) => ({ id: list.id, name: list.name }));
+      const listsByFolder = await Promise.all(
+        folders.map((folder) => fetchJson(`/api/clickup/lists?folder_id=${encodeURIComponent(folder.id)}`)),
+      );
+      folders.forEach((folder, index) => {
+        for (const list of listsByFolder[index]) {
+          containers.push({ id: list.id, name: `${folder.name} / ${list.name}` });
+        }
       });
-      try {
-        const persistedFinding = await fetchJson("/api/qa/reviews/commit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ticket_id: review.ticket_id,
-            ticket_name: review.ticket_name,
-            observation: review.observation,
-            severity: review.severity,
-            project: document.getElementById("qa-review-project").value,
-            pass_status: document.getElementById("qa-status-pass").value || null,
-            fail_status: document.getElementById("qa-status-fail").value || null,
-            route: review.route || null,
-            status_code: review.status_code != null ? review.status_code : null,
-            http_error: review.http_error || null,
-            screenshot_path: review.screenshot_path || null,
-            progress_token: token,
-          }),
-        });
-        await stopPolling();
-        renderReviewResult(runId, review, persistedFinding);
-        const statusNote = /^(Moved|Finding persisted, but could not move)/.test(lastStep) ? ` ${lastStep}` : "";
-        showQaReviewSuccess(`Finding #${persistedFinding.id} persisted.${statusNote}`);
-        refreshKnownProjects();
-        loadFindings();
-      } catch (err) {
-        await stopPolling();
-        button.disabled = false;
-        showQaReviewError(err.message);
-      } finally {
-        setReviewThinking(false);
-      }
-    });
-    container.appendChild(button);
-  }
-}
+      return containers;
+    },
 
-async function onAnalyzeReview(event) {
-  event.preventDefault();
-  if (!selectedTicket) return;
-  showQaReviewError(null);
-  showQaReviewSuccess(null);
-  const project = document.getElementById("qa-review-project").value;
-  if (!project) {
-    showQaReviewError("Pick a project first.");
-    return;
-  }
-  const token = newProgressToken();
-  setReviewThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setReviewThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("qa-review-phase-log", steps);
-  });
-  try {
-    const result = await fetchJson("/api/qa/reviews", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket_id: selectedTicket.id, project, persist: false, progress_token: token }),
-    });
-    renderReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
-    showQaReviewSuccess("Analysis complete — review the result below.");
-    await loadReviewRuns();
-  } catch (err) {
-    showQaReviewError(err.message);
-  } finally {
-    await stopPolling();
-    setReviewThinking(false);
-  }
-}
+    async loadStatuses(scope) {
+      // Already carried on the space object — no extra request needed.
+      return scope.statuses || [];
+    },
 
-async function loadReviewRuns() {
-  const select = document.getElementById("qa-review-runs-select");
-  try {
-    const runs = await fetchJson("/api/qa/reviews");
-    select.innerHTML = "";
-    for (const run of runs) {
-      const option = document.createElement("option");
-      option.value = run.run_id;
-      option.textContent = `${run.run_id} — ${run.ticket_id || "-"} (${run.started_at})`;
-      select.appendChild(option);
-    }
-  } catch (err) {
-    showQaReviewError(err.message);
-  }
-}
+    containerRequired: true,
 
-async function onReplayReview() {
-  const select = document.getElementById("qa-review-runs-select");
-  const runId = select.value;
-  if (!runId) return;
-  showQaReviewError(null);
-  showQaReviewSuccess(null);
-  const token = newProgressToken();
-  setReviewThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setReviewThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("qa-review-phase-log", steps);
-  });
-  try {
-    const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ persist: false, progress_token: token }),
-    });
-    renderReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
-    showQaReviewSuccess("Replay complete — review the result below.");
-    await loadReviewRuns();
-  } catch (err) {
-    showQaReviewError(err.message);
-  } finally {
-    await stopPolling();
-    setReviewThinking(false);
-  }
-}
+    async loadTickets(scope, container) {
+      if (!container) return [];
+      const tasks = await fetchJson(`/api/clickup/tasks?list_id=${encodeURIComponent(container.id)}`);
+      return tasks.map((task) => ({
+        id: task.id,
+        name: task.name,
+        stateLabel: task.status ? task.status.status : null,
+      }));
+    },
 
-// --- Bulk QA sweep: dry-run analyze every ticket in the current list, ------
-// --- then confirm to persist + apply status moves for the ones you keep ---
+    createBody(tickets, scope, container) {
+      return { tickets, list_id: container ? container.id : null };
+    },
+    createUrl: "/api/tickets/create",
 
-let bulkReviewResults = []; // [{ ticket_id, ticket_name, review, error }]
-let bulkReadmeMarkdown = ""; // QA-README.md content for the current bulk sweep
+    qaExtra() {
+      return {};
+    },
+  },
 
-// Mirrors qa_flow.review_passed on the backend: a minor result counts as a
-// pass, major/critical as a fail — same threshold, kept in sync by hand
-// since this is only used to preview the proposed status before commit.
-const PASSING_SEVERITIES = ["minor"];
-function reviewPassed(severity) {
-  return PASSING_SEVERITIES.includes(severity);
-}
+  linear: {
+    key: "linear",
+    label: "Linear",
+    noun: "issue",
+    Noun: "Issue",
+    createdIdField: "linear_issue_id",
 
-function showBulkError(message) {
-  const el = document.getElementById("qa-bulk-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
+    async loadScopes() {
+      const teams = await fetchJson("/api/linear/teams");
+      return teams.map((team) => ({ id: team.id, name: team.name, key: team.key }));
+    },
 
-function showBulkSuccess(message) {
-  const el = document.getElementById("qa-bulk-success");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
+    async loadContainers(scope) {
+      const projects = await fetchJson(`/api/linear/projects?team_id=${encodeURIComponent(scope.id)}`);
+      return projects.map((project) => ({ id: project.id, name: project.name }));
+    },
 
-function setBulkThinking(visible, message) {
-  const el = document.getElementById("qa-bulk-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
+    // Linear workflow states are per-team and need their own request.
+    async loadStatuses(scope) {
+      const states = await fetchJson(`/api/linear/states?team_id=${encodeURIComponent(scope.id)}`);
+      return states.map((state) => ({ value: state.id, label: state.name }));
+    },
 
-function clearBulkTable() {
-  bulkReviewResults = [];
-  bulkReadmeMarkdown = "";
-  document.getElementById("qa-bulk-results").hidden = true;
-  document.querySelector("#qa-bulk-table tbody").innerHTML = "";
-}
+    containerRequired: false,
 
-function onDownloadBulkReadme() {
-  if (!bulkReadmeMarkdown) return;
-  downloadTextFile("QA-README.md", bulkReadmeMarkdown);
-}
+    async loadTickets(scope) {
+      const issues = await fetchJson(`/api/linear/issues?team_id=${encodeURIComponent(scope.id)}`);
+      return issues.map((issue) => ({
+        id: issue.id,
+        name: `${issue.identifier} — ${issue.title}`,
+        stateLabel: issue.state ? issue.state.name : null,
+      }));
+    },
 
-function hideBulkResults() {
-  clearBulkTable();
-  showBulkError(null);
-  showBulkSuccess(null);
-}
+    createBody(tickets, scope, container) {
+      return { team_id: scope.id, tickets, project_id: container ? container.id : null };
+    },
+    createUrl: "/api/linear/issues",
 
-function renderBulkResults() {
-  const tbody = document.querySelector("#qa-bulk-table tbody");
-  tbody.innerHTML = "";
-  const passStatus = document.getElementById("qa-status-pass").value;
-  const failStatus = document.getElementById("qa-status-fail").value;
-  for (const entry of bulkReviewResults) {
-    const row = document.createElement("tr");
-    if (entry.error) {
-      row.innerHTML =
-        `<td>${escapeHtml(entry.ticket_name)}</td>` +
-        `<td class="error-text">Error: ${escapeHtml(entry.error)}</td><td>-</td><td>-</td>`;
-    } else {
-      const passed = reviewPassed(entry.review.severity);
-      const targetStatus = passed ? passStatus : failStatus;
-      const evidenceParts = [];
-      if (entry.review.route) evidenceParts.push(escapeHtml(entry.review.route));
-      if (entry.review.status_code != null) evidenceParts.push(`HTTP ${entry.review.status_code}`);
-      let evidenceCell = evidenceParts.join(" — ") || "-";
-      if (entry.review.screenshot_path) {
-        evidenceCell += ` <a href="${screenshotUrl(entry.review.screenshot_path)}" target="_blank" rel="noopener">screenshot</a>`;
-      }
-      row.innerHTML =
-        `<td>${escapeHtml(entry.ticket_name)}</td>` +
-        `<td class="${severityClass(entry.review.severity)}">${escapeHtml(entry.review.severity)} (${passed ? "pass" : "fail"})</td>` +
-        `<td>${evidenceCell}</td>` +
-        `<td>${targetStatus ? escapeHtml(targetStatus) : "(leave as-is)"}</td>`;
-    }
-    tbody.appendChild(row);
-  }
-  document.getElementById("qa-bulk-results").hidden = false;
-}
+    // Linear needs the team id to escalate a critical finding into a new issue.
+    qaExtra(scope) {
+      return { linear_team_id: scope ? scope.id : null };
+    },
+  },
+};
 
-async function onRunBulkQa() {
-  if (!clickupTickets.length) return;
-  const project = document.getElementById("qa-review-project").value;
-  if (!project) {
-    showBulkError("Pick a project first.");
-    return;
-  }
-  hideBulkResults();
-  const runBtn = document.getElementById("qa-bulk-run-btn");
-  runBtn.disabled = true;
-  const token = newProgressToken();
-  setBulkThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setBulkThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("qa-bulk-phase-log", steps);
-  });
-  const passStatus = document.getElementById("qa-status-pass").value || null;
-  const failStatus = document.getElementById("qa-status-fail").value || null;
-  try {
-    const body = await fetchJson("/api/qa/reviews/bulk", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ticket_ids: clickupTickets.map((t) => t.id), project, progress_token: token,
-        pass_status: passStatus, fail_status: failStatus,
-      }),
-    });
-    bulkReviewResults = body.results.map((r) => {
-      const ticket = clickupTickets.find((t) => String(t.id) === r.ticket_id);
-      return { ticket_id: r.ticket_id, ticket_name: ticket ? ticket.name : r.ticket_id, review: r.review, error: r.error };
-    });
-    bulkReadmeMarkdown = body.readme_markdown || "";
-    renderBulkResults();
-    const ok = bulkReviewResults.filter((r) => !r.error).length;
-    const failed = bulkReviewResults.length - ok;
-    showBulkSuccess(
-      failed
-        ? `Reviewed ${ok} of ${bulkReviewResults.length} ticket(s) — ${failed} failed to analyze, see table below.`
-        : `Reviewed ${ok} ticket(s) — check the proposed results below, then confirm to save.`,
+// --- Ticket card rendering (shared) -----------------------------------------
+
+function renderTicketCard(entry, index, tracker, onCreate) {
+  const ticket = entry.ticket;
+  const card = document.createElement("div");
+  card.className = "ticket-card";
+
+  const parts = [];
+  if (ticket.epic) parts.push(`<p class="ticket-epic">${escapeHtml(ticket.epic)}</p>`);
+  parts.push(
+    `<h3>${escapeHtml(ticket.title)}` +
+      `<span class="badge priority-${escapeHtml(ticket.priority)}">${escapeHtml(ticket.priority)}</span>` +
+      `<span class="badge category-${escapeHtml(ticket.category)}">${escapeHtml(ticket.category)}</span></h3>`,
+  );
+
+  const routeBits = [];
+  if (ticket.ui_route) routeBits.push(`<span><strong>Screen:</strong> <span class="mono">${escapeHtml(ticket.ui_route)}</span></span>`);
+  if (ticket.backend_endpoint) routeBits.push(`<span><strong>Endpoint:</strong> <span class="mono">${escapeHtml(ticket.backend_endpoint)}</span></span>`);
+  if (routeBits.length) parts.push(`<div class="meta-row">${routeBits.join("")}</div>`);
+
+  if (ticket.user_story) {
+    parts.push(
+      `<div class="ticket-section"><div class="ticket-section-label">User story</div>` +
+        `<p class="user-story">${escapeHtml(ticket.user_story)}</p></div>`,
     );
-  } catch (err) {
-    showBulkError(err.message);
-  } finally {
-    await stopPolling();
-    setBulkThinking(false);
-    runBtn.disabled = false;
   }
+
+  parts.push(
+    `<div class="ticket-section"><div class="ticket-section-label">Description</div>` +
+      `<p>${escapeHtml(ticket.description)}</p></div>`,
+  );
+
+  if (ticket.acceptance_criteria && ticket.acceptance_criteria.length) {
+    const items = ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
+    parts.push(
+      `<div class="ticket-section"><div class="ticket-section-label">Acceptance criteria</div><ul>${items}</ul></div>`,
+    );
+  }
+
+  if (ticket.technical_notes) {
+    parts.push(
+      `<div class="ticket-section"><div class="ticket-section-label">Technical notes</div>` +
+        `<p>${escapeHtml(ticket.technical_notes)}</p></div>`,
+    );
+  }
+
+  const planning = [];
+  if (ticket.sprint) planning.push(`<span><strong>Sprint:</strong> ${escapeHtml(ticket.sprint)}</span>`);
+  if (ticket.due_date) planning.push(`<span><strong>Due:</strong> ${escapeHtml(ticket.due_date)}</span>`);
+  if (ticket.assignee_name) {
+    planning.push(`<span><strong>Assignee:</strong> ${escapeHtml(ticket.assignee_name)}</span>`);
+  }
+  if (planning.length) parts.push(`<div class="meta-row">${planning.join("")}</div>`);
+
+  parts.push(`<div class="ticket-status"></div>`);
+  card.innerHTML = parts.join("");
+
+  const statusEl = card.querySelector(".ticket-status");
+  if (entry.status === "created") {
+    statusEl.textContent = `✓ Added to ${tracker.label} (${entry.createdId})`;
+    statusEl.classList.add("ticket-status-ok");
+  } else if (entry.status === "error") {
+    statusEl.textContent = `✗ Could not add: ${entry.error}`;
+    statusEl.classList.add("ticket-status-error");
+  } else if (entry.status === "creating") {
+    statusEl.textContent = "Adding…";
+  }
+
+  if (entry.status !== "created" && entry.status !== "creating") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn-success";
+    button.textContent = `Add this ${tracker.noun} to ${tracker.label}`;
+    button.addEventListener("click", () => onCreate(index));
+    card.appendChild(button);
+  }
+  return card;
 }
 
-async function onConfirmBulkQa() {
-  const project = document.getElementById("qa-review-project").value;
-  const passStatus = document.getElementById("qa-status-pass").value || null;
-  const failStatus = document.getElementById("qa-status-fail").value || null;
-  const items = bulkReviewResults
-    .filter((r) => r.review && !r.error)
-    .map((r) => ({
-      ticket_id: r.review.ticket_id,
-      ticket_name: r.review.ticket_name,
-      observation: r.review.observation,
-      severity: r.review.severity,
-      project,
-      pass_status: passStatus,
-      fail_status: failStatus,
-      route: r.review.route || null,
-      status_code: r.review.status_code != null ? r.review.status_code : null,
-      http_error: r.review.http_error || null,
-      screenshot_path: r.review.screenshot_path || null,
-    }));
-  if (!items.length) return;
-  showBulkError(null);
-  showBulkSuccess(null);
-  const confirmBtn = document.getElementById("qa-bulk-confirm-btn");
-  confirmBtn.disabled = true;
-  const token = newProgressToken();
-  setBulkThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setBulkThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("qa-bulk-phase-log", steps);
-  });
-  try {
-    const body = await fetchJson("/api/qa/reviews/bulk/commit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, progress_token: token }),
-    });
-    const ok = body.results.filter((r) => r.finding).length;
-    const failed = body.results.length - ok;
-    if (failed) {
-      const errorList = body.results.filter((r) => r.error).map((r) => `${r.ticket_id}: ${r.error}`).join("; ");
-      showBulkError(`${failed} finding(s) failed to persist — ${errorList}`);
+// --- One tracker panel ------------------------------------------------------
+
+function createTrackerPanel(tracker) {
+  const prefix = tracker.key;
+  const el = (name) => document.getElementById(`${prefix}-${name}`);
+
+  const state = {
+    scopes: [],
+    scope: null,
+    containers: [],
+    container: null,
+    statuses: [],
+    tickets: [],
+    selectedTicket: null,
+    proposed: [], // [{ ticket, status, createdId, error }]
+    chatHistory: [],
+    bulkResults: [],
+    bulkReadme: "",
+    knownProjects: [],
+  };
+
+  // --- small UI helpers, all scoped to this panel ---------------------------
+
+  const banner = (name, message) => {
+    const node = el(name);
+    if (!node) return;
+    if (message) {
+      node.textContent = message;
+      node.hidden = false;
+    } else {
+      node.hidden = true;
     }
-    showBulkSuccess(`Persisted ${ok} of ${body.results.length} finding(s), applying any configured status moves.`);
-    clearBulkTable();
-    refreshKnownProjects();
-    loadFindings();
-  } catch (err) {
-    showBulkError(err.message);
-  } finally {
-    await stopPolling();
-    setBulkThinking(false);
-    confirmBtn.disabled = false;
-  }
-}
+  };
 
-function initQaReviewPanel() {
-  document.getElementById("qa-review-form").addEventListener("submit", onAnalyzeReview);
-  document.getElementById("qa-review-replay-btn").addEventListener("click", onReplayReview);
-  document.getElementById("qa-bulk-run-btn").addEventListener("click", onRunBulkQa);
-  document.getElementById("qa-bulk-confirm-btn").addEventListener("click", onConfirmBulkQa);
-  document.getElementById("qa-bulk-readme-btn").addEventListener("click", onDownloadBulkReadme);
-  document.getElementById("qa-review-project").addEventListener("change", updateBaseUrlField);
-  document.getElementById("qa-project-base-url-save").addEventListener("click", onSaveProjectBaseUrl);
-  initTicketPicker();
-  refreshKnownProjects();
-  loadReviewRuns();
-  loadProjectConfig();
-}
+  const thinking = (name, visible, message) => {
+    const node = el(`${name}-thinking`);
+    node.hidden = !visible;
+    if (visible) node.querySelector(".thinking-text").textContent = message || "Working…";
+  };
 
-// --- Linear tab -------------------------------------------------------------
+  const phaseLog = (name, steps) => {
+    const node = el(`${name}-phase-log`);
+    if (!node) return;
+    node.innerHTML = steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
+    node.scrollTop = node.scrollHeight;
+  };
 
-let linearTeams = [];
-let linearIssues = [];
-let linearStates = [];
-let selectedLinearIssue = null;
-let currentLinearTeamName = null; // last-picked Linear team, used as the default QA review project
+  const projectName = () => (state.scope ? state.scope.name : "");
 
-// Linear's priority vocabulary matches the words used by the ticket
-// generator, so proposed tickets need no translation between trackers.
-function showLinearPickerError(message) {
-  const el = document.getElementById("linear-picker-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
+  // --- Step 1: destination --------------------------------------------------
 
-function showLinearPickerSuccess(message) {
-  const el = document.getElementById("linear-picker-success");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function setLinearPickerThinking(visible, message) {
-  const el = document.getElementById("linear-picker-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
-
-function showLinearCreateError(message) {
-  const el = document.getElementById("linear-create-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function showLinearCreateSuccess(message) {
-  const el = document.getElementById("linear-create-success");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function setLinearCreateThinking(visible, message) {
-  const el = document.getElementById("linear-create-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
-
-function populateTeamSelect(select, teams, placeholder) {
-  select.innerHTML = "";
-  const option = document.createElement("option");
-  option.value = "";
-  option.textContent = teams.length ? placeholder : "No teams found";
-  select.appendChild(option);
-  for (const team of teams) {
-    const teamOption = document.createElement("option");
-    teamOption.value = team.id;
-    teamOption.textContent = `${team.name} (${team.key})`;
-    select.appendChild(teamOption);
-  }
-}
-
-async function loadLinearTeams() {
-  showLinearPickerError(null);
-  setLinearPickerThinking(true, "Loading Linear teams…");
-  try {
-    linearTeams = await fetchJson("/api/linear/teams");
-    populateTeamSelect(document.getElementById("linear-picker-team"), linearTeams, "Select a team…");
-    populateTeamSelect(document.getElementById("linear-create-team"), linearTeams, "Select a team…");
-  } catch (err) {
-    showLinearPickerError(err.message);
-    document.getElementById("linear-picker-team").innerHTML = '<option value="">Failed to load teams</option>';
-  } finally {
-    setLinearPickerThinking(false);
-  }
-}
-
-function populateLinearStatusSelect(select, states) {
-  const previousValue = select.value;
-  select.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "(leave as-is)";
-  select.appendChild(placeholder);
-  for (const state of states) {
-    const option = document.createElement("option");
-    option.value = state.id;
-    option.textContent = state.name;
-    select.appendChild(option);
-  }
-  if (states.some((s) => s.id === previousValue)) select.value = previousValue;
-}
-
-async function onLinearTeamChange() {
-  const teamId = document.getElementById("linear-picker-team").value;
-  const issueSelect = document.getElementById("linear-picker-issue");
-  issueSelect.innerHTML = '<option value="">Select a team first</option>';
-  issueSelect.disabled = true;
-  resetSelectedLinearIssue();
-  document.getElementById("linear-qa-bulk-run-btn").disabled = true;
-  hideLinearBulkResults();
-  const team = linearTeams.find((t) => String(t.id) === teamId);
-  currentLinearTeamName = team ? team.name : null;
-  renderProjectDropdowns();
-  if (!teamId) return;
-
-  showLinearPickerError(null);
-  setLinearPickerThinking(true, "Loading issues and workflow states…");
-  try {
-    const [issues, states] = await Promise.all([
-      fetchJson(`/api/linear/issues?team_id=${encodeURIComponent(teamId)}`),
-      fetchJson(`/api/linear/states?team_id=${encodeURIComponent(teamId)}`),
-    ]);
-    linearIssues = issues;
-    linearStates = states;
-
-    const stateSelect = document.getElementById("linear-state-select");
-    stateSelect.innerHTML = "";
-    for (const state of linearStates) {
-      const option = document.createElement("option");
-      option.value = state.id;
-      option.textContent = state.name;
-      stateSelect.appendChild(option);
-    }
-    populateLinearStatusSelect(document.getElementById("linear-qa-status-pass"), linearStates);
-    populateLinearStatusSelect(document.getElementById("linear-qa-status-fail"), linearStates);
-
-    issueSelect.innerHTML = "";
-    if (!linearIssues.length) {
-      issueSelect.innerHTML = '<option value="">No issues found</option>';
+  function renderDestinationSummary() {
+    const node = el("destination-summary");
+    if (!state.scope) {
+      node.className = "selected-callout is-empty";
+      node.textContent = "No destination selected yet.";
       return;
     }
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select an issue…";
-    issueSelect.appendChild(placeholder);
-    for (const issue of linearIssues) {
-      const option = document.createElement("option");
-      option.value = issue.id;
-      const state = issue.state ? issue.state.name : "-";
-      option.textContent = `${issue.identifier} — ${issue.title} (${state})`;
-      issueSelect.appendChild(option);
+    node.className = "selected-callout";
+    const where = state.container
+      ? `<strong>${escapeHtml(state.scope.name)}</strong> › <strong>${escapeHtml(state.container.name)}</strong>`
+      : `<strong>${escapeHtml(state.scope.name)}</strong>`;
+    node.innerHTML = `New ${tracker.noun}s go to ${where}. QA reviews are recorded under project “${escapeHtml(projectName())}”.`;
+  }
+
+  async function loadScopes() {
+    banner("scope-error", null);
+    thinking("scope", true, `Loading ${tracker.label}…`);
+    try {
+      state.scopes = await tracker.loadScopes();
+      fillSelect(
+        el("scope"),
+        state.scopes.map((s) => ({ value: s.id, label: s.name })),
+        "Select…",
+      );
+      refreshProjectFilterOptions();
+    } catch (err) {
+      banner("scope-error", err.message);
+    } finally {
+      thinking("scope", false);
     }
-    issueSelect.disabled = false;
-    document.getElementById("linear-qa-bulk-run-btn").disabled = false;
-  } catch (err) {
-    showLinearPickerError(err.message);
-    issueSelect.innerHTML = '<option value="">Failed to load</option>';
-  } finally {
-    setLinearPickerThinking(false);
   }
-}
 
-function resetSelectedLinearIssue() {
-  selectedLinearIssue = null;
-  document.getElementById("linear-issue-detail").hidden = true;
-  document.getElementById("linear-state-select").disabled = true;
-  document.getElementById("linear-set-state-btn").disabled = true;
-  showLinearPickerSuccess(null);
-  document.getElementById("linear-qa-review-selected").textContent = "No issue selected.";
-  document.getElementById("linear-qa-review-analyze-btn").disabled = true;
-  document.getElementById("linear-qa-review-result").hidden = true;
-  showLinearQaReviewError(null);
-  showLinearQaReviewSuccess(null);
-}
+  async function onScopeChange() {
+    const scopeId = el("scope").value;
+    state.scope = state.scopes.find((s) => String(s.id) === scopeId) || null;
+    state.container = null;
+    state.containers = [];
+    state.statuses = [];
+    resetTicketSelection();
+    clearBulkResults();
+    renderDestinationSummary();
+    updateBaseUrlField();
+    refreshProjectFilterOptions();
 
-function onLinearIssueChange() {
-  const issueId = document.getElementById("linear-picker-issue").value;
-  if (!issueId) {
-    resetSelectedLinearIssue();
-    return;
-  }
-  const issue = linearIssues.find((i) => String(i.id) === issueId);
-  if (!issue) return;
-  selectedLinearIssue = issue;
-  renderLinearIssueDetail(issue);
-  document.getElementById("linear-state-select").disabled = false;
-  document.getElementById("linear-set-state-btn").disabled = false;
-  if (issue.state) document.getElementById("linear-state-select").value = issue.state.id;
-  showLinearPickerSuccess(null);
-
-  document.getElementById("linear-qa-review-selected").textContent = `Selected: ${issue.title} (${issue.identifier})`;
-  document.getElementById("linear-qa-review-analyze-btn").disabled = false;
-  document.getElementById("linear-qa-review-result").hidden = true;
-  showLinearQaReviewError(null);
-  showLinearQaReviewSuccess(null);
-}
-
-function renderLinearIssueDetail(issue) {
-  const container = document.getElementById("linear-issue-detail");
-  const rows = [];
-  if (issue.state) rows.push(`<strong>State:</strong> ${escapeHtml(issue.state.name)}`);
-  if (issue.assignee) rows.push(`<strong>Assignee:</strong> ${escapeHtml(issue.assignee.name)}`);
-  if (issue.dueDate) rows.push(`<strong>Due:</strong> ${escapeHtml(issue.dueDate)}`);
-  container.innerHTML =
-    `<h3>${escapeHtml(issue.identifier)} — ${escapeHtml(issue.title)}</h3>` +
-    (rows.length ? `<div class="evidence">${rows.map((r) => `<div>${r}</div>`).join("")}</div>` : "") +
-    `<p>${escapeHtml((issue.description || "(no description)").slice(0, 600))}</p>`;
-  container.hidden = false;
-}
-
-async function onSetLinearState() {
-  if (!selectedLinearIssue) return;
-  const stateId = document.getElementById("linear-state-select").value;
-  if (!stateId) return;
-  const button = document.getElementById("linear-set-state-btn");
-  button.disabled = true;
-  showLinearPickerError(null);
-  showLinearPickerSuccess(null);
-  setLinearPickerThinking(true, "Moving issue state in Linear…");
-  try {
-    const updated = await fetchJson(`/api/linear/issues/${encodeURIComponent(selectedLinearIssue.id)}/state`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state_id: stateId }),
-    });
-    const newState = updated.state ? updated.state.name : stateId;
-    showLinearPickerSuccess(`Moved ${selectedLinearIssue.identifier} to "${newState}".`);
-    selectedLinearIssue.state = updated.state || selectedLinearIssue.state;
-    renderLinearIssueDetail(selectedLinearIssue);
-  } catch (err) {
-    showLinearPickerError(err.message);
-  } finally {
-    setLinearPickerThinking(false);
-    button.disabled = false;
-  }
-}
-
-async function onLinearCreateTeamChange() {
-  const teamId = document.getElementById("linear-create-team").value;
-  const projectSelect = document.getElementById("linear-create-project");
-  projectSelect.innerHTML = '<option value="">No project</option>';
-  document.getElementById("linear-create-all-btn").disabled = !teamId;
-  if (!teamId) return;
-  try {
-    const projects = await fetchJson(`/api/linear/projects?team_id=${encodeURIComponent(teamId)}`);
-    for (const project of projects) {
-      const option = document.createElement("option");
-      option.value = project.id;
-      option.textContent = project.name;
-      projectSelect.appendChild(option);
+    const containerSelect = el("container");
+    containerSelect.innerHTML = '<option value="">Select above first</option>';
+    containerSelect.disabled = true;
+    if (!state.scope) {
+      fillSelect(el("qa-status-pass"), [], "Leave unchanged");
+      fillSelect(el("qa-status-fail"), [], "Leave unchanged");
+      return;
     }
-  } catch (err) {
-    showLinearCreateError(err.message);
-  }
-}
 
-async function onCreateLinearIssues() {
-  const teamId = document.getElementById("linear-create-team").value;
-  if (!teamId) return;
-  const pending = proposedTickets.filter((e) => e.status !== "created");
-  if (!pending.length) {
-    showLinearCreateError('No generated tickets to create — use the "Generate Tickets" tab first.');
-    return;
-  }
-  showLinearCreateError(null);
-  showLinearCreateSuccess(null);
-  const button = document.getElementById("linear-create-all-btn");
-  button.disabled = true;
-  setLinearCreateThinking(true, `Creating ${pending.length} issue(s) in Linear…`);
-  const projectId = document.getElementById("linear-create-project").value || null;
-  try {
-    const body = await fetchJson("/api/linear/issues", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ team_id: teamId, tickets: pending.map((e) => e.ticket), project_id: projectId }),
-    });
-    const created = body.results.filter((r) => r.ok).length;
-    const failed = body.results.length - created;
-    renderLinearCreateResults(body.results);
-    showLinearCreateSuccess(
-      failed
-        ? `Created ${created} of ${body.results.length} issue(s) — ${failed} failed, see details below.`
-        : `Created ${created} issue(s) in Linear.`,
-    );
-  } catch (err) {
-    showLinearCreateError(err.message);
-  } finally {
-    setLinearCreateThinking(false);
-    button.disabled = false;
-  }
-}
-
-function renderLinearCreateResults(results) {
-  const container = document.getElementById("linear-create-results");
-  container.innerHTML = "";
-  for (const result of results) {
-    const row = document.createElement("div");
-    row.className = "ticket-status";
-    if (result.ok) {
-      row.classList.add("ticket-status-ok");
-      row.textContent = `Created: ${result.ticket.title} (${result.linear_issue_id})`;
-    } else {
-      row.classList.add("ticket-status-error");
-      row.textContent = `Failed: ${result.ticket.title} — ${result.error}`;
+    banner("scope-error", null);
+    thinking("scope", true, "Loading destinations and statuses…");
+    try {
+      const [containers, statuses] = await Promise.all([
+        tracker.loadContainers(state.scope),
+        tracker.loadStatuses(state.scope),
+      ]);
+      state.containers = containers;
+      state.statuses = statuses;
+      fillSelect(
+        containerSelect,
+        containers.map((c) => ({ value: c.id, label: c.name })),
+        tracker.containerRequired ? "Select…" : "No project",
+      );
+      containerSelect.disabled = false;
+      fillSelect(el("qa-status-pass"), statuses, "Leave unchanged");
+      fillSelect(el("qa-status-fail"), statuses, "Leave unchanged");
+      if (!tracker.containerRequired) await loadTickets();
+    } catch (err) {
+      banner("scope-error", err.message);
+    } finally {
+      thinking("scope", false);
     }
-    container.appendChild(row);
   }
-}
 
-// --- Review Issue (QA Flow) panel — Linear tab, mirrors the ClickUp panel ---
-// --- above but reuses the team/issue picker already on this tab -----------
-
-function showLinearQaReviewError(message) {
-  const el = document.getElementById("linear-qa-review-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
+  async function onContainerChange() {
+    const containerId = el("container").value;
+    state.container = state.containers.find((c) => String(c.id) === containerId) || null;
+    renderDestinationSummary();
+    resetTicketSelection();
+    clearBulkResults();
+    await loadTickets();
   }
-}
 
-function showLinearQaReviewSuccess(message) {
-  const el = document.getElementById("linear-qa-review-success");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
+  async function loadTickets() {
+    const select = el("qa-ticket");
+    if (!state.scope || (tracker.containerRequired && !state.container)) {
+      select.innerHTML = '<option value="">Choose a destination in step 1 first</option>';
+      select.disabled = true;
+      el("qa-bulk-run-btn").disabled = true;
+      return;
+    }
+    thinking("scope", true, `Loading ${tracker.noun}s…`);
+    try {
+      state.tickets = await tracker.loadTickets(state.scope, state.container);
+      fillSelect(
+        select,
+        state.tickets.map((t) => ({
+          value: t.id,
+          label: t.stateLabel ? `${t.name} (${t.stateLabel})` : t.name,
+        })),
+        `Select a ${tracker.noun}…`,
+        { keepValue: false },
+      );
+      select.disabled = state.tickets.length === 0;
+      el("qa-bulk-run-btn").disabled = state.tickets.length === 0;
+    } catch (err) {
+      banner("scope-error", err.message);
+      select.innerHTML = '<option value="">Failed to load</option>';
+      select.disabled = true;
+    } finally {
+      thinking("scope", false);
+    }
   }
-}
 
-function setLinearQaReviewThinking(visible, message) {
-  const el = document.getElementById("linear-qa-review-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
+  // --- Step 2: generation ---------------------------------------------------
 
-function updateLinearQaBaseUrlField() {
-  const project = document.getElementById("linear-qa-review-project").value;
-  document.getElementById("linear-qa-project-base-url").value = projectBaseUrls[project] || "";
-  document.getElementById("linear-qa-project-base-url-status").textContent = "";
-}
-
-async function onSaveLinearQaProjectBaseUrl() {
-  const project = document.getElementById("linear-qa-review-project").value;
-  const baseUrl = document.getElementById("linear-qa-project-base-url").value.trim();
-  const statusEl = document.getElementById("linear-qa-project-base-url-status");
-  statusEl.textContent = "";
-  statusEl.className = "success-text";
-  if (!project) {
-    statusEl.textContent = "Pick a project first.";
-    statusEl.className = "error-text";
-    return;
+  function setMode(mode) {
+    el("mode-document").hidden = mode !== "document";
+    el("mode-chat").hidden = mode !== "chat";
+    el("mode-switch")
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   }
-  if (!baseUrl) {
-    statusEl.textContent = "Enter a URL first.";
-    statusEl.className = "error-text";
-    return;
+
+  function startNumbers() {
+    return {
+      start_mundane: el("start-mundane").value || "1",
+      start_backend: el("start-backend").value || "1",
+      start_frontend: el("start-frontend").value || "1",
+      start_deployment: el("start-deployment").value || "1",
+    };
   }
-  try {
-    const data = await fetchJson("/api/qa/project-config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project, base_url: baseUrl }),
+
+  function renderProposed() {
+    const container = el("tickets-list");
+    container.innerHTML = "";
+    state.proposed.forEach((entry, index) => {
+      container.appendChild(renderTicketCard(entry, index, tracker, createOne));
     });
-    projectBaseUrls = data.projects || {};
-    statusEl.textContent = "Saved.";
-  } catch (err) {
-    statusEl.textContent = err.message;
-    statusEl.className = "error-text";
-  }
-}
-
-function renderLinearQaReviewResult(runId, review, finding, reportMarkdown) {
-  const container = document.getElementById("linear-qa-review-result");
-  container.hidden = false;
-  const severity = escapeHtml(review.severity);
-
-  let html =
-    `<h3>${escapeHtml(review.ticket_name)} <span class="priority-badge priority-${severity}">${severity}</span></h3>` +
-    `<p>${escapeHtml(review.observation)}</p>`;
-
-  const evidenceRows = [];
-  if (review.route) evidenceRows.push(`<strong>Route checked:</strong> ${escapeHtml(review.route)}`);
-  if (review.status_code != null) evidenceRows.push(`<strong>HTTP status:</strong> ${review.status_code}`);
-  if (review.http_error) evidenceRows.push(`<strong class="error-text">Error:</strong> ${escapeHtml(review.http_error)}`);
-  if (evidenceRows.length) {
-    html += `<div class="evidence">${evidenceRows.map((row) => `<div>${row}</div>`).join("")}</div>`;
-  }
-  if (review.screenshot_path) {
-    html += `<img class="evidence-image" src="${screenshotUrl(review.screenshot_path)}" alt="Screenshot evidence">`;
+    el("generate-actions").hidden = state.proposed.length === 0;
   }
 
-  html += `<div class="ticket-status"></div><div class="report-actions"></div>`;
-  container.innerHTML = html;
-
-  const reportActions = container.querySelector(".report-actions");
-  if (finding) {
-    const mdLink = document.createElement("a");
-    mdLink.href = `/api/qa/findings/${finding.id}/report.md`;
-    mdLink.textContent = "⬇ Markdown";
-    mdLink.setAttribute("download", "");
-    const pdfLink = document.createElement("a");
-    pdfLink.href = `/api/qa/findings/${finding.id}/report.pdf`;
-    pdfLink.textContent = "⬇ PDF";
-    pdfLink.setAttribute("download", "");
-    reportActions.append(mdLink, pdfLink);
-  } else if (reportMarkdown) {
-    const mdButton = document.createElement("button");
-    mdButton.type = "button";
-    mdButton.textContent = "⬇ Markdown";
-    mdButton.addEventListener("click", () => downloadTextFile(`qa-review-${review.ticket_id}.md`, reportMarkdown));
-    reportActions.appendChild(mdButton);
+  function acceptGenerated(body, successMessage) {
+    state.proposed = body.tickets.map((ticket) => ({ ticket, status: "pending" }));
+    banner("generate-warnings", body.warnings && body.warnings.length ? `Note: ${body.warnings.join("; ")}` : null);
+    renderProposed();
+    banner("generate-success", successMessage);
   }
 
-  const statusEl = container.querySelector(".ticket-status");
-  if (finding) {
-    statusEl.textContent = `Persisted: finding #${finding.id}${finding.linear_issue_id ? ` (Linear: ${finding.linear_issue_id})` : ""}`;
-    statusEl.classList.add("ticket-status-ok");
-  } else {
-    statusEl.textContent = "Not persisted (dry-run)";
-    const button = document.createElement("button");
-    button.textContent = "Persist this finding";
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      showLinearQaReviewSuccess(null);
-      showLinearQaReviewError(null);
-      const token = newProgressToken();
-      let lastStep = "";
-      setLinearQaReviewThinking(true, "Persisting…");
-      const stopPolling = pollProgress(token, (steps) => {
-        lastStep = steps[steps.length - 1];
-        setLinearQaReviewThinking(true, lastStep);
-        renderPhaseLog("linear-qa-review-phase-log", steps);
+  async function onGenerateFromDocument(event) {
+    event.preventDefault();
+    const file = el("file-input").files[0];
+    if (!file) return;
+    banner("generate-error", null);
+    banner("generate-success", null);
+    banner("generate-warnings", null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+    Object.entries(startNumbers()).forEach(([key, value]) => formData.append(key, value));
+    const emails = el("team-emails").value.trim();
+    if (emails) formData.append("team_emails_text", emails);
+    if (tracker.key === "linear" && state.scope) formData.append("linear_team_id", state.scope.id);
+    const start = el("project-start").value;
+    const end = el("project-end").value;
+    if (start) formData.append("project_start", start);
+    if (end) formData.append("project_end", end);
+    const token = newProgressToken();
+    formData.append("progress_token", token);
+
+    const submit = event.target.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    thinking("generate", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("generate", true, steps[steps.length - 1]);
+      phaseLog("generate", steps);
+    });
+    try {
+      const body = await fetchJson("/api/tickets/generate", { method: "POST", body: formData });
+      acceptGenerated(body, `${body.tickets.length} ${tracker.noun}(s) drafted — review them below, then add them.`);
+    } catch (err) {
+      banner("generate-error", err.message);
+    } finally {
+      await stop();
+      submit.disabled = false;
+      thinking("generate", false);
+    }
+  }
+
+  // --- chat mode ------------------------------------------------------------
+
+  function renderChat() {
+    const log = el("chat-log");
+    if (!state.chatHistory.length) {
+      log.innerHTML =
+        `<div class="chat-empty">Describe what you need — for example “necesito una pantalla para exportar ` +
+        `candidatos a Excel”. You'll get back a fully formatted ${tracker.noun} you can review and add.</div>`;
+      return;
+    }
+    log.innerHTML = state.chatHistory
+      .map(
+        (turn) =>
+          `<div class="chat-msg chat-msg-${turn.role === "assistant" ? "bot" : "user"}">${escapeHtml(turn.content)}</div>`,
+      )
+      .join("");
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function onChatSubmit(event) {
+    event.preventDefault();
+    const input = el("chat-input");
+    const idea = input.value.trim();
+    if (!idea) return;
+    banner("generate-error", null);
+    banner("generate-success", null);
+    banner("generate-warnings", null);
+
+    const history = state.chatHistory.slice();
+    state.chatHistory.push({ role: "user", content: idea });
+    renderChat();
+    input.value = "";
+
+    const submit = event.target.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    const token = newProgressToken();
+    thinking("generate", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("generate", true, steps[steps.length - 1]);
+      phaseLog("generate", steps);
+    });
+    try {
+      const body = await fetchJson("/api/tickets/from-idea", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idea, history, ...startNumbers(), progress_token: token }),
       });
-      try {
-        const persistedFinding = await fetchJson("/api/qa/reviews/commit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      const titles = body.tickets.map((t) => `• ${t.title}`).join("\n");
+      const reply =
+        body.tickets.length === 1
+          ? `I drafted this ${tracker.noun}:\n${titles}\n\nReview it below and add it when it looks right.`
+          : `I drafted ${body.tickets.length} ${tracker.noun}s:\n${titles}\n\nReview them below and add them when they look right.`;
+      state.chatHistory.push({ role: "assistant", content: reply });
+      renderChat();
+      acceptGenerated(body, null);
+    } catch (err) {
+      state.chatHistory.push({ role: "assistant", content: `Sorry — ${err.message}` });
+      renderChat();
+      banner("generate-error", err.message);
+    } finally {
+      await stop();
+      submit.disabled = false;
+      thinking("generate", false);
+    }
+  }
+
+  function onChatReset() {
+    state.chatHistory = [];
+    state.proposed = [];
+    renderChat();
+    renderProposed();
+    banner("generate-success", null);
+    banner("generate-error", null);
+    banner("generate-warnings", null);
+  }
+
+  // --- creating -------------------------------------------------------------
+
+  function destinationReady() {
+    if (!state.scope) {
+      banner("generate-error", "Choose a destination in step 1 first.");
+      return false;
+    }
+    if (tracker.containerRequired && !state.container) {
+      banner("generate-error", `Choose a ${tracker.key === "clickup" ? "list" : "project"} in step 1 first.`);
+      return false;
+    }
+    return true;
+  }
+
+  function applyResult(entry, result) {
+    if (result && result.ok) {
+      entry.status = "created";
+      entry.createdId = result[tracker.createdIdField];
+    } else {
+      entry.status = "error";
+      entry.error = (result && result.error) || "Unknown error";
+    }
+  }
+
+  async function postCreate(entries) {
+    const body = await fetchJson(tracker.createUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(tracker.createBody(entries.map((e) => e.ticket), state.scope, state.container)),
+    });
+    entries.forEach((entry, i) => applyResult(entry, body.results[i]));
+  }
+
+  async function createOne(index) {
+    if (!destinationReady()) return;
+    const entry = state.proposed[index];
+    entry.status = "creating";
+    renderProposed();
+    try {
+      await postCreate([entry]);
+    } catch (err) {
+      entry.status = "error";
+      entry.error = err.message;
+    }
+    renderProposed();
+    loadTickets();
+  }
+
+  async function onCreateAll() {
+    if (!destinationReady()) return;
+    const pending = state.proposed.filter((e) => e.status !== "created");
+    if (!pending.length) return;
+    banner("generate-success", null);
+    banner("generate-error", null);
+    pending.forEach((e) => (e.status = "creating"));
+    renderProposed();
+    const button = el("create-all");
+    button.disabled = true;
+    thinking("generate", true, `Adding ${pending.length} ${tracker.noun}(s) to ${tracker.label}…`);
+    try {
+      await postCreate(pending);
+      const created = pending.filter((e) => e.status === "created").length;
+      const failed = pending.length - created;
+      banner(
+        "generate-success",
+        failed
+          ? `Added ${created} of ${pending.length} — ${failed} failed, see the cards below.`
+          : `Added ${created} ${tracker.noun}(s) to ${tracker.label}.`,
+      );
+    } catch (err) {
+      banner("generate-error", err.message);
+      pending.forEach((e) => (e.status = "pending"));
+    } finally {
+      button.disabled = false;
+      thinking("generate", false);
+      renderProposed();
+      loadTickets();
+    }
+  }
+
+  function onClearTickets() {
+    state.proposed = [];
+    renderProposed();
+    banner("generate-success", null);
+    banner("generate-warnings", null);
+  }
+
+  async function onVerifyTeam() {
+    const text = el("team-emails").value;
+    const result = el("team-verify-result");
+    const button = el("verify-team-btn");
+    if (!text.trim()) {
+      result.hidden = false;
+      result.innerHTML = '<div class="error-text">Paste at least one email first.</div>';
+      return;
+    }
+    button.disabled = true;
+    try {
+      const body = await fetchJson("/api/tickets/verify-team", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emails_text: text,
+          linear_team_id: tracker.key === "linear" && state.scope ? state.scope.id : null,
+        }),
+      });
+      const rows = body.verified.map((m) => {
+        const found = [m.clickup_id ? "ClickUp" : null, m.linear_id ? "Linear" : null].filter(Boolean).join(" + ");
+        return `<div class="success-text">✓ ${escapeHtml(m.email)} — ${escapeHtml(m.username)} (${found})</div>`;
+      });
+      rows.push(
+        ...body.not_found.map((e) => `<div class="error-text">✗ ${escapeHtml(e)} — no matching workspace member</div>`),
+      );
+      result.innerHTML = rows.join("") || '<div class="field-note">No emails found in the text above.</div>';
+      result.hidden = false;
+    } catch (err) {
+      result.innerHTML = `<div class="error-text">${escapeHtml(err.message)}</div>`;
+      result.hidden = false;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // --- Step 3: QA review ----------------------------------------------------
+
+  function resetTicketSelection() {
+    state.selectedTicket = null;
+    const node = el("qa-selected");
+    node.className = "selected-callout is-empty";
+    node.textContent = `No ${tracker.noun} selected.`;
+    el("qa-analyze-btn").disabled = true;
+    el("qa-result").hidden = true;
+    banner("qa-error", null);
+    banner("qa-success", null);
+  }
+
+  function onTicketChange() {
+    const id = el("qa-ticket").value;
+    if (!id) {
+      resetTicketSelection();
+      return;
+    }
+    const ticket = state.tickets.find((t) => String(t.id) === id);
+    if (!ticket) return;
+    state.selectedTicket = ticket;
+    const node = el("qa-selected");
+    node.className = "selected-callout";
+    node.innerHTML = `Reviewing <strong>${escapeHtml(ticket.name)}</strong>`;
+    el("qa-analyze-btn").disabled = false;
+    el("qa-result").hidden = true;
+    banner("qa-error", null);
+    banner("qa-success", null);
+  }
+
+  function updateBaseUrlField() {
+    el("qa-base-url").value = projectBaseUrls[projectName()] || "";
+    el("qa-base-url-status").textContent = "";
+  }
+
+  async function onSaveBaseUrl() {
+    const project = projectName();
+    const baseUrl = el("qa-base-url").value.trim();
+    const status = el("qa-base-url-status");
+    status.className = "success-text";
+    if (!project) {
+      status.className = "error-text";
+      status.textContent = "Choose a destination in step 1 first.";
+      return;
+    }
+    if (!baseUrl) {
+      status.className = "error-text";
+      status.textContent = "Enter a URL first.";
+      return;
+    }
+    try {
+      const data = await fetchJson("/api/qa/project-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project, base_url: baseUrl }),
+      });
+      projectBaseUrls = data.projects || {};
+      status.textContent = "Saved.";
+    } catch (err) {
+      status.className = "error-text";
+      status.textContent = err.message;
+    }
+  }
+
+  function qaBody(extra) {
+    return {
+      project: projectName(),
+      tracker: tracker.key,
+      ...tracker.qaExtra(state.scope),
+      ...extra,
+    };
+  }
+
+  function renderQaResult(review, finding, reportMarkdown) {
+    const container = el("qa-result");
+    container.hidden = false;
+    const severity = escapeHtml(review.severity);
+    const verdict = reviewPassed(review.severity) ? "PASS" : "FAIL";
+
+    let html =
+      `<h3>${escapeHtml(review.ticket_name)}` +
+      `<span class="badge severity-${severity}">${severity} · ${verdict}</span></h3>` +
+      `<div class="ticket-section"><div class="ticket-section-label">What QA found</div>` +
+      `<p>${escapeHtml(review.observation)}</p></div>`;
+
+    const rows = [];
+    if (review.route) rows.push(`<div><strong>Route checked:</strong> <span class="mono">${escapeHtml(review.route)}</span></div>`);
+    if (review.status_code != null) rows.push(`<div><strong>HTTP status:</strong> ${review.status_code}</div>`);
+    if (review.http_error) rows.push(`<div class="error-text"><strong>Error:</strong> ${escapeHtml(review.http_error)}</div>`);
+    if (rows.length) html += `<div class="evidence">${rows.join("")}</div>`;
+    if (review.screenshot_path) {
+      html += `<img class="evidence-image" src="${screenshotUrl(review.screenshot_path)}" alt="Screenshot evidence">`;
+    }
+
+    html += `<div class="ticket-status"></div><div class="report-actions"></div>`;
+    container.innerHTML = html;
+
+    const actions = container.querySelector(".report-actions");
+    if (finding) {
+      for (const [href, text] of [
+        [`/api/qa/findings/${finding.id}/report.md`, "⬇ Markdown"],
+        [`/api/qa/findings/${finding.id}/report.pdf`, "⬇ PDF"],
+      ]) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.textContent = text;
+        link.setAttribute("download", "");
+        actions.appendChild(link);
+      }
+    } else if (reportMarkdown) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "⬇ Markdown";
+      button.addEventListener("click", () => downloadTextFile(`qa-review-${review.ticket_id}.md`, reportMarkdown));
+      actions.appendChild(button);
+    }
+
+    const statusEl = container.querySelector(".ticket-status");
+    if (finding) {
+      const linked = finding[tracker.createdIdField];
+      statusEl.textContent = `✓ Saved as finding #${finding.id}${linked ? ` · linked ${tracker.label} item ${linked}` : ""}`;
+      statusEl.classList.add("ticket-status-ok");
+    } else {
+      statusEl.textContent = "Preview only — nothing saved yet.";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn-success";
+      button.textContent = `Save this result${moveTargetLabel(review.severity) ? ` and move the ${tracker.noun}` : ""}`;
+      button.addEventListener("click", () => persistReview(review, button));
+      container.appendChild(button);
+    }
+  }
+
+  function moveTargetLabel(severity) {
+    const value = reviewPassed(severity) ? el("qa-status-pass").value : el("qa-status-fail").value;
+    if (!value) return null;
+    const match = state.statuses.find((s) => String(s.value) === value);
+    return match ? match.label : value;
+  }
+
+  async function persistReview(review, button) {
+    button.disabled = true;
+    banner("qa-error", null);
+    banner("qa-success", null);
+    const token = newProgressToken();
+    let lastStep = "";
+    thinking("qa", true, "Saving…");
+    const stop = pollProgress(token, (steps) => {
+      lastStep = steps[steps.length - 1];
+      thinking("qa", true, lastStep);
+      phaseLog("qa", steps);
+    });
+    try {
+      const finding = await fetchJson("/api/qa/reviews/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          qaBody({
             ticket_id: review.ticket_id,
             ticket_name: review.ticket_name,
             observation: review.observation,
             severity: review.severity,
-            project: document.getElementById("linear-qa-review-project").value,
-            tracker: "linear",
-            linear_team_id: document.getElementById("linear-picker-team").value,
-            pass_status: document.getElementById("linear-qa-status-pass").value || null,
-            fail_status: document.getElementById("linear-qa-status-fail").value || null,
+            pass_status: el("qa-status-pass").value || null,
+            fail_status: el("qa-status-fail").value || null,
             route: review.route || null,
             status_code: review.status_code != null ? review.status_code : null,
             http_error: review.http_error || null,
             screenshot_path: review.screenshot_path || null,
             progress_token: token,
           }),
-        });
-        await stopPolling();
-        renderLinearQaReviewResult(runId, review, persistedFinding);
-        const statusNote = /^(Moved|Finding persisted, but could not move)/.test(lastStep) ? ` ${lastStep}` : "";
-        showLinearQaReviewSuccess(`Finding #${persistedFinding.id} persisted.${statusNote}`);
-        refreshKnownProjects();
-        loadFindings();
-      } catch (err) {
-        await stopPolling();
-        button.disabled = false;
-        showLinearQaReviewError(err.message);
-      } finally {
-        setLinearQaReviewThinking(false);
+        ),
+      });
+      await stop();
+      renderQaResult(review, finding);
+      const moved = /^(Moved|Finding persisted, but could not move)/.test(lastStep) ? ` ${lastStep}` : "";
+      banner("qa-success", `Finding #${finding.id} saved.${moved}`);
+      await Promise.all([loadFindings(), loadTickets()]);
+    } catch (err) {
+      await stop();
+      button.disabled = false;
+      banner("qa-error", err.message);
+    } finally {
+      thinking("qa", false);
+    }
+  }
+
+  async function onAnalyze() {
+    if (!state.selectedTicket) return;
+    if (!projectName()) {
+      banner("qa-error", "Choose a destination in step 1 first.");
+      return;
+    }
+    banner("qa-error", null);
+    banner("qa-success", null);
+    const token = newProgressToken();
+    el("qa-analyze-btn").disabled = true;
+    thinking("qa", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("qa", true, steps[steps.length - 1]);
+      phaseLog("qa", steps);
+    });
+    try {
+      const result = await fetchJson("/api/qa/reviews", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(qaBody({ ticket_id: state.selectedTicket.id, persist: false, progress_token: token })),
+      });
+      renderQaResult(result.review, result.finding, result.report_markdown);
+      banner("qa-success", "Review complete — check the result below, then save it if it looks right.");
+      await loadReviewRuns();
+    } catch (err) {
+      banner("qa-error", err.message);
+    } finally {
+      await stop();
+      el("qa-analyze-btn").disabled = false;
+      thinking("qa", false);
+    }
+  }
+
+  async function loadReviewRuns() {
+    const select = el("qa-runs-select");
+    try {
+      const runs = await fetchJson("/api/qa/reviews");
+      fillSelect(
+        select,
+        runs.map((run) => ({ value: run.run_id, label: `${run.ticket_id || "-"} · ${run.started_at}` })),
+        "Select a recorded review…",
+      );
+    } catch (err) {
+      banner("qa-error", err.message);
+    }
+  }
+
+  async function onReplay() {
+    const runId = el("qa-runs-select").value;
+    if (!runId) return;
+    banner("qa-error", null);
+    banner("qa-success", null);
+    const token = newProgressToken();
+    thinking("qa", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("qa", true, steps[steps.length - 1]);
+      phaseLog("qa", steps);
+    });
+    try {
+      const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          persist: false,
+          progress_token: token,
+          ...tracker.qaExtra(state.scope),
+        }),
+      });
+      renderQaResult(result.review, result.finding, result.report_markdown);
+      banner("qa-success", "Replay complete — check the result below.");
+    } catch (err) {
+      banner("qa-error", err.message);
+    } finally {
+      await stop();
+      thinking("qa", false);
+    }
+  }
+
+  // --- bulk QA --------------------------------------------------------------
+
+  function clearBulkResults() {
+    state.bulkResults = [];
+    state.bulkReadme = "";
+    const node = el("qa-bulk-results");
+    if (node) node.hidden = true;
+    const body = document.querySelector(`#${prefix}-qa-bulk-table tbody`);
+    if (body) body.innerHTML = "";
+  }
+
+  function renderBulkResults() {
+    const tbody = document.querySelector(`#${prefix}-qa-bulk-table tbody`);
+    tbody.innerHTML = "";
+    for (const entry of state.bulkResults) {
+      const row = document.createElement("tr");
+      if (entry.error) {
+        row.innerHTML =
+          `<td>${escapeHtml(entry.ticket_name)}</td>` +
+          `<td class="error-text">Could not review: ${escapeHtml(entry.error)}</td><td>—</td><td>—</td>`;
+      } else {
+        const passed = reviewPassed(entry.review.severity);
+        const target = moveTargetLabel(entry.review.severity);
+        const bits = [];
+        if (entry.review.route) bits.push(escapeHtml(entry.review.route));
+        if (entry.review.status_code != null) bits.push(`HTTP ${entry.review.status_code}`);
+        let evidence = bits.join(" · ") || "—";
+        if (entry.review.screenshot_path) {
+          evidence += ` <a href="${screenshotUrl(entry.review.screenshot_path)}" target="_blank" rel="noopener">screenshot</a>`;
+        }
+        row.innerHTML =
+          `<td>${escapeHtml(entry.ticket_name)}</td>` +
+          `<td><span class="badge ${severityClass(entry.review.severity)}">${escapeHtml(entry.review.severity)} · ${passed ? "PASS" : "FAIL"}</span></td>` +
+          `<td>${evidence}</td>` +
+          `<td>${target ? escapeHtml(target) : "Leave unchanged"}</td>`;
       }
-    });
-    container.appendChild(button);
+      tbody.appendChild(row);
+    }
+    el("qa-bulk-results").hidden = false;
   }
-}
 
-async function onAnalyzeLinearQaReview(event) {
-  event.preventDefault();
-  if (!selectedLinearIssue) return;
-  showLinearQaReviewError(null);
-  showLinearQaReviewSuccess(null);
-  const project = document.getElementById("linear-qa-review-project").value;
-  if (!project) {
-    showLinearQaReviewError("Pick a project first.");
-    return;
-  }
-  const token = newProgressToken();
-  setLinearQaReviewThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setLinearQaReviewThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("linear-qa-review-phase-log", steps);
-  });
-  try {
-    const result = await fetchJson("/api/qa/reviews", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ticket_id: selectedLinearIssue.id, project, tracker: "linear",
-        linear_team_id: document.getElementById("linear-picker-team").value,
-        persist: false, progress_token: token,
-      }),
+  async function onRunBulk() {
+    if (!state.tickets.length) return;
+    if (!projectName()) {
+      banner("qa-error", "Choose a destination in step 1 first.");
+      return;
+    }
+    clearBulkResults();
+    banner("qa-error", null);
+    banner("qa-success", null);
+    const button = el("qa-bulk-run-btn");
+    button.disabled = true;
+    const token = newProgressToken();
+    thinking("qa", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("qa", true, steps[steps.length - 1]);
+      phaseLog("qa", steps);
     });
-    renderLinearQaReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
-    showLinearQaReviewSuccess("Analysis complete — review the result below.");
-    await loadLinearQaReviewRuns();
-  } catch (err) {
-    showLinearQaReviewError(err.message);
-  } finally {
-    await stopPolling();
-    setLinearQaReviewThinking(false);
+    try {
+      const body = await fetchJson("/api/qa/reviews/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          qaBody({
+            ticket_ids: state.tickets.map((t) => t.id),
+            progress_token: token,
+            pass_status: el("qa-status-pass").value || null,
+            fail_status: el("qa-status-fail").value || null,
+          }),
+        ),
+      });
+      state.bulkResults = body.results.map((r) => {
+        const ticket = state.tickets.find((t) => String(t.id) === r.ticket_id);
+        return {
+          ticket_id: r.ticket_id,
+          ticket_name: ticket ? ticket.name : r.ticket_id,
+          review: r.review,
+          error: r.error,
+        };
+      });
+      state.bulkReadme = body.readme_markdown || "";
+      renderBulkResults();
+      const ok = state.bulkResults.filter((r) => !r.error).length;
+      const failed = state.bulkResults.length - ok;
+      banner(
+        "qa-success",
+        failed
+          ? `Reviewed ${ok} of ${state.bulkResults.length} — ${failed} could not be reviewed.`
+          : `Reviewed ${ok} ${tracker.noun}(s). Nothing is saved yet — check the table, then confirm.`,
+      );
+    } catch (err) {
+      banner("qa-error", err.message);
+    } finally {
+      await stop();
+      thinking("qa", false);
+      button.disabled = false;
+    }
   }
-}
 
-async function loadLinearQaReviewRuns() {
-  const select = document.getElementById("linear-qa-review-runs-select");
-  try {
-    const runs = await fetchJson("/api/qa/reviews");
-    select.innerHTML = "";
-    for (const run of runs) {
+  async function onConfirmBulk() {
+    const items = state.bulkResults
+      .filter((r) => r.review && !r.error)
+      .map((r) =>
+        qaBody({
+          ticket_id: r.review.ticket_id,
+          ticket_name: r.review.ticket_name,
+          observation: r.review.observation,
+          severity: r.review.severity,
+          pass_status: el("qa-status-pass").value || null,
+          fail_status: el("qa-status-fail").value || null,
+          route: r.review.route || null,
+          status_code: r.review.status_code != null ? r.review.status_code : null,
+          http_error: r.review.http_error || null,
+          screenshot_path: r.review.screenshot_path || null,
+        }),
+      );
+    if (!items.length) return;
+    banner("qa-error", null);
+    banner("qa-success", null);
+    const button = el("qa-bulk-confirm-btn");
+    button.disabled = true;
+    const token = newProgressToken();
+    thinking("qa", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("qa", true, steps[steps.length - 1]);
+      phaseLog("qa", steps);
+    });
+    try {
+      const body = await fetchJson("/api/qa/reviews/bulk/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items, progress_token: token }),
+      });
+      const ok = body.results.filter((r) => r.finding).length;
+      const failed = body.results.length - ok;
+      if (failed) {
+        const errors = body.results.filter((r) => r.error).map((r) => `${r.ticket_id}: ${r.error}`).join("; ");
+        banner("qa-error", `${failed} finding(s) could not be saved — ${errors}`);
+      }
+      banner("qa-success", `Saved ${ok} of ${body.results.length} finding(s) and applied the configured moves.`);
+      clearBulkResults();
+      await Promise.all([loadFindings(), loadTickets()]);
+    } catch (err) {
+      banner("qa-error", err.message);
+    } finally {
+      await stop();
+      thinking("qa", false);
+      button.disabled = false;
+    }
+  }
+
+  // --- Step 4: findings -----------------------------------------------------
+
+  function projectOptions() {
+    const options = new Set(state.knownProjects);
+    for (const scope of state.scopes) options.add(scope.name);
+    return Array.from(options).sort();
+  }
+
+  function refreshProjectFilterOptions() {
+    const options = projectOptions();
+
+    const filter = el("filter-project");
+    const previousFilter = filter.value;
+    filter.innerHTML = '<option value="">Any project</option>';
+    for (const name of options) {
       const option = document.createElement("option");
-      option.value = run.run_id;
-      option.textContent = `${run.run_id} — ${run.ticket_id || "-"} (${run.started_at})`;
-      select.appendChild(option);
+      option.value = name;
+      option.textContent = name;
+      filter.appendChild(option);
     }
-  } catch (err) {
-    showLinearQaReviewError(err.message);
-  }
-}
+    filter.value = previousFilter;
 
-async function onReplayLinearQaReview() {
-  const select = document.getElementById("linear-qa-review-runs-select");
-  const runId = select.value;
-  if (!runId) return;
-  showLinearQaReviewError(null);
-  showLinearQaReviewSuccess(null);
-  const token = newProgressToken();
-  setLinearQaReviewThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setLinearQaReviewThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("linear-qa-review-phase-log", steps);
-  });
-  try {
-    const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        persist: false, progress_token: token,
-        linear_team_id: document.getElementById("linear-picker-team").value,
-      }),
-    });
-    renderLinearQaReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
-    showLinearQaReviewSuccess("Replay complete — review the result below.");
-    await loadLinearQaReviewRuns();
-  } catch (err) {
-    showLinearQaReviewError(err.message);
-  } finally {
-    await stopPolling();
-    setLinearQaReviewThinking(false);
-  }
-}
-
-// --- Bulk QA sweep for the Linear tab, mirrors the ClickUp one above -------
-
-let linearBulkReviewResults = [];
-let linearBulkReadmeMarkdown = "";
-
-function showLinearBulkError(message) {
-  const el = document.getElementById("linear-qa-bulk-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function showLinearBulkSuccess(message) {
-  const el = document.getElementById("linear-qa-bulk-success");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function setLinearBulkThinking(visible, message) {
-  const el = document.getElementById("linear-qa-bulk-thinking");
-  el.hidden = !visible;
-  if (visible) el.querySelector(".thinking-text").textContent = message;
-}
-
-function clearLinearBulkTable() {
-  linearBulkReviewResults = [];
-  linearBulkReadmeMarkdown = "";
-  document.getElementById("linear-qa-bulk-results").hidden = true;
-  document.querySelector("#linear-qa-bulk-table tbody").innerHTML = "";
-}
-
-function hideLinearBulkResults() {
-  clearLinearBulkTable();
-  showLinearBulkError(null);
-  showLinearBulkSuccess(null);
-}
-
-function onDownloadLinearBulkReadme() {
-  if (!linearBulkReadmeMarkdown) return;
-  downloadTextFile("QA-README.md", linearBulkReadmeMarkdown);
-}
-
-function renderLinearBulkResults() {
-  const tbody = document.querySelector("#linear-qa-bulk-table tbody");
-  tbody.innerHTML = "";
-  const passStatusId = document.getElementById("linear-qa-status-pass").value;
-  const failStatusId = document.getElementById("linear-qa-status-fail").value;
-  const stateName = (id) => (linearStates.find((s) => s.id === id) || {}).name;
-  for (const entry of linearBulkReviewResults) {
-    const row = document.createElement("tr");
-    if (entry.error) {
-      row.innerHTML =
-        `<td>${escapeHtml(entry.ticket_name)}</td>` +
-        `<td class="error-text">Error: ${escapeHtml(entry.error)}</td><td>-</td><td>-</td>`;
-    } else {
-      const passed = reviewPassed(entry.review.severity);
-      const targetStatusId = passed ? passStatusId : failStatusId;
-      const evidenceParts = [];
-      if (entry.review.route) evidenceParts.push(escapeHtml(entry.review.route));
-      if (entry.review.status_code != null) evidenceParts.push(`HTTP ${entry.review.status_code}`);
-      let evidenceCell = evidenceParts.join(" — ") || "-";
-      if (entry.review.screenshot_path) {
-        evidenceCell += ` <a href="${screenshotUrl(entry.review.screenshot_path)}" target="_blank" rel="noopener">screenshot</a>`;
-      }
-      row.innerHTML =
-        `<td>${escapeHtml(entry.ticket_name)}</td>` +
-        `<td class="${severityClass(entry.review.severity)}">${escapeHtml(entry.review.severity)} (${passed ? "pass" : "fail"})</td>` +
-        `<td>${evidenceCell}</td>` +
-        `<td>${targetStatusId ? escapeHtml(stateName(targetStatusId) || targetStatusId) : "(leave as-is)"}</td>`;
-    }
-    tbody.appendChild(row);
-  }
-  document.getElementById("linear-qa-bulk-results").hidden = false;
-}
-
-async function onRunLinearBulkQa() {
-  if (!linearIssues.length) return;
-  const project = document.getElementById("linear-qa-review-project").value;
-  if (!project) {
-    showLinearBulkError("Pick a project first.");
-    return;
-  }
-  hideLinearBulkResults();
-  const runBtn = document.getElementById("linear-qa-bulk-run-btn");
-  runBtn.disabled = true;
-  const token = newProgressToken();
-  setLinearBulkThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setLinearBulkThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("linear-qa-bulk-phase-log", steps);
-  });
-  const teamId = document.getElementById("linear-picker-team").value;
-  const passStatus = document.getElementById("linear-qa-status-pass").value || null;
-  const failStatus = document.getElementById("linear-qa-status-fail").value || null;
-  try {
-    const body = await fetchJson("/api/qa/reviews/bulk", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ticket_ids: linearIssues.map((i) => i.id), project, tracker: "linear", linear_team_id: teamId,
-        progress_token: token, pass_status: passStatus, fail_status: failStatus,
-      }),
-    });
-    linearBulkReviewResults = body.results.map((r) => {
-      const issue = linearIssues.find((i) => String(i.id) === r.ticket_id);
-      return { ticket_id: r.ticket_id, ticket_name: issue ? issue.title : r.ticket_id, review: r.review, error: r.error };
-    });
-    linearBulkReadmeMarkdown = body.readme_markdown || "";
-    renderLinearBulkResults();
-    const ok = linearBulkReviewResults.filter((r) => !r.error).length;
-    const failed = linearBulkReviewResults.length - ok;
-    showLinearBulkSuccess(
-      failed
-        ? `Reviewed ${ok} of ${linearBulkReviewResults.length} issue(s) — ${failed} failed to analyze, see table below.`
-        : `Reviewed ${ok} issue(s) — check the proposed results below, then confirm to save.`,
+    // The manual-report form defaults to whatever destination is selected,
+    // so the common case needs no extra pick.
+    fillSelect(
+      el("report-project"),
+      options.map((name) => ({ value: name, label: name })),
+      "Select a project…",
     );
-  } catch (err) {
-    showLinearBulkError(err.message);
-  } finally {
-    await stopPolling();
-    setLinearBulkThinking(false);
-    runBtn.disabled = false;
+    if (!el("report-project").value && projectName()) el("report-project").value = projectName();
   }
-}
 
-async function onConfirmLinearBulkQa() {
-  const project = document.getElementById("linear-qa-review-project").value;
-  const teamId = document.getElementById("linear-picker-team").value;
-  const passStatus = document.getElementById("linear-qa-status-pass").value || null;
-  const failStatus = document.getElementById("linear-qa-status-fail").value || null;
-  const items = linearBulkReviewResults
-    .filter((r) => r.review && !r.error)
-    .map((r) => ({
-      ticket_id: r.review.ticket_id,
-      ticket_name: r.review.ticket_name,
-      observation: r.review.observation,
-      severity: r.review.severity,
-      project,
-      tracker: "linear",
-      linear_team_id: teamId,
-      pass_status: passStatus,
-      fail_status: failStatus,
-      route: r.review.route || null,
-      status_code: r.review.status_code != null ? r.review.status_code : null,
-      http_error: r.review.http_error || null,
-      screenshot_path: r.review.screenshot_path || null,
-    }));
-  if (!items.length) return;
-  showLinearBulkError(null);
-  showLinearBulkSuccess(null);
-  const confirmBtn = document.getElementById("linear-qa-bulk-confirm-btn");
-  confirmBtn.disabled = true;
-  const token = newProgressToken();
-  setLinearBulkThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (steps) => {
-    setLinearBulkThinking(true, steps[steps.length - 1]);
-    renderPhaseLog("linear-qa-bulk-phase-log", steps);
-  });
-  try {
-    const body = await fetchJson("/api/qa/reviews/bulk/commit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, progress_token: token }),
-    });
-    const ok = body.results.filter((r) => r.finding).length;
-    const failed = body.results.length - ok;
-    if (failed) {
-      const errorList = body.results.filter((r) => r.error).map((r) => `${r.ticket_id}: ${r.error}`).join("; ");
-      showLinearBulkError(`${failed} finding(s) failed to persist — ${errorList}`);
+  async function onReportFinding() {
+    const status = el("report-status");
+    status.className = "success-text";
+    const project = el("report-project").value;
+    const route = el("report-route").value.trim();
+    const observation = el("report-observation").value.trim();
+    if (!project || !route || !observation) {
+      status.className = "error-text";
+      status.textContent = "Project, screen/endpoint and description are all required.";
+      return;
     }
-    showLinearBulkSuccess(`Persisted ${ok} of ${body.results.length} finding(s), applying any configured state moves.`);
-    clearLinearBulkTable();
-    refreshKnownProjects();
-    loadFindings();
-  } catch (err) {
-    showLinearBulkError(err.message);
-  } finally {
-    await stopPolling();
-    setLinearBulkThinking(false);
-    confirmBtn.disabled = false;
+    const button = el("report-submit");
+    button.disabled = true;
+    try {
+      await fetchJson("/api/qa/findings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project,
+          route,
+          observation,
+          severity: el("report-severity").value,
+          tracker: tracker.key,
+          ...tracker.qaExtra(state.scope),
+        }),
+      });
+      el("report-route").value = "";
+      el("report-observation").value = "";
+      status.textContent = "Finding reported.";
+      await loadFindings();
+    } catch (err) {
+      status.className = "error-text";
+      status.textContent = err.message;
+    } finally {
+      button.disabled = false;
+    }
   }
+
+  function renderCounts(counts) {
+    el("findings-counts").innerHTML = [
+      ["Total", counts.total],
+      ["Open", counts.open],
+      ["Acknowledged", counts.acknowledged],
+      ["Closed", counts.closed],
+      ["Critical", counts.critical],
+      ["Major", counts.major],
+      ["Minor", counts.minor],
+    ]
+      .map(([label, value]) => `<span class="count-chip">${label} <strong>${value}</strong></span>`)
+      .join("");
+  }
+
+  function renderFindings(findings) {
+    const tbody = document.querySelector(`#${prefix}-findings-table tbody`);
+    tbody.innerHTML = "";
+    if (!findings.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="field-note">No findings recorded yet.</td></tr>';
+      return;
+    }
+    for (const finding of findings) {
+      const row = document.createElement("tr");
+      const linked = finding.clickup_task_id || finding.linear_issue_id || "—";
+      row.innerHTML =
+        `<td>${escapeHtml(finding.id)}</td>` +
+        `<td>${escapeHtml(finding.project)}</td>` +
+        `<td>${escapeHtml(finding.route)}</td>` +
+        `<td><span class="badge ${severityClass(finding.severity)}">${escapeHtml(finding.severity)}</span></td>` +
+        `<td>${escapeHtml(finding.status)}</td>` +
+        `<td class="mono">${escapeHtml(linked)}</td>` +
+        `<td>${escapeHtml(finding.observation)}</td>`;
+
+      const cell = document.createElement("td");
+      if (finding.status !== "closed") {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = "What was corrected?";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Close";
+        const feedback = document.createElement("div");
+        feedback.className = "error-text";
+        button.addEventListener("click", async () => {
+          if (!input.value.trim()) {
+            feedback.textContent = "Describe the correction first.";
+            return;
+          }
+          feedback.textContent = "";
+          button.disabled = true;
+          try {
+            await fetchJson(`/api/qa/findings/${finding.id}/close`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ correction_note: input.value }),
+            });
+            await loadFindings();
+          } catch (err) {
+            feedback.textContent = err.message;
+            button.disabled = false;
+          }
+        });
+        cell.append(input, button, feedback);
+      }
+      row.appendChild(cell);
+      tbody.appendChild(row);
+    }
+  }
+
+  async function loadFindings() {
+    const params = new URLSearchParams();
+    for (const name of ["project", "severity", "status"]) {
+      const value = el(`filter-${name}`).value;
+      if (value) params.set(name, value);
+    }
+    try {
+      const data = await fetchJson(`/api/qa/findings?${params.toString()}`);
+      renderCounts(data.counts);
+      renderFindings(data.findings);
+      state.knownProjects = Array.from(new Set(data.findings.map((f) => f.project))).sort();
+      refreshProjectFilterOptions();
+      banner("findings-error", null);
+    } catch (err) {
+      banner("findings-error", err.message);
+    }
+  }
+
+  // --- wiring ---------------------------------------------------------------
+
+  function init() {
+    el("scope").addEventListener("change", onScopeChange);
+    el("container").addEventListener("change", onContainerChange);
+
+    el("mode-switch")
+      .querySelectorAll("button")
+      .forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+
+    el("generate-form").addEventListener("submit", onGenerateFromDocument);
+    el("chat-form").addEventListener("submit", onChatSubmit);
+    el("chat-reset").addEventListener("click", onChatReset);
+    el("create-all").addEventListener("click", onCreateAll);
+    el("clear-tickets").addEventListener("click", onClearTickets);
+    el("verify-team-btn").addEventListener("click", onVerifyTeam);
+
+    el("qa-ticket").addEventListener("change", onTicketChange);
+    el("qa-base-url-save").addEventListener("click", onSaveBaseUrl);
+    el("qa-analyze-btn").addEventListener("click", onAnalyze);
+    el("qa-replay-btn").addEventListener("click", onReplay);
+    el("qa-bulk-run-btn").addEventListener("click", onRunBulk);
+    el("qa-bulk-confirm-btn").addEventListener("click", onConfirmBulk);
+    el("qa-bulk-readme-btn").addEventListener("click", () => {
+      if (state.bulkReadme) downloadTextFile("QA-README.md", state.bulkReadme);
+    });
+
+    for (const name of ["project", "severity", "status"]) {
+      el(`filter-${name}`).addEventListener("change", loadFindings);
+    }
+    el("report-submit").addEventListener("click", onReportFinding);
+
+    renderChat();
+    loadScopes();
+    loadFindings();
+    loadReviewRuns();
+  }
+
+  return { init };
 }
 
-function initLinearQaReviewPanel() {
-  document.getElementById("linear-qa-review-form").addEventListener("submit", onAnalyzeLinearQaReview);
-  document.getElementById("linear-qa-review-replay-btn").addEventListener("click", onReplayLinearQaReview);
-  document.getElementById("linear-qa-bulk-run-btn").addEventListener("click", onRunLinearBulkQa);
-  document.getElementById("linear-qa-bulk-confirm-btn").addEventListener("click", onConfirmLinearBulkQa);
-  document.getElementById("linear-qa-bulk-readme-btn").addEventListener("click", onDownloadLinearBulkReadme);
-  document.getElementById("linear-qa-review-project").addEventListener("change", updateLinearQaBaseUrlField);
-  document.getElementById("linear-qa-project-base-url-save").addEventListener("click", onSaveLinearQaProjectBaseUrl);
-  loadLinearQaReviewRuns();
+// --- Tabs + boot ------------------------------------------------------------
+
+function initTabs() {
+  document.querySelectorAll(".tab-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      document.querySelectorAll(".tab-button").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach((p) => (p.hidden = true));
+      button.classList.add("active");
+      document.getElementById(`tab-${button.dataset.tab}`).hidden = false;
+    });
+  });
 }
 
-function initLinearTab() {
-  document.getElementById("linear-picker-team").addEventListener("change", onLinearTeamChange);
-  document.getElementById("linear-picker-issue").addEventListener("change", onLinearIssueChange);
-  document.getElementById("linear-set-state-btn").addEventListener("click", onSetLinearState);
-  document.getElementById("linear-create-team").addEventListener("change", onLinearCreateTeamChange);
-  document.getElementById("linear-create-all-btn").addEventListener("click", onCreateLinearIssues);
-  loadLinearTeams();
-  initLinearQaReviewPanel();
-}
-
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
-  initQaFilters();
-  initQaReportForm();
-  loadFindings();
-  initTicketsTab();
-  initQaReviewPanel();
-  initLinearTab();
+  await loadProjectConfig();
+  for (const tracker of Object.values(TRACKERS)) {
+    createTrackerPanel(tracker).init();
+  }
 });

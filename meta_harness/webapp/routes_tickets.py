@@ -30,12 +30,14 @@ from meta_harness.ticket_generator import (
     apply_category_numbering,
     apply_sprint_due_dates,
     generate_tickets_from_file,
+    generate_tickets_from_idea,
 )
 from meta_harness.webapp import progress
 from meta_harness.webapp.deps import get_clickup_project_path
 from meta_harness.webapp.schemas import (
     CreateTicketsIn,
     CreateTicketsOut,
+    GenerateFromIdeaIn,
     GenerateTicketsOut,
     ProposedTicketIn,
     TeamMemberOut,
@@ -136,6 +138,40 @@ def post_generate_tickets(
     if on_step:
         on_step("Done.")
 
+    return GenerateTicketsOut(tickets=tickets, warnings=warnings)
+
+
+@router.post("/from-idea", response_model=GenerateTicketsOut)
+def post_generate_from_idea(body: GenerateFromIdeaIn) -> GenerateTicketsOut:
+    """Turn one free-text idea (the chat mode) into properly-formatted
+    proposed tickets — same output shape and same numbering as the
+    document path, so both feed the identical review-and-add UI."""
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
+    try:
+        tickets, warnings = generate_tickets_from_idea(
+            body.idea,
+            history=[turn.model_dump() for turn in body.history],
+            on_step=on_step,
+        )
+    except ClaudeNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (TicketGenerationError, TicketParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    tickets = apply_category_numbering(
+        tickets,
+        {
+            "mundane": body.start_mundane,
+            "backend": body.start_backend,
+            "frontend": body.start_frontend,
+            "deployment": body.start_deployment,
+        },
+    )
+    if on_step:
+        on_step("Done.")
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
 
 

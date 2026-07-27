@@ -120,6 +120,91 @@ TICKET_EXTRACTION_PROMPT = (
 )
 
 
+# The shared "what a ticket looks like" contract, reused verbatim by the
+# idea/chat path so a ticket drafted from a one-line idea is structurally
+# identical to one extracted from a full requirements document.
+_TICKET_FIELDS_SPEC = TICKET_EXTRACTION_PROMPT[TICKET_EXTRACTION_PROMPT.index("Each ticket must be a JSON object") :]
+
+IDEA_TICKET_PROMPT = (
+    "You are helping someone turn a rough idea into properly-formatted work tickets. "
+    "The person's idea is given below. Turn it into the smallest set of well-scoped tickets that "
+    "genuinely covers it — usually just ONE ticket for a single focused idea. Only split into "
+    "several tickets when the idea clearly contains distinct pieces of work (for example separate "
+    "backend and frontend work, or two independent features); never produce more than 5. "
+    "Do not invent scope the person did not ask for: fill in the concrete detail needed to make "
+    "the ticket actionable, but stay faithful to what they actually described. "
+    "\n\n"
+    "All human-readable text content in the output (title, epic, user_story, description, "
+    "acceptance_criteria, technical_notes) must be written in SPANISH. Only the JSON field names "
+    "themselves stay in English. "
+    "\n\n" + _TICKET_FIELDS_SPEC
+)
+
+
+def _build_idea_prompt(idea: str, history: Optional[List[dict]] = None) -> str:
+    """The idea prompt, plus any earlier turns of the conversation so a
+    follow-up like "split that in two" refines the previous proposal
+    instead of starting over from a bare instruction."""
+    if not history:
+        return f"{IDEA_TICKET_PROMPT}\n\nThe idea:\n{idea}"
+    transcript = "\n".join(
+        f"{'Person' if turn.get('role') != 'assistant' else 'You previously proposed'}: {turn.get('content', '')}"
+        for turn in history
+    )
+    return (
+        f"{IDEA_TICKET_PROMPT}\n\nThis is a continuing conversation. Earlier turns:\n{transcript}\n\n"
+        f"The person's latest instruction:\n{idea}\n\n"
+        "Apply that instruction to what you proposed before and output the full corrected ticket list."
+    )
+
+
+def generate_tickets_from_idea(
+    idea: str,
+    *,
+    history: Optional[List[dict]] = None,
+    timeout_s: Optional[float] = None,
+    max_attempts: int = 3,
+    on_step: OnStep = None,
+) -> Tuple[List[ProposedTicket], List[str]]:
+    """Turn one free-text idea into properly-formatted proposed tickets.
+
+    Same harnessed retry-with-repair loop as generate_tickets_from_text —
+    the idea is passed inside the prompt rather than piped as a document,
+    since it's a short instruction rather than a file to analyze.
+    """
+    if not idea or not idea.strip():
+        raise TicketParseError("Describe your idea first — the message was empty.")
+
+    claude_path = _find_claude()
+    resolved_timeout = (
+        timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
+    )
+
+    base_prompt = _build_idea_prompt(idea.strip(), history)
+    prompt = base_prompt
+    last_error: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        if last_error is not None:
+            prompt = (
+                f"{base_prompt}\n\nYour previous response was invalid: {last_error} "
+                "Fix this and output ONLY the corrected JSON array."
+            )
+            _report(on_step, f"Fixing an invalid response (attempt {attempt}/{max_attempts})…")
+        else:
+            _report(on_step, "Drafting a ticket from your idea…")
+        raw_output = _run_claude(claude_path, prompt, "", resolved_timeout)
+        try:
+            tickets, warnings = parse_proposed_tickets(raw_output)
+        except TicketParseError as exc:
+            last_error = str(exc)
+            if attempt == max_attempts:
+                raise
+            continue
+        _report(on_step, f"Drafted {len(tickets)} ticket(s).")
+        return tickets, warnings
+    raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
+
+
 def _build_extraction_prompt(project_start: Optional[date], project_end: Optional[date]) -> str:
     """The base prompt, plus a real deadline note when the caller gave one
     — without it, sprint numbers are just a relative sequence with no
