@@ -851,17 +851,17 @@ function renderReviewResult(runId, review, finding, reportMarkdown) {
   if (finding) {
     const mdLink = document.createElement("a");
     mdLink.href = `/api/qa/findings/${finding.id}/report.md`;
-    mdLink.textContent = "Download Markdown";
+    mdLink.textContent = "⬇ Markdown";
     mdLink.setAttribute("download", "");
     const pdfLink = document.createElement("a");
     pdfLink.href = `/api/qa/findings/${finding.id}/report.pdf`;
-    pdfLink.textContent = "Download PDF";
+    pdfLink.textContent = "⬇ PDF";
     pdfLink.setAttribute("download", "");
     reportActions.append(mdLink, pdfLink);
   } else if (reportMarkdown) {
     const mdButton = document.createElement("button");
     mdButton.type = "button";
-    mdButton.textContent = "Download Markdown";
+    mdButton.textContent = "⬇ Markdown";
     mdButton.addEventListener("click", () => downloadTextFile(`qa-review-${review.ticket_id}.md`, reportMarkdown));
     reportActions.appendChild(mdButton);
   }
