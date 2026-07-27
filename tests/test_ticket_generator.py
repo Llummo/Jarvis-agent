@@ -229,9 +229,9 @@ def test_prompt_requires_logical_task_ordering():
     assert "logical implementation sequence" in TICKET_EXTRACTION_PROMPT
 
 
-def test_prompt_requires_fine_grained_decomposition():
-    assert "MORE, smaller tickets rather than fewer broad ones" in TICKET_EXTRACTION_PROMPT
-    assert "one concrete unit of work" in TICKET_EXTRACTION_PROMPT
+def test_prompt_requires_sized_decomposition_not_unbounded_fragmentation():
+    assert "half a day to two days" in TICKET_EXTRACTION_PROMPT
+    assert "do not pad the list to hit any particular number" in TICKET_EXTRACTION_PROMPT
 
 
 # ---------------------------------------------------------------------------
