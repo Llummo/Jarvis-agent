@@ -61,7 +61,9 @@ def post_finding(body: ReportFindingIn, store: QAFindingStore = Depends(get_qa_s
             body.observation,
             body.severity,
             screenshot_path=body.screenshot_path,
+            tracker=body.tracker,
             clickup_list_id=body.clickup_list_id,
+            linear_team_id=body.linear_team_id,
             auto_escalate=body.auto_escalate,
             store=store,
         )

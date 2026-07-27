@@ -3,6 +3,7 @@ import json
 import pytest
 
 from meta_harness.ticket_generator import (
+    IDEA_TICKET_PROMPT,
     TICKET_EXTRACTION_PROMPT,
     ClaudeNotFoundError,
     ProposedTicket,
@@ -13,6 +14,7 @@ from meta_harness.ticket_generator import (
     apply_sprint_due_dates,
     extract_document_text,
     generate_tickets_from_file,
+    generate_tickets_from_idea,
     generate_tickets_from_text,
     parse_proposed_tickets,
 )
@@ -250,14 +252,26 @@ def test_parse_proposed_tickets_non_object_item_dropped():
 # ---------------------------------------------------------------------------
 
 
-def test_prompt_requires_english_user_story_template():
+def test_prompt_requires_spanish_user_story_template():
     assert "user_story" in TICKET_EXTRACTION_PROMPT
-    assert "As a <role>, I want to <goal>, so I can <benefit>" in TICKET_EXTRACTION_PROMPT
+    assert "SPANISH" in TICKET_EXTRACTION_PROMPT
+    assert "Como <rol>" in TICKET_EXTRACTION_PROMPT
+    assert "quiero <objetivo>" in TICKET_EXTRACTION_PROMPT
+    assert "para <beneficio>" in TICKET_EXTRACTION_PROMPT
 
 
-def test_prompt_requires_gherkin_acceptance_criteria():
-    assert "Gherkin" in TICKET_EXTRACTION_PROMPT
-    assert "Given <context>, when <action>, then <expected outcome>" in TICKET_EXTRACTION_PROMPT
+def test_prompt_requires_structured_spanish_acceptance_criteria():
+    # Criteria must come back as parts, not one flattened sentence -- Linear's
+    # house format renders Given/When/Then on separate bullets.
+    assert '"acceptance_criteria" (array of objects' in TICKET_EXTRACTION_PROMPT
+    for field in ('"name"', '"given"', '"when"', '"then"'):
+        assert field in TICKET_EXTRACTION_PROMPT
+    assert "Dado que" in TICKET_EXTRACTION_PROMPT
+
+
+def test_prompt_defines_the_parent_child_hierarchy_contract():
+    assert '"parent_title"' in TICKET_EXTRACTION_PROMPT
+    assert "never nest more than one level deep" in TICKET_EXTRACTION_PROMPT
 
 
 def test_prompt_requires_a_brief_description_distinct_from_user_story():
@@ -679,3 +693,109 @@ def test_apply_sprint_due_dates_ignores_project_end_if_not_after_start():
 
     # falls back to the fixed 4-week sprint length instead of a zero-width window
     assert dated[0].due_date == "2026-08-24"
+
+
+# ---------------------------------------------------------------------------
+# generate_tickets_from_idea — the chat path: one free-text idea -> tickets
+# ---------------------------------------------------------------------------
+
+
+VALID_IDEA_TICKET = json.dumps(
+    [
+        {
+            "title": "Exportar candidatos a Excel",
+            "epic": "GESTIÓN DE CANDIDATOS",
+            "ui_route": "/erp/talent/candidates",
+            "backend_endpoint": "GET /api/v1/talent/candidates/export",
+            "user_story": "Como reclutador,\nquiero exportar la lista de candidatos,\npara analizarla fuera del sistema.",
+            "description": "Agregar un botón de exportación que descargue un archivo Excel.",
+            "acceptance_criteria": ["Descarga: Dado que hay candidatos, cuando exporte, entonces se descarga un .xlsx."],
+            "technical_notes": "",
+            "priority": "normal",
+            "category": "backend",
+            "sprint": 1,
+        }
+    ]
+)
+
+
+def test_idea_prompt_reuses_the_same_ticket_field_contract():
+    # The chat path must produce structurally identical tickets to the
+    # document path -- same fields, same structured Spanish criteria.
+    assert '"acceptance_criteria" (array of objects' in IDEA_TICKET_PROMPT
+    assert '"epic"' in IDEA_TICKET_PROMPT
+    assert '"technical_notes"' in IDEA_TICKET_PROMPT
+    assert "SPANISH" in IDEA_TICKET_PROMPT
+
+
+def test_generate_tickets_from_idea_happy_path(monkeypatch):
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.ticket_generator.subprocess.run",
+        lambda *a, **k: type("R", (), {"returncode": 0, "stdout": VALID_IDEA_TICKET, "stderr": ""})(),
+    )
+
+    tickets, warnings = generate_tickets_from_idea("quiero exportar candidatos a excel", timeout_s=5)
+
+    assert len(tickets) == 1
+    assert tickets[0].title == "Exportar candidatos a Excel"
+    assert tickets[0].epic == "GESTIÓN DE CANDIDATOS"
+    assert warnings == []
+
+
+def test_generate_tickets_from_idea_puts_the_idea_in_the_prompt(monkeypatch):
+    captured = {}
+
+    def fake_run(command, input, capture_output, text, timeout):
+        captured["prompt"] = command[2]
+        return type("R", (), {"returncode": 0, "stdout": VALID_IDEA_TICKET, "stderr": ""})()
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_idea("quiero exportar candidatos a excel", timeout_s=5)
+
+    assert "quiero exportar candidatos a excel" in captured["prompt"]
+
+
+def test_generate_tickets_from_idea_includes_history_for_refinement(monkeypatch):
+    captured = {}
+
+    def fake_run(command, input, capture_output, text, timeout):
+        captured["prompt"] = command[2]
+        return type("R", (), {"returncode": 0, "stdout": VALID_IDEA_TICKET, "stderr": ""})()
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_idea(
+        "sepáralo en dos tickets",
+        history=[{"role": "user", "content": "exportar candidatos"}],
+        timeout_s=5,
+    )
+
+    assert "exportar candidatos" in captured["prompt"]
+    assert "sepáralo en dos tickets" in captured["prompt"]
+    assert "continuing conversation" in captured["prompt"]
+
+
+def test_generate_tickets_from_idea_rejects_empty_idea():
+    with pytest.raises(TicketParseError):
+        generate_tickets_from_idea("   ")
+
+
+def test_generate_tickets_from_idea_retries_on_bad_json(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        stdout = "not json" if len(calls) == 1 else VALID_IDEA_TICKET
+        return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    tickets, _warnings = generate_tickets_from_idea("una idea", timeout_s=5)
+
+    assert len(calls) == 2
+    assert len(tickets) == 1

@@ -689,3 +689,90 @@ def test_persist_review_saves_route_check_evidence(tmp_path):
     assert finding.status_code == 500
     assert finding.http_error == "HTTP 500: Internal Server Error"
     assert finding.screenshot_path == "qa/screenshots/shot.png"
+
+
+# ---------------------------------------------------------------------------
+# tracker="linear" — same flow, sourced from/applied to Linear issues
+# ---------------------------------------------------------------------------
+
+
+def _mock_linear_issue_fetch(monkeypatch, title="Fix login bug", description="Users can't log in"):
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.get_linear_issue",
+        lambda issue_id, **kw: {"id": issue_id, "title": title, "description": description},
+    )
+
+
+def test_review_qa_ticket_fetches_from_linear_when_tracker_is_linear(tmp_path, monkeypatch):
+    _mock_linear_issue_fetch(monkeypatch)
+    _mock_analysis(monkeypatch)
+
+    def boom(*a, **kw):
+        raise AssertionError("must not fetch from ClickUp when tracker is linear")
+
+    monkeypatch.setattr("meta_harness.qa_flow.get_clickup_task", boom)
+
+    review, _finding = review_qa_ticket("I1", project="sigo", tracker="linear", store=QAFindingStore(tmp_path / "f.db"))
+
+    assert review.ticket_name == "Fix login bug"
+
+
+def test_review_qa_ticket_reports_fetch_step_for_linear(tmp_path, monkeypatch):
+    _mock_linear_issue_fetch(monkeypatch)
+    _mock_analysis(monkeypatch)
+
+    steps = []
+    review_qa_ticket("I1", project="sigo", tracker="linear", store=QAFindingStore(tmp_path / "f.db"), on_step=steps.append)
+
+    assert steps[0] == "Fetching ticket I1 from Linear…"
+
+
+def test_review_qa_ticket_rejects_invalid_tracker():
+    with pytest.raises(ValueError, match="Invalid tracker"):
+        review_qa_ticket("I1", project="sigo", tracker="jira")
+
+
+def test_persist_review_moves_linear_state_instead_of_clickup_status(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.update_linear_issue_state",
+        lambda issue_id, state_id, **kw: calls.append((issue_id, state_id)),
+    )
+
+    def boom(*a, **kw):
+        raise AssertionError("must not move a ClickUp status when tracker is linear")
+
+    monkeypatch.setattr("meta_harness.qa_flow.update_clickup_task_status", boom)
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="I1", ticket_name="Fix login bug", observation="Check login", severity="minor")
+
+    persist_review(review, project="sigo", tracker="linear", store=store, pass_status="state-done", fail_status="state-blocked")
+
+    assert calls == [("I1", "state-done")]
+
+
+def test_persist_review_escalates_critical_finding_into_linear(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_create_issue(team_id, title, description, **kw):
+        captured.update(team_id=team_id, title=title, description=description)
+        return "linear-issue-1"
+
+    monkeypatch.setattr("meta_harness.linear_bridge.create_linear_issue", fake_create_issue)
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="I1", ticket_name="Fix login bug", observation="Check login", severity="critical")
+
+    finding = persist_review(review, project="sigo", tracker="linear", linear_team_id="team-1", store=store)
+
+    assert finding.linear_issue_id == "linear-issue-1"
+    assert finding.clickup_task_id is None
+    assert captured["team_id"] == "team-1"
+
+
+def test_review_tickets_bulk_reviews_linear_issues(monkeypatch):
+    _mock_analysis(monkeypatch, severity="minor")
+    _mock_linear_issue_fetch(monkeypatch, title="Ticket I1")
+
+    results = review_tickets_bulk(["I1"], project="sigo", tracker="linear")
+
+    assert results[0][1].ticket_name == "Ticket I1"

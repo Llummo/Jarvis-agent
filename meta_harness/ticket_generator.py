@@ -69,24 +69,56 @@ TICKET_EXTRACTION_PROMPT = (
     "anything another ticket depends on comes before the tickets that build on it (e.g. a "
     "backend endpoint before the frontend that calls it, setup/config before the feature that "
     "needs it). "
+    "\n\n"
+    "All human-readable text content in the output (title, epic, user_story, description, "
+    "acceptance_criteria, technical_notes) must be written in SPANISH — this is the working "
+    "language of the team consuming these tickets. Only the JSON field names themselves stay "
+    "in English. "
+    "\n\n"
     'Each ticket must be a JSON object with exactly these fields: '
-    '"title" (string, short — a few words naming the task; do not add numbering or a prefix, '
-    "that is added separately), "
-    '"user_story" (string, in English, following exactly this template: "As a <role>, I want '
-    'to <goal>, so I can <benefit>." — pick whichever role best fits the document\'s context, '
-    'e.g. "user", "admin", "student", "developer"), '
-    '"description" (string — a brief, plain-language explanation of the core of the task and '
+    '"title" (string, short and specific — a few words naming the task, in Spanish; do not add '
+    "numbering or a prefix, that is added separately), "
+    '"epic" (string, in Spanish, upper case, the name of the broader feature/module this ticket '
+    'belongs to, e.g. "GESTIÓN DE POOL DE TALENTO (PERSONAS)" — group related tickets from the '
+    "same area of the document under the same epic name, worded consistently across tickets), "
+    '"ui_route" (string, the frontend route(s)/view(s) this ticket touches, e.g. "/erp/talent/people" '
+    'or "/erp/talent/people/:id" — use " | " to join more than one; empty string "" if the ticket '
+    "has no UI-facing route, e.g. a pure backend/infra ticket), "
+    '"backend_endpoint" (string, the backend HTTP method(s) and path this ticket touches, e.g. '
+    '"GET / POST / PUT / DELETE /api/v1/talent/people" — empty string "" if the ticket has no '
+    "backend endpoint, e.g. a pure frontend/static ticket), "
+    '"user_story" (string, in SPANISH, following exactly this template with real line breaks: '
+    '"Como <rol>,\\nquiero <objetivo>,\\npara <beneficio>." — pick whichever role best fits the '
+    'document\'s context, e.g. "usuario", "administrador", "reclutador", "desarrollador"), '
+    '"description" (string, in Spanish — a brief, concrete explanation of the core of the task and '
     "its flow: what needs to be built and how it should work end to end, written so anyone "
     "picking up the ticket immediately understands it without re-reading the source document; "
     "distinct from and more concrete than the user_story above), "
-    '"acceptance_criteria" (array of strings, each written in Gherkin: "Given <context>, when '
-    '<action>, then <expected outcome>"), '
+    '"acceptance_criteria" (array of objects, in Spanish. Each object has exactly four string '
+    'fields: "name" (a short descriptive title for the criterion, e.g. "Carga y Extracción '
+    'Asistida por CV"), "given" (the starting condition, phrased to follow "Dado que …"), '
+    '"when" (the action or event, phrased to follow "cuando …"), and "then" (the expected '
+    'outcome, phrased to follow "entonces …"). Write each part WITHOUT its leading keyword — '
+    'the harness adds "Dado que", "cuando" and "entonces" when rendering. For example: '
+    '{"name": "Carga de CV", "given": "el usuario está en la pantalla \'Agregar persona\'", '
+    '"when": "adjunte un CV en PDF", "then": "el sistema debe extraer los datos automáticamente"}), '
+    '"technical_notes" (string, in Spanish, OPTIONAL — technical details worth calling out if the '
+    "document actually specifies them: limits/constraints, a permissions matrix (e.g. "
+    '"talent:read, talent:write, recruitment:admin"), state/status models (e.g. "Registro: ACTIVE | '
+    'ARCHIVED"), integration notes, etc. Empty string "" if the document gives no such detail — do '
+    "not invent technical notes that aren't grounded in the document), "
     '"priority" (one of: "urgent", "high", "normal", "low"), '
     '"category" (one of: "backend", "frontend", "deployment", "mundane" — classify by the '
     'primary type of work: "backend" for server/API/database/business-logic work, '
     '"frontend" for UI/client-side work, "deployment" for CI/CD, infra, release, or ops work, '
     'and "mundane" for anything general, cross-cutting, or planning-oriented that does not '
     "clearly fit the other three), "
+    '"parent_title" (string — use this to build a two-level hierarchy. When several tickets are '
+    "pieces of one larger feature, emit one parent ticket describing that feature as a whole and "
+    "set every piece's parent_title to the parent ticket's exact title; the parent must appear "
+    "earlier in the array than its children. Leave it as an empty string for a top-level ticket, "
+    "and never nest more than one level deep — a ticket that has a parent_title cannot itself be "
+    "another ticket's parent), "
     '"sprint" (integer, 1 or higher — which 4-week Scrum sprint this ticket is planned for. '
     "Reason about this like a sprint-planning session: work through the backlog in priority "
     "and dependency order, and don't overload a single sprint — a small team can realistically "
@@ -95,6 +127,91 @@ TICKET_EXTRACTION_PROMPT = (
     "never be scheduled in an earlier sprint than a ticket it depends on). "
     "Output ONLY the JSON array — no prose, no markdown code fences, no explanation."
 )
+
+
+# The shared "what a ticket looks like" contract, reused verbatim by the
+# idea/chat path so a ticket drafted from a one-line idea is structurally
+# identical to one extracted from a full requirements document.
+_TICKET_FIELDS_SPEC = TICKET_EXTRACTION_PROMPT[TICKET_EXTRACTION_PROMPT.index("Each ticket must be a JSON object") :]
+
+IDEA_TICKET_PROMPT = (
+    "You are helping someone turn a rough idea into properly-formatted work tickets. "
+    "The person's idea is given below. Turn it into the smallest set of well-scoped tickets that "
+    "genuinely covers it — usually just ONE ticket for a single focused idea. Only split into "
+    "several tickets when the idea clearly contains distinct pieces of work (for example separate "
+    "backend and frontend work, or two independent features); never produce more than 5. "
+    "Do not invent scope the person did not ask for: fill in the concrete detail needed to make "
+    "the ticket actionable, but stay faithful to what they actually described. "
+    "\n\n"
+    "All human-readable text content in the output (title, epic, user_story, description, "
+    "acceptance_criteria, technical_notes) must be written in SPANISH. Only the JSON field names "
+    "themselves stay in English. "
+    "\n\n" + _TICKET_FIELDS_SPEC
+)
+
+
+def _build_idea_prompt(idea: str, history: Optional[List[dict]] = None) -> str:
+    """The idea prompt, plus any earlier turns of the conversation so a
+    follow-up like "split that in two" refines the previous proposal
+    instead of starting over from a bare instruction."""
+    if not history:
+        return f"{IDEA_TICKET_PROMPT}\n\nThe idea:\n{idea}"
+    transcript = "\n".join(
+        f"{'Person' if turn.get('role') != 'assistant' else 'You previously proposed'}: {turn.get('content', '')}"
+        for turn in history
+    )
+    return (
+        f"{IDEA_TICKET_PROMPT}\n\nThis is a continuing conversation. Earlier turns:\n{transcript}\n\n"
+        f"The person's latest instruction:\n{idea}\n\n"
+        "Apply that instruction to what you proposed before and output the full corrected ticket list."
+    )
+
+
+def generate_tickets_from_idea(
+    idea: str,
+    *,
+    history: Optional[List[dict]] = None,
+    timeout_s: Optional[float] = None,
+    max_attempts: int = 3,
+    on_step: OnStep = None,
+) -> Tuple[List[ProposedTicket], List[str]]:
+    """Turn one free-text idea into properly-formatted proposed tickets.
+
+    Same harnessed retry-with-repair loop as generate_tickets_from_text —
+    the idea is passed inside the prompt rather than piped as a document,
+    since it's a short instruction rather than a file to analyze.
+    """
+    if not idea or not idea.strip():
+        raise TicketParseError("Describe your idea first — the message was empty.")
+
+    claude_path = _find_claude()
+    resolved_timeout = (
+        timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
+    )
+
+    base_prompt = _build_idea_prompt(idea.strip(), history)
+    prompt = base_prompt
+    last_error: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        if last_error is not None:
+            prompt = (
+                f"{base_prompt}\n\nYour previous response was invalid: {last_error} "
+                "Fix this and output ONLY the corrected JSON array."
+            )
+            _report(on_step, f"Fixing an invalid response (attempt {attempt}/{max_attempts})…")
+        else:
+            _report(on_step, "Drafting a ticket from your idea…")
+        raw_output = _run_claude(claude_path, prompt, "", resolved_timeout)
+        try:
+            tickets, warnings = parse_proposed_tickets(raw_output)
+        except TicketParseError as exc:
+            last_error = str(exc)
+            if attempt == max_attempts:
+                raise
+            continue
+        _report(on_step, f"Drafted {len(tickets)} ticket(s).")
+        return tickets, warnings
+    raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
 
 
 def _build_extraction_prompt(project_start: Optional[date], project_end: Optional[date]) -> str:
@@ -132,18 +249,52 @@ class TicketParseError(RuntimeError):
 
 
 @dataclass
+class AcceptanceCriterion:
+    """One acceptance criterion, kept as its parts rather than one string.
+
+    The trackers render criteria differently — Linear's house format puts
+    the criterion's name on its own line with the Given/When/Then split
+    across three bullets — which is only possible if the parts survive
+    generation instead of being flattened into prose up front. `text` is
+    the fallback for a model response that gave a plain string anyway.
+    """
+
+    name: str = ""
+    given: str = ""
+    when: str = ""
+    then: str = ""
+    text: str = ""
+
+    def inline(self) -> str:
+        """One-line rendering: 'Name: Dado que X, cuando Y, entonces Z.'"""
+        if self.text:
+            return f"{self.name}: {self.text}" if self.name else self.text
+        clause = ", ".join(part for part in (self.given, self.when, self.then) if part)
+        return f"{self.name}: {clause}" if self.name else clause
+
+
+@dataclass
 class ProposedTicket:
     """One LLM-proposed ticket, not yet created anywhere."""
 
     title: str
     description: str
     user_story: str = ""
-    acceptance_criteria: List[str] = field(default_factory=list)
+    epic: str = ""
+    ui_route: str = ""
+    backend_endpoint: str = ""
+    technical_notes: str = ""
+    # Title of another ticket in the same batch that this one is a subticket
+    # of; empty for a top-level ticket. Resolved to a real parent id at
+    # creation time, once the parent actually exists in the tracker.
+    parent_title: str = ""
+    acceptance_criteria: List[AcceptanceCriterion] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
     category: str = DEFAULT_CATEGORY
     sprint: int = 1
     due_date: Optional[str] = None  # ISO date, set by apply_sprint_due_dates
-    assignee_user_id: Optional[int] = None
+    assignee_clickup_id: Optional[int] = None
+    assignee_linear_id: Optional[str] = None
     assignee_email: Optional[str] = None
     assignee_name: Optional[str] = None
 
@@ -202,6 +353,36 @@ def _strip_code_fences(raw: str) -> str:
     return stripped.strip()
 
 
+def _coerce_criterion(item: object) -> Optional[AcceptanceCriterion]:
+    """Accept either the structured {name, given, when, then} object the
+    prompt asks for, or a bare string from a model that ignored it —
+    a criterion is far too valuable to discard over its shape."""
+    if isinstance(item, str):
+        text = item.strip()
+        if not text:
+            return None
+        # "Label: Dado que ..." — keep the label separate when there is one,
+        # so even a legacy string still renders with a proper heading.
+        name, separator, rest = text.partition(":")
+        if separator and rest.strip() and len(name) <= 80 and "," not in name:
+            return AcceptanceCriterion(name=name.strip(), text=rest.strip())
+        return AcceptanceCriterion(text=text)
+
+    if isinstance(item, dict):
+        parts = {
+            key: (item.get(key).strip() if isinstance(item.get(key), str) else "")
+            for key in ("name", "given", "when", "then")
+        }
+        if not any(parts.values()):
+            return None
+        if not (parts["given"] or parts["when"] or parts["then"]):
+            # Only a name came through — treat it as free text so it still shows.
+            return AcceptanceCriterion(text=parts["name"])
+        return AcceptanceCriterion(**parts)
+
+    return None
+
+
 def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[ProposedTicket]:
     """Validate one raw ticket dict leniently.
 
@@ -225,17 +406,44 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         warnings.append(f"Ticket #{index} ('{title}'): missing/invalid 'user_story', defaulted to empty")
         user_story = ""
 
-    acceptance_criteria = raw.get("acceptance_criteria")
-    if not isinstance(acceptance_criteria, list):
+    epic = raw.get("epic")
+    if not isinstance(epic, str):
+        epic = ""
+    epic = epic.strip() or title.strip().upper()
+
+    ui_route = raw.get("ui_route")
+    if not isinstance(ui_route, str):
+        ui_route = ""
+
+    backend_endpoint = raw.get("backend_endpoint")
+    if not isinstance(backend_endpoint, str):
+        backend_endpoint = ""
+
+    technical_notes = raw.get("technical_notes")
+    if not isinstance(technical_notes, str):
+        technical_notes = ""
+
+    raw_criteria = raw.get("acceptance_criteria")
+    if not isinstance(raw_criteria, list):
         warnings.append(
             f"Ticket #{index} ('{title}'): missing/invalid 'acceptance_criteria', defaulted to []"
         )
-        acceptance_criteria = []
+        acceptance_criteria: List[AcceptanceCriterion] = []
     else:
-        cleaned = [item for item in acceptance_criteria if isinstance(item, str)]
-        if len(cleaned) != len(acceptance_criteria):
-            warnings.append(f"Ticket #{index} ('{title}'): dropped non-string acceptance_criteria entries")
-        acceptance_criteria = cleaned
+        acceptance_criteria = []
+        dropped = 0
+        for item in raw_criteria:
+            criterion = _coerce_criterion(item)
+            if criterion is None:
+                dropped += 1
+            else:
+                acceptance_criteria.append(criterion)
+        if dropped:
+            warnings.append(f"Ticket #{index} ('{title}'): dropped {dropped} unusable acceptance_criteria entries")
+
+    parent_title = raw.get("parent_title")
+    if not isinstance(parent_title, str):
+        parent_title = ""
 
     priority = raw.get("priority")
     if priority not in PRIORITIES:
@@ -260,6 +468,11 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         title=title.strip(),
         description=description,
         user_story=user_story.strip(),
+        epic=epic,
+        ui_route=ui_route.strip(),
+        backend_endpoint=backend_endpoint.strip(),
+        technical_notes=technical_notes.strip(),
+        parent_title=parent_title.strip(),
         acceptance_criteria=acceptance_criteria,
         priority=priority,
         category=category,
@@ -400,14 +613,26 @@ def apply_category_numbering(
     input tickets are not mutated.
     """
     counters: Dict[str, int] = dict(start_numbers or {})
+    renamed: Dict[str, str] = {}
     numbered = []
     for ticket in tickets:
         category = ticket.category if ticket.category in CATEGORIES else DEFAULT_CATEGORY
         prefix = CATEGORY_PREFIXES[category]
         number = counters.get(category, 1)
         counters[category] = number + 1
-        numbered.append(replace(ticket, title=f"{prefix}-{number:02d} | {ticket.title}"))
-    return numbered
+        new_title = f"{prefix}-{number:02d} | {ticket.title}"
+        renamed[ticket.title] = new_title
+        numbered.append(replace(ticket, title=new_title))
+
+    # parent_title points at another ticket's title, so it has to follow the
+    # rename — otherwise every parent link would dangle the moment tickets
+    # get their category numbers.
+    return [
+        replace(ticket, parent_title=renamed.get(ticket.parent_title, ticket.parent_title))
+        if ticket.parent_title
+        else ticket
+        for ticket in numbered
+    ]
 
 
 def apply_sprint_due_dates(

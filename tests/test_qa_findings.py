@@ -1,6 +1,7 @@
 import pytest
 
 from meta_harness.clickup_bridge import ClickUpTicketError
+from meta_harness.linear_bridge import LinearIssueError
 from meta_harness.qa_findings import (
     QAFinding,
     QAFindingNotFoundError,
@@ -74,6 +75,58 @@ def test_report_qa_issue_no_ticket_flag_skips_escalation(tmp_path, monkeypatch):
 def test_report_qa_issue_rejects_invalid_severity(tmp_path):
     with pytest.raises(ValueError, match="severity"):
         report_qa_issue("p", "/r", "obs", "blocker", store=_store(tmp_path))
+
+
+def test_report_qa_issue_rejects_invalid_tracker(tmp_path):
+    with pytest.raises(ValueError, match="tracker"):
+        report_qa_issue("p", "/r", "obs", "minor", tracker="jira", store=_store(tmp_path))
+
+
+def test_report_qa_issue_critical_escalates_into_linear_when_tracker_is_linear(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_create_issue(team_id, title, description, **kw):
+        captured.update(team_id=team_id)
+        return "LIN-1"
+
+    monkeypatch.setattr("meta_harness.qa_findings.linear_bridge.create_linear_issue", fake_create_issue)
+
+    finding = report_qa_issue(
+        "sigo", "/checkout", "500 on submit", "critical",
+        tracker="linear", linear_team_id="team-1", store=_store(tmp_path),
+    )
+
+    assert finding.linear_issue_id == "LIN-1"
+    assert finding.clickup_task_id is None
+    assert captured["team_id"] == "team-1"
+
+
+def test_report_qa_issue_linear_without_team_id_skips_escalation(tmp_path, monkeypatch):
+    def boom(**kwargs):
+        raise AssertionError("should not create a Linear issue without a team id")
+
+    monkeypatch.setattr("meta_harness.qa_findings.linear_bridge.create_linear_issue", boom)
+
+    finding = report_qa_issue(
+        "sigo", "/checkout", "500 on submit", "critical", tracker="linear", store=_store(tmp_path),
+    )
+
+    assert finding.linear_issue_id is None
+
+
+def test_report_qa_issue_linear_escalation_failure_does_not_block_finding(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise LinearIssueError("linear down")
+
+    monkeypatch.setattr("meta_harness.qa_findings.linear_bridge.create_linear_issue", fail)
+
+    finding = report_qa_issue(
+        "sigo", "/checkout", "500 on submit", "critical",
+        tracker="linear", linear_team_id="team-1", store=_store(tmp_path),
+    )
+
+    assert finding.status == "acknowledged"
+    assert finding.linear_issue_id is None
 
 
 def test_list_qa_issues_filters_by_project_severity_status(tmp_path, monkeypatch):
