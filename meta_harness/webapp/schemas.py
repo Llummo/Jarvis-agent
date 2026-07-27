@@ -79,3 +79,46 @@ class TicketCreateResult(BaseModel):
 
 class CreateTicketsOut(BaseModel):
     results: list[TicketCreateResult]
+
+
+class QATicketReviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticket_id: str
+    ticket_name: str
+    observation: str
+    severity: str
+
+
+class ReviewRequestIn(BaseModel):
+    ticket_id: str
+    project: str
+    persist: bool = False
+    clickup_list_id: Optional[str] = None
+
+
+class ReviewRunOut(BaseModel):
+    run_id: str
+    ticket_id: Optional[str] = None
+    started_at: str
+    ok: bool
+
+
+class ReviewResultOut(BaseModel):
+    run_id: str
+    review: QATicketReviewOut
+    finding: Optional[FindingOut] = None
+
+
+class ReplayReviewIn(BaseModel):
+    persist: bool = False
+    clickup_list_id: Optional[str] = None
+
+
+class CommitReviewIn(BaseModel):
+    ticket_id: str
+    ticket_name: str
+    observation: str
+    severity: str
+    project: str
+    clickup_list_id: Optional[str] = None

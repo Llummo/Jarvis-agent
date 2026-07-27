@@ -6,6 +6,7 @@ from meta_harness.clickup_bridge import (
     ClickUpReadError,
     ClickUpTicketError,
     create_clickup_ticket,
+    get_clickup_task,
     list_clickup_folders,
     list_clickup_lists,
     list_clickup_spaces,
@@ -219,6 +220,33 @@ def test_list_clickup_tasks_builds_correct_command(tmp_path, monkeypatch):
     assert calls[0] == [
         str(tmp_path / ".venv" / "bin" / "harness"), "clickup", "tasks", "--list-id", "L1",
     ]
+
+
+def test_get_clickup_task_builds_correct_command(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps({"id": "T1", "name": "Task 1", "text_content": "desc"}))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    task = get_clickup_task("T1", project_path=tmp_path)
+
+    assert task == {"id": "T1", "name": "Task 1", "text_content": "desc"}
+    assert calls[0] == [
+        str(tmp_path / ".venv" / "bin" / "harness"), "clickup", "get-task", "--task-id", "T1",
+    ]
+
+
+def test_get_clickup_task_raises_when_payload_is_not_an_object(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.clickup_bridge.subprocess.run",
+        lambda *a, **k: Result(stdout=json.dumps(["not", "an", "object"])),
+    )
+
+    with pytest.raises(ClickUpReadError, match="Expected a JSON object"):
+        get_clickup_task("T1", project_path=tmp_path)
 
 
 def test_clickup_read_raises_on_nonzero_exit(tmp_path, monkeypatch):

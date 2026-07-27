@@ -105,6 +105,13 @@ def list_clickup_tasks(list_id: str, *, project_path: Optional[Path] = None) -> 
     return payload
 
 
+def get_clickup_task(task_id: str, *, project_path: Optional[Path] = None) -> dict:
+    payload = _run_harness_json(["clickup", "get-task", "--task-id", task_id], project_path=project_path)
+    if not isinstance(payload, dict):
+        raise ClickUpReadError(f"Expected a JSON object for task {task_id}, got: {payload!r}")
+    return payload
+
+
 def create_clickup_ticket(
     name: str,
     description: str,
