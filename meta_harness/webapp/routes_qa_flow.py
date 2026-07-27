@@ -12,6 +12,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 
 from meta_harness.clickup_bridge import ClickUpReadError
+from meta_harness.project_config import ProjectConfigStore
 from meta_harness.qa_flow import (
     REVIEW_AGENT_NAME,
     QAFlowError,
@@ -22,9 +23,10 @@ from meta_harness.qa_flow import (
     review_tickets_bulk,
 )
 from meta_harness.qa_findings import QAFindingStore
+from meta_harness.qa_report import render_bulk_readme_markdown, render_finding_markdown, render_review_markdown
 from meta_harness.run_archive import RunArchive
 from meta_harness.webapp import progress
-from meta_harness.webapp.deps import get_qa_store
+from meta_harness.webapp.deps import get_project_config_store, get_qa_store
 from meta_harness.webapp.schemas import (
     BulkCommitIn,
     BulkCommitOut,
@@ -44,7 +46,11 @@ router = APIRouter()
 
 
 @router.post("", response_model=ReviewResultOut)
-def post_review(body: ReviewRequestIn, store: QAFindingStore = Depends(get_qa_store)) -> ReviewResultOut:
+def post_review(
+    body: ReviewRequestIn,
+    store: QAFindingStore = Depends(get_qa_store),
+    project_config: ProjectConfigStore = Depends(get_project_config_store),
+) -> ReviewResultOut:
     on_step = None
     if body.progress_token:
         progress.start(body.progress_token)
@@ -53,11 +59,12 @@ def post_review(body: ReviewRequestIn, store: QAFindingStore = Depends(get_qa_st
         review, finding, record = review_and_record(
             body.ticket_id, project=body.project, clickup_list_id=body.clickup_list_id,
             persist=body.persist, store=store, on_step=on_step,
-            pass_status=body.pass_status, fail_status=body.fail_status,
+            pass_status=body.pass_status, fail_status=body.fail_status, project_config=project_config,
         )
     except (ClickUpReadError, QAFlowError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return ReviewResultOut(run_id=record.run_id, review=review, finding=finding)
+    report_markdown = render_finding_markdown(finding) if finding else render_review_markdown(review)
+    return ReviewResultOut(run_id=record.run_id, review=review, finding=finding, report_markdown=report_markdown)
 
 
 @router.get("", response_model=List[ReviewRunOut])
@@ -80,6 +87,8 @@ def post_commit_review(body: CommitReviewIn, store: QAFindingStore = Depends(get
     review = QATicketReview(
         ticket_id=body.ticket_id, ticket_name=body.ticket_name,
         observation=body.observation, severity=body.severity,
+        route=body.route, status_code=body.status_code,
+        http_error=body.http_error, screenshot_path=body.screenshot_path,
     )
     try:
         return persist_review(
@@ -92,7 +101,10 @@ def post_commit_review(body: CommitReviewIn, store: QAFindingStore = Depends(get
 
 @router.post("/{run_id}/replay", response_model=ReviewResultOut)
 def post_replay(
-    run_id: str, body: ReplayReviewIn, store: QAFindingStore = Depends(get_qa_store)
+    run_id: str,
+    body: ReplayReviewIn,
+    store: QAFindingStore = Depends(get_qa_store),
+    project_config: ProjectConfigStore = Depends(get_project_config_store),
 ) -> ReviewResultOut:
     on_step = None
     if body.progress_token:
@@ -101,28 +113,38 @@ def post_replay(
     try:
         _original, review, finding, record = replay_qa_review(
             run_id, persist=body.persist, clickup_list_id=body.clickup_list_id, store=store, on_step=on_step,
-            pass_status=body.pass_status, fail_status=body.fail_status,
+            pass_status=body.pass_status, fail_status=body.fail_status, project_config=project_config,
         )
     except (ClickUpReadError, QAFlowError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return ReviewResultOut(run_id=record.run_id, review=review, finding=finding)
+    report_markdown = render_finding_markdown(finding) if finding else render_review_markdown(review)
+    return ReviewResultOut(run_id=record.run_id, review=review, finding=finding, report_markdown=report_markdown)
 
 
 @router.post("/bulk", response_model=BulkReviewOut)
-def post_bulk_review(body: BulkReviewIn) -> BulkReviewOut:
+def post_bulk_review(
+    body: BulkReviewIn, project_config: ProjectConfigStore = Depends(get_project_config_store)
+) -> BulkReviewOut:
     """Dry-run QA across every given ticket at once — never persists;
-    review /bulk/commit to save the ones you want."""
+    review /bulk/commit to save the ones you want. Also renders the whole
+    sweep as one QA-README.md (performed checks, routes, status codes,
+    screenshot evidence, proposed status move per ticket)."""
     on_step = None
     if body.progress_token:
         progress.start(body.progress_token)
         on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
     results = review_tickets_bulk(
         body.ticket_ids, project=body.project, clickup_list_id=body.clickup_list_id, on_step=on_step,
+        project_config=project_config,
+    )
+    readme_markdown = render_bulk_readme_markdown(
+        body.project, results, pass_status=body.pass_status, fail_status=body.fail_status
     )
     return BulkReviewOut(
-        results=[BulkReviewItemOut(ticket_id=tid, review=review, error=error) for tid, review, error in results]
+        results=[BulkReviewItemOut(ticket_id=tid, review=review, error=error) for tid, review, error in results],
+        readme_markdown=readme_markdown,
     )
 
 
@@ -143,6 +165,8 @@ def post_bulk_commit(body: BulkCommitIn, store: QAFindingStore = Depends(get_qa_
         review = QATicketReview(
             ticket_id=item.ticket_id, ticket_name=item.ticket_name,
             observation=item.observation, severity=item.severity,
+            route=item.route, status_code=item.status_code,
+            http_error=item.http_error, screenshot_path=item.screenshot_path,
         )
         try:
             finding = persist_review(

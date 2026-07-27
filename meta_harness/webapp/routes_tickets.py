@@ -59,6 +59,8 @@ def post_generate_tickets(
     except (TicketGenerationError, TicketParseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    if on_step:
+        on_step(f"Numbering {len(tickets)} ticket(s)…")
     start_numbers = {
         "mundane": start_mundane,
         "backend": start_backend,
@@ -66,6 +68,8 @@ def post_generate_tickets(
         "deployment": start_deployment,
     }
     tickets = apply_category_numbering(tickets, start_numbers)
+    if on_step:
+        on_step("Done.")
 
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
 

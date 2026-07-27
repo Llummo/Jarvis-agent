@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS qa_findings (
     severity         TEXT NOT NULL CHECK (severity IN ('minor', 'major', 'critical')),
     status           TEXT NOT NULL CHECK (status IN ('open', 'acknowledged', 'closed')) DEFAULT 'open',
     screenshot_path  TEXT,
+    checked_route    TEXT,
+    status_code      INTEGER,
+    http_error       TEXT,
     correction_note  TEXT,
     clickup_task_id  TEXT,
     created_at       TEXT NOT NULL,
@@ -40,6 +43,15 @@ CREATE INDEX IF NOT EXISTS idx_qa_findings_project  ON qa_findings(project);
 CREATE INDEX IF NOT EXISTS idx_qa_findings_severity ON qa_findings(severity);
 CREATE INDEX IF NOT EXISTS idx_qa_findings_status   ON qa_findings(status);
 """
+
+# Columns added after the original schema — applied via ALTER TABLE for
+# on-disk databases created before they existed, since CREATE TABLE IF NOT
+# EXISTS above only takes effect for a brand-new file.
+_MIGRATION_COLUMNS = {
+    "checked_route": "TEXT",
+    "status_code": "INTEGER",
+    "http_error": "TEXT",
+}
 
 
 class QAFindingNotFoundError(LookupError):
@@ -57,6 +69,9 @@ class QAFinding:
     severity: str
     status: str = "open"
     screenshot_path: Optional[str] = None
+    checked_route: Optional[str] = None
+    status_code: Optional[int] = None
+    http_error: Optional[str] = None
     correction_note: Optional[str] = None
     clickup_task_id: Optional[str] = None
     created_at: str = ""
@@ -72,6 +87,9 @@ class QAFinding:
             severity=row["severity"],
             status=row["status"],
             screenshot_path=row["screenshot_path"],
+            checked_route=row["checked_route"],
+            status_code=row["status_code"],
+            http_error=row["http_error"],
             correction_note=row["correction_note"],
             clickup_task_id=row["clickup_task_id"],
             created_at=row["created_at"],
@@ -97,6 +115,14 @@ class QAFindingStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(qa_findings)")}
+        for column, coltype in _MIGRATION_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE qa_findings ADD COLUMN {column} {coltype}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=5.0)
@@ -111,9 +137,10 @@ class QAFindingStore:
             cursor = conn.execute(
                 """
                 INSERT INTO qa_findings
-                    (project, route, observation, severity, status,
-                     screenshot_path, correction_note, clickup_task_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (project, route, observation, severity, status, screenshot_path,
+                     checked_route, status_code, http_error, correction_note, clickup_task_id,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     finding.project,
@@ -122,6 +149,9 @@ class QAFindingStore:
                     finding.severity,
                     finding.status,
                     finding.screenshot_path,
+                    finding.checked_route,
+                    finding.status_code,
+                    finding.http_error,
                     finding.correction_note,
                     finding.clickup_task_id,
                     now,
@@ -192,6 +222,9 @@ def report_qa_issue(
     severity: str,
     *,
     screenshot_path: Optional[str] = None,
+    checked_route: Optional[str] = None,
+    status_code: Optional[int] = None,
+    http_error: Optional[str] = None,
     clickup_list_id: Optional[str] = None,
     auto_escalate: bool = True,
     store: Optional[QAFindingStore] = None,
@@ -216,6 +249,9 @@ def report_qa_issue(
             severity=severity,
             status=status,
             screenshot_path=screenshot_path,
+            checked_route=checked_route,
+            status_code=status_code,
+            http_error=http_error,
         )
     )
 
