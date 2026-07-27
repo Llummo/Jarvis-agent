@@ -18,7 +18,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
+
+OnStep = Optional[Callable[[str], None]]
+
+
+def _report(on_step: OnStep, message: str) -> None:
+    if on_step is not None:
+        on_step(message)
 
 from meta_harness.clickup_bridge import get_clickup_task
 from meta_harness.qa_findings import SEVERITIES, QAFinding, QAFindingStore, report_qa_issue
@@ -122,6 +129,7 @@ def analyze_ticket(
     *,
     timeout_s: Optional[float] = None,
     max_attempts: int = MAX_ATTEMPTS,
+    on_step: OnStep = None,
 ) -> QATicketReview:
     """Harnessed `claude -p` call: same retry-with-repair pattern as
     ticket_generator.py — if the response fails validation, the specific
@@ -143,6 +151,13 @@ def analyze_ticket(
                 f"{base_prompt}\n\nYour previous response was invalid: {last_error} "
                 "Fix this and output ONLY the corrected JSON object."
             )
+            _report(
+                on_step,
+                f"Claude's response didn't pass validation ({last_error}) — "
+                f"asking it to fix and retrying (attempt {attempt}/{max_attempts})…",
+            )
+        else:
+            _report(on_step, "Claude is analyzing the ticket…")
         try:
             completed = subprocess.run(
                 [claude_path, "-p", prompt, "--output-format", "text"],
@@ -171,20 +186,23 @@ def review_qa_ticket(
     persist: bool = False,
     project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
+    on_step: OnStep = None,
 ) -> Tuple[QATicketReview, Optional[QAFinding]]:
     """Fetch a ClickUp ticket and analyze it. Dry-run by default (persist=False):
     returns the review without saving anything. With persist=True, also
     reports it as a real QA finding (which, if critical, auto-escalates
     to a linked ClickUp ticket the same way manual reporting does).
     """
+    _report(on_step, f"Fetching ticket {ticket_id} from ClickUp…")
     ticket = get_clickup_task(ticket_id, project_path=project_path)
     ticket_name = ticket.get("name") or ticket_id
     ticket_description = ticket.get("text_content") or ticket.get("description") or ""
 
-    review = analyze_ticket(ticket_id, ticket_name, ticket_description)
+    review = analyze_ticket(ticket_id, ticket_name, ticket_description, on_step=on_step)
 
     finding = None
     if persist:
+        _report(on_step, "Saving finding to the database…")
         finding = persist_review(review, project=project, clickup_list_id=clickup_list_id, store=store)
     return review, finding
 
@@ -242,11 +260,12 @@ def review_and_record(
     project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
     archive: Optional[RunArchive] = None,
+    on_step: OnStep = None,
 ) -> Tuple[QATicketReview, Optional[QAFinding], RunRecord]:
     """Review a ticket and archive the result so it can be replayed later."""
     review, finding = review_qa_ticket(
         ticket_id, project=project, clickup_list_id=clickup_list_id,
-        persist=persist, project_path=project_path, store=store,
+        persist=persist, project_path=project_path, store=store, on_step=on_step,
     )
     archive = archive if archive is not None else RunArchive(REVIEW_AGENT_NAME)
     record = _record_review(ticket_id, project, review, finding, persist, archive)
@@ -261,6 +280,7 @@ def replay_qa_review(
     project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
     archive: Optional[RunArchive] = None,
+    on_step: OnStep = None,
 ) -> Tuple[RunRecord, QATicketReview, Optional[QAFinding], RunRecord]:
     """Re-run a previously recorded ticket review against the same ticket.
 
@@ -270,12 +290,13 @@ def replay_qa_review(
     result for real.
     """
     archive = archive if archive is not None else RunArchive(REVIEW_AGENT_NAME)
+    _report(on_step, f"Loading recorded run {run_id}…")
     original = archive.get(run_id)
     original_payload = json.loads(original.steps[0].stdout) if original.steps else {}
     project = original_payload.get("project", "unknown")
 
     review, finding, new_record = review_and_record(
         original.subject_id, project=project, clickup_list_id=clickup_list_id,
-        persist=persist, project_path=project_path, store=store, archive=archive,
+        persist=persist, project_path=project_path, store=store, archive=archive, on_step=on_step,
     )
     return original, review, finding, new_record

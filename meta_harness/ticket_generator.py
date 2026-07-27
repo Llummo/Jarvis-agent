@@ -15,9 +15,16 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pypdf
+
+OnStep = Optional[Callable[[str], None]]
+
+
+def _report(on_step: OnStep, message: str) -> None:
+    if on_step is not None:
+        on_step(message)
 
 CLAUDE_PATH_ENV_VAR = "META_HARNESS_CLAUDE_PATH"
 CLAUDE_TIMEOUT_ENV_VAR = "META_HARNESS_CLAUDE_TIMEOUT_S"
@@ -237,7 +244,11 @@ def _run_claude(claude_path: str, prompt: str, document_text: str, timeout_s: fl
 
 
 def generate_tickets_from_text(
-    document_text: str, *, timeout_s: Optional[float] = None, max_attempts: int = MAX_GENERATION_ATTEMPTS
+    document_text: str,
+    *,
+    timeout_s: Optional[float] = None,
+    max_attempts: int = MAX_GENERATION_ATTEMPTS,
+    on_step: OnStep = None,
 ) -> Tuple[List[ProposedTicket], List[str]]:
     """Run `claude -p <prompt>` with the document piped via stdin; parse the result.
 
@@ -262,22 +273,33 @@ def generate_tickets_from_text(
                 f"{TICKET_EXTRACTION_PROMPT}\n\nYour previous response was invalid: {last_error} "
                 "Fix this and output ONLY the corrected JSON array."
             )
+            _report(
+                on_step,
+                f"Claude's response didn't pass validation ({last_error}) — "
+                f"asking it to fix and retrying (attempt {attempt}/{max_attempts})…",
+            )
+        else:
+            _report(on_step, "Sending document to Claude for ticket extraction — this can take a minute…")
         raw_output = _run_claude(claude_path, prompt, document_text, resolved_timeout)
         try:
-            return parse_proposed_tickets(raw_output)
+            tickets, warnings = parse_proposed_tickets(raw_output)
         except TicketParseError as exc:
             last_error = str(exc)
             if attempt == max_attempts:
                 raise
+            continue
+        _report(on_step, f"Extracted {len(tickets)} ticket(s) from the document.")
+        return tickets, warnings
     raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
 
 
 def generate_tickets_from_file(
-    filename: str, content: bytes, *, timeout_s: Optional[float] = None
+    filename: str, content: bytes, *, timeout_s: Optional[float] = None, on_step: OnStep = None
 ) -> Tuple[List[ProposedTicket], List[str]]:
     """End-to-end: extract text from an uploaded file, then generate tickets."""
+    _report(on_step, f'Extracting text from "{filename}"…')
     text = extract_document_text(filename, content)
-    return generate_tickets_from_text(text, timeout_s=timeout_s)
+    return generate_tickets_from_text(text, timeout_s=timeout_s, on_step=on_step)
 
 
 def apply_category_numbering(

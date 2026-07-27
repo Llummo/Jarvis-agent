@@ -61,6 +61,42 @@ async function fetchJson(url, options) {
   return body;
 }
 
+function newProgressToken() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// Polls GET /api/progress/{token} while a long agent call (Claude, ClickUp
+// fetch, retry-with-repair) is in flight, so the loading indicator can show
+// what's actually happening instead of a single static message. Returns a
+// stop function — call it once the main request settles; it does one final
+// read first, to catch a step recorded just before the response landed.
+function pollProgress(token, onMessage) {
+  let stopped = false;
+  let timer = null;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const data = await fetchJson(`/api/progress/${encodeURIComponent(token)}`);
+      if (data.steps && data.steps.length) onMessage(data.steps[data.steps.length - 1]);
+    } catch (err) {
+      // best-effort — a polling failure must never interrupt the main action
+    }
+    if (!stopped) timer = setTimeout(tick, 500);
+  };
+  tick();
+  return async () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    try {
+      const data = await fetchJson(`/api/progress/${encodeURIComponent(token)}`);
+      if (data.steps && data.steps.length) onMessage(data.steps[data.steps.length - 1]);
+    } catch (err) {
+      // ignore — this is just a best-effort final flush
+    }
+  };
+}
+
 function severityClass(severity) {
   if (severity === "critical") return "severity-critical";
   if (severity === "major") return "severity-major";
@@ -219,10 +255,13 @@ async function onGenerateTickets(event) {
   formData.append("start_backend", document.getElementById("start-backend").value || "1");
   formData.append("start_frontend", document.getElementById("start-frontend").value || "1");
   formData.append("start_deployment", document.getElementById("start-deployment").value || "1");
+  const token = newProgressToken();
+  formData.append("progress_token", token);
 
   const submitButton = event.target.querySelector('button[type="submit"]');
   submitButton.disabled = true;
-  setThinking(true, "Claude is analyzing your document — this can take a minute…");
+  setThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (message) => setThinking(true, message));
   try {
     const body = await fetchJson("/api/tickets/generate", { method: "POST", body: formData });
     proposedTickets = body.tickets.map((ticket) => ({ ticket, status: "pending" }));
@@ -233,6 +272,7 @@ async function onGenerateTickets(event) {
   } catch (err) {
     showTicketsError(err.message);
   } finally {
+    await stopPolling();
     submitButton.disabled = false;
     setThinking(false);
   }
@@ -652,12 +692,14 @@ async function onAnalyzeReview(event) {
     showQaReviewError("Pick a project first.");
     return;
   }
-  setReviewThinking(true, "Claude is analyzing this ticket…");
+  const token = newProgressToken();
+  setReviewThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (message) => setReviewThinking(true, message));
   try {
     const result = await fetchJson("/api/qa/reviews", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket_id: selectedTicket.id, project, persist: false }),
+      body: JSON.stringify({ ticket_id: selectedTicket.id, project, persist: false, progress_token: token }),
     });
     renderReviewResult(result.run_id, result.review, result.finding);
     showQaReviewSuccess("Analysis complete — review the result below.");
@@ -665,6 +707,7 @@ async function onAnalyzeReview(event) {
   } catch (err) {
     showQaReviewError(err.message);
   } finally {
+    await stopPolling();
     setReviewThinking(false);
   }
 }
@@ -691,12 +734,14 @@ async function onReplayReview() {
   if (!runId) return;
   showQaReviewError(null);
   showQaReviewSuccess(null);
-  setReviewThinking(true, "Replaying — re-fetching and re-analyzing the same ticket…");
+  const token = newProgressToken();
+  setReviewThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (message) => setReviewThinking(true, message));
   try {
     const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ persist: false }),
+      body: JSON.stringify({ persist: false, progress_token: token }),
     });
     renderReviewResult(result.run_id, result.review, result.finding);
     showQaReviewSuccess("Replay complete — review the result below.");
@@ -704,6 +749,7 @@ async function onReplayReview() {
   } catch (err) {
     showQaReviewError(err.message);
   } finally {
+    await stopPolling();
     setReviewThinking(false);
   }
 }

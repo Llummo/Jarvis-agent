@@ -95,6 +95,7 @@ class ReviewRequestIn(BaseModel):
     project: str
     persist: bool = False
     clickup_list_id: Optional[str] = None
+    progress_token: Optional[str] = None
 
 
 class ReviewRunOut(BaseModel):
@@ -113,6 +114,11 @@ class ReviewResultOut(BaseModel):
 class ReplayReviewIn(BaseModel):
     persist: bool = False
     clickup_list_id: Optional[str] = None
+    progress_token: Optional[str] = None
+
+
+class ProgressOut(BaseModel):
+    steps: list[str]
 
 
 class CommitReviewIn(BaseModel):
