@@ -22,6 +22,7 @@ from meta_harness.qa_flow import (
 )
 from meta_harness.qa_findings import QAFindingStore
 from meta_harness.run_archive import RunArchive
+from meta_harness.webapp import progress
 from meta_harness.webapp.deps import get_qa_store
 from meta_harness.webapp.schemas import (
     CommitReviewIn,
@@ -37,10 +38,14 @@ router = APIRouter()
 
 @router.post("", response_model=ReviewResultOut)
 def post_review(body: ReviewRequestIn, store: QAFindingStore = Depends(get_qa_store)) -> ReviewResultOut:
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
     try:
         review, finding, record = review_and_record(
             body.ticket_id, project=body.project, clickup_list_id=body.clickup_list_id,
-            persist=body.persist, store=store,
+            persist=body.persist, store=store, on_step=on_step,
         )
     except (ClickUpReadError, QAFlowError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -74,9 +79,13 @@ def post_commit_review(body: CommitReviewIn, store: QAFindingStore = Depends(get
 def post_replay(
     run_id: str, body: ReplayReviewIn, store: QAFindingStore = Depends(get_qa_store)
 ) -> ReviewResultOut:
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
     try:
         _original, review, finding, record = replay_qa_review(
-            run_id, persist=body.persist, clickup_list_id=body.clickup_list_id, store=store,
+            run_id, persist=body.persist, clickup_list_id=body.clickup_list_id, store=store, on_step=on_step,
         )
     except (ClickUpReadError, QAFlowError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

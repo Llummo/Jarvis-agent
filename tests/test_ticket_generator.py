@@ -10,6 +10,7 @@ from meta_harness.ticket_generator import (
     TicketParseError,
     apply_category_numbering,
     extract_document_text,
+    generate_tickets_from_file,
     generate_tickets_from_text,
     parse_proposed_tickets,
 )
@@ -261,6 +262,39 @@ def test_generate_tickets_retries_and_recovers_from_bad_json(monkeypatch):
     second_prompt = calls[1][2]
     assert "previous response was invalid" in second_prompt
     assert "did not return valid JSON" in second_prompt
+
+
+def test_generate_tickets_from_text_reports_steps_via_on_step(monkeypatch):
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        if len(calls) == 1:
+            return Result(stdout="not valid json")
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    steps = []
+    generate_tickets_from_text("Build a login page.", timeout_s=5, on_step=steps.append)
+
+    assert steps[0] == "Sending document to Claude for ticket extraction — this can take a minute…"
+    assert "attempt 2/3" in steps[1]
+    assert steps[-1] == "Extracted 1 ticket(s) from the document."
+
+
+def test_generate_tickets_from_file_reports_extraction_step(monkeypatch):
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.ticket_generator.subprocess.run",
+        lambda *a, **k: Result(stdout=json.dumps([_valid_ticket()])),
+    )
+
+    steps = []
+    generate_tickets_from_file("spec.txt", b"Build a login page.", timeout_s=5, on_step=steps.append)
+
+    assert steps[0] == 'Extracting text from "spec.txt"…'
 
 
 def test_generate_tickets_gives_up_after_max_attempts(monkeypatch):

@@ -21,6 +21,7 @@ from meta_harness.ticket_generator import (
     apply_category_numbering,
     generate_tickets_from_file,
 )
+from meta_harness.webapp import progress
 from meta_harness.webapp.deps import get_clickup_project_path
 from meta_harness.webapp.schemas import (
     CreateTicketsIn,
@@ -40,10 +41,15 @@ def post_generate_tickets(
     start_backend: int = Form(1),
     start_frontend: int = Form(1),
     start_deployment: int = Form(1),
+    progress_token: Optional[str] = Form(None),
 ) -> GenerateTicketsOut:
     content = file.file.read()
+    on_step = None
+    if progress_token:
+        progress.start(progress_token)
+        on_step = lambda message: progress.push(progress_token, message)  # noqa: E731
     try:
-        tickets, warnings = generate_tickets_from_file(file.filename or "document", content)
+        tickets, warnings = generate_tickets_from_file(file.filename or "document", content, on_step=on_step)
     except TicketExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ClaudeNotFoundError as exc:

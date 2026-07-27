@@ -95,6 +95,26 @@ def test_analyze_ticket_raises_on_nonzero_exit(monkeypatch):
         analyze_ticket("T1", "title", "desc", timeout_s=5)
 
 
+def test_analyze_ticket_reports_steps_via_on_step(monkeypatch):
+    calls = []
+
+    def fake_run(command, capture_output, text, timeout):
+        if len(calls) == 0:
+            calls.append(1)
+            return Result(stdout="not json")
+        return Result(stdout=VALID_REVIEW)
+
+    monkeypatch.setattr("meta_harness.qa_flow.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.qa_flow.subprocess.run", fake_run)
+
+    steps = []
+    analyze_ticket("T1", "title", "desc", timeout_s=5, on_step=steps.append)
+
+    assert steps[0] == "Claude is analyzing the ticket…"
+    assert "attempt 2/3" in steps[1]
+    assert "did not return valid JSON" in steps[1]
+
+
 def test_analyze_ticket_rejects_invalid_severity(monkeypatch):
     monkeypatch.setattr("meta_harness.qa_flow.shutil.which", lambda name: "/usr/bin/claude")
     monkeypatch.setattr(
@@ -164,6 +184,19 @@ def test_review_qa_ticket_persist_creates_finding(tmp_path, monkeypatch):
     assert captured["route"] == "Fix login bug"
 
 
+def test_review_qa_ticket_reports_fetch_and_persist_steps(tmp_path, monkeypatch):
+    _mock_ticket_fetch(monkeypatch)
+    _mock_analysis(monkeypatch)
+    store = QAFindingStore(tmp_path / "f.db")
+
+    steps = []
+    review_qa_ticket("T1", project="sigo-front", persist=True, store=store, on_step=steps.append)
+
+    assert steps[0] == "Fetching ticket T1 from ClickUp…"
+    assert "Claude is analyzing the ticket…" in steps
+    assert steps[-1] == "Saving finding to the database…"
+
+
 # ---------------------------------------------------------------------------
 # review_and_record / replay_qa_review
 # ---------------------------------------------------------------------------
@@ -220,6 +253,20 @@ def test_replay_qa_review_can_persist(tmp_path, monkeypatch):
     _, _, finding, _ = replay_qa_review(original_record.run_id, persist=True, archive=archive, store=store)
 
     assert finding is not None
+
+
+def test_replay_qa_review_reports_steps_via_on_step(tmp_path, monkeypatch):
+    _mock_ticket_fetch(monkeypatch)
+    _mock_analysis(monkeypatch)
+    archive = RunArchive("qa_ticket_review", directory=tmp_path)
+    store = QAFindingStore(tmp_path / "f.db")
+    _, _, original_record = review_and_record("T1", project="sigo-front", archive=archive, store=store)
+
+    steps = []
+    replay_qa_review(original_record.run_id, archive=archive, store=store, on_step=steps.append)
+
+    assert steps[0] == f"Loading recorded run {original_record.run_id}…"
+    assert "Fetching ticket T1 from ClickUp…" in steps
 
 
 def test_replay_qa_review_missing_run_id_raises(tmp_path):
