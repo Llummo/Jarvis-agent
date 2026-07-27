@@ -181,6 +181,13 @@ th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee
 .ticket-card h3 { margin: 0 0 0.4rem; display: flex; align-items: center; gap: 0.5rem; font-size: 1rem; }
 .ticket-card p { margin: 0.3rem 0; }
 .ticket-card ul { margin: 0.4rem 0; padding-left: 1.2rem; }
+.user-story {
+  font-style: italic;
+  color: #444;
+  border-left: 3px solid #3949ab;
+  padding: 0.2rem 0 0.2rem 0.6rem;
+  margin: 0.4rem 0 !important;
+}
 .ticket-card button {
   margin-top: 0.4rem;
   padding: 0.35rem 0.8rem;

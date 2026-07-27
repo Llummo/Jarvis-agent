@@ -375,10 +375,14 @@ function renderProposedTickets() {
     const acItems = entry.ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
     const priority = escapeHtml(entry.ticket.priority);
     const category = escapeHtml(entry.ticket.category);
+    const userStory = entry.ticket.user_story
+      ? `<p class="user-story">${escapeHtml(entry.ticket.user_story)}</p>`
+      : "";
     card.innerHTML =
       `<h3>${escapeHtml(entry.ticket.title)} ` +
       `<span class="priority-badge priority-${priority}">${priority}</span> ` +
       `<span class="category-badge category-${category}">${category}</span></h3>` +
+      userStory +
       `<p>${escapeHtml(entry.ticket.description)}</p>` +
       (acItems ? `<ul>${acItems}</ul>` : "") +
       `<div class="ticket-status"></div>`;

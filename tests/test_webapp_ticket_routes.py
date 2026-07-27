@@ -18,7 +18,9 @@ def test_generate_tickets_returns_proposed_tickets(monkeypatch):
         lambda filename, content, **kw: (
             [
                 ProposedTicket(
-                    title="Build login page", description="desc", acceptance_criteria=["a"],
+                    title="Build login page",
+                    user_story="As a user, I want to log in, so I can access my account.",
+                    description="desc", acceptance_criteria=["Given ..., when ..., then ..."],
                     priority="high", category="backend",
                 )
             ],
@@ -33,8 +35,9 @@ def test_generate_tickets_returns_proposed_tickets(monkeypatch):
     assert body["tickets"] == [
         {
             "title": "TAB-01 | Build login page",
+            "user_story": "As a user, I want to log in, so I can access my account.",
             "description": "desc",
-            "acceptance_criteria": ["a"],
+            "acceptance_criteria": ["Given ..., when ..., then ..."],
             "priority": "high",
             "category": "backend",
         }
@@ -198,3 +201,51 @@ def test_create_tickets_description_includes_acceptance_criteria(monkeypatch):
     assert "Do the thing." in captured["description"]
     assert "Criterion one" in captured["description"]
     assert "Criterion two" in captured["description"]
+
+
+def test_create_tickets_description_includes_user_story(monkeypatch):
+    captured = {}
+
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None):
+        captured["description"] = description
+        return "CU-1"
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.create_clickup_ticket", fake_create)
+
+    client.post(
+        "/api/tickets/create",
+        json={
+            "tickets": [
+                {
+                    "title": "Ticket A",
+                    "user_story": "As a user, I want to log in, so I can access my account.",
+                    "description": "Do the thing.",
+                    "acceptance_criteria": [],
+                    "priority": "normal",
+                },
+            ]
+        },
+    )
+
+    assert "As a user, I want to log in, so I can access my account." in captured["description"]
+
+
+def test_create_tickets_description_omits_user_story_line_when_absent(monkeypatch):
+    captured = {}
+
+    def fake_create(name, description, *, list_id=None, priority=None, project_path=None):
+        captured["description"] = description
+        return "CU-1"
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.create_clickup_ticket", fake_create)
+
+    client.post(
+        "/api/tickets/create",
+        json={
+            "tickets": [
+                {"title": "Ticket A", "description": "Do the thing.", "acceptance_criteria": [], "priority": "normal"},
+            ]
+        },
+    )
+
+    assert captured["description"].startswith("Do the thing.")

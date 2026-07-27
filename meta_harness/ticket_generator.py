@@ -46,9 +46,22 @@ SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
 TICKET_EXTRACTION_PROMPT = (
     "Extract a JSON array of tickets from the requirements document provided via stdin. "
+    "Order the array in a logical implementation sequence — foundational or setup work and "
+    "anything another ticket depends on comes before the tickets that build on it (e.g. a "
+    "backend endpoint before the frontend that calls it, setup/config before the feature that "
+    "needs it). "
     'Each ticket must be a JSON object with exactly these fields: '
-    '"title" (string), "description" (string), '
-    '"acceptance_criteria" (array of strings), '
+    '"title" (string, short — a few words naming the task; do not add numbering or a prefix, '
+    "that is added separately), "
+    '"user_story" (string, in English, following exactly this template: "As a <role>, I want '
+    'to <goal>, so I can <benefit>." — pick whichever role best fits the document\'s context, '
+    'e.g. "user", "admin", "student", "developer"), '
+    '"description" (string — a brief, plain-language explanation of the core of the task and '
+    "its flow: what needs to be built and how it should work end to end, written so anyone "
+    "picking up the ticket immediately understands it without re-reading the source document; "
+    "distinct from and more concrete than the user_story above), "
+    '"acceptance_criteria" (array of strings, each written in Gherkin: "Given <context>, when '
+    '<action>, then <expected outcome>"), '
     '"priority" (one of: "urgent", "high", "normal", "low"), '
     '"category" (one of: "backend", "frontend", "deployment", "mundane" — classify by the '
     'primary type of work: "backend" for server/API/database/business-logic work, '
@@ -81,6 +94,7 @@ class ProposedTicket:
 
     title: str
     description: str
+    user_story: str = ""
     acceptance_criteria: List[str] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
     category: str = DEFAULT_CATEGORY
@@ -158,6 +172,11 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         warnings.append(f"Ticket #{index} ('{title}'): missing/invalid 'description', defaulted to empty")
         description = ""
 
+    user_story = raw.get("user_story")
+    if not isinstance(user_story, str) or not user_story.strip():
+        warnings.append(f"Ticket #{index} ('{title}'): missing/invalid 'user_story', defaulted to empty")
+        user_story = ""
+
     acceptance_criteria = raw.get("acceptance_criteria")
     if not isinstance(acceptance_criteria, list):
         warnings.append(
@@ -187,6 +206,7 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
     return ProposedTicket(
         title=title.strip(),
         description=description,
+        user_story=user_story.strip(),
         acceptance_criteria=acceptance_criteria,
         priority=priority,
         category=category,
