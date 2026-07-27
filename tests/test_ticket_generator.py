@@ -250,14 +250,17 @@ def test_parse_proposed_tickets_non_object_item_dropped():
 # ---------------------------------------------------------------------------
 
 
-def test_prompt_requires_english_user_story_template():
+def test_prompt_requires_spanish_user_story_template():
     assert "user_story" in TICKET_EXTRACTION_PROMPT
-    assert "As a <role>, I want to <goal>, so I can <benefit>" in TICKET_EXTRACTION_PROMPT
+    assert "SPANISH" in TICKET_EXTRACTION_PROMPT
+    assert "Como <rol>" in TICKET_EXTRACTION_PROMPT
+    assert "quiero <objetivo>" in TICKET_EXTRACTION_PROMPT
+    assert "para <beneficio>" in TICKET_EXTRACTION_PROMPT
 
 
-def test_prompt_requires_gherkin_acceptance_criteria():
+def test_prompt_requires_gherkin_acceptance_criteria_in_spanish():
     assert "Gherkin" in TICKET_EXTRACTION_PROMPT
-    assert "Given <context>, when <action>, then <expected outcome>" in TICKET_EXTRACTION_PROMPT
+    assert "Dado que <contexto>, cuando <acción>, entonces <resultado esperado>" in TICKET_EXTRACTION_PROMPT
 
 
 def test_prompt_requires_a_brief_description_distinct_from_user_story():

@@ -37,7 +37,7 @@ def parse_emails(text: str) -> List[str]:
 
 def list_team_members(*, project_path: Optional[Path] = None) -> List[dict]:
     """Every real member across every ClickUp team the harness can see,
-    deduplicated by user id. Each entry: {id, email, username}."""
+    deduplicated by user id. Each entry: {clickup_id, email, username}."""
     teams = list_clickup_teams(project_path=project_path)
     by_id: dict = {}
     for team in teams:
@@ -48,7 +48,7 @@ def list_team_members(*, project_path: Optional[Path] = None) -> List[dict]:
             if user_id is None or not email:
                 continue
             by_id[user_id] = {
-                "id": user_id,
+                "clickup_id": user_id,
                 "email": str(email).lower(),
                 "username": user.get("username") or email,
             }
@@ -56,12 +56,16 @@ def list_team_members(*, project_path: Optional[Path] = None) -> List[dict]:
 
 
 def verify_team_emails(
-    emails: Sequence[str], *, project_path: Optional[Path] = None
+    emails: Sequence[str], *, project_path: Optional[Path] = None, members: Optional[Sequence[dict]] = None
 ) -> Tuple[List[dict], List[str]]:
-    """Cross-reference pasted emails against the real ClickUp workspace
-    roster. Returns (verified members, emails with no matching member),
-    both in the same order as `emails`."""
-    members_by_email = {m["email"]: m for m in list_team_members(project_path=project_path)}
+    """Cross-reference pasted emails against a member roster — the real
+    ClickUp workspace roster by default, or an already-fetched `members`
+    list (e.g. a Linear team's roster) when given. Returns (verified
+    members, emails with no matching member), both in the same order as
+    `emails`."""
+    if members is None:
+        members = list_team_members(project_path=project_path)
+    members_by_email = {m["email"]: m for m in members}
     verified: List[dict] = []
     not_found: List[str] = []
     for email in emails:
@@ -73,10 +77,35 @@ def verify_team_emails(
     return verified, not_found
 
 
+def merge_member_rosters(clickup_members: Sequence[dict], linear_members: Sequence[dict]) -> List[dict]:
+    """Merge a ClickUp roster ({clickup_id, email, username}) and a raw
+    Linear team roster ({id, name, email}) by email, so a person present in
+    either (or both) trackers ends up as one entry carrying whichever
+    tracker-specific ids were found: {email, username, clickup_id?,
+    linear_id?}. This is what lets one "verify team" pass resolve the
+    right assignee id for whichever tracker a ticket eventually gets
+    created in.
+    """
+    by_email: dict = {}
+    for member in clickup_members:
+        entry = by_email.setdefault(member["email"], {"email": member["email"], "username": member["username"]})
+        entry["clickup_id"] = member["clickup_id"]
+    for member in linear_members:
+        email = str(member.get("email") or "").lower()
+        if not email:
+            continue
+        entry = by_email.setdefault(email, {"email": email, "username": member.get("name") or email})
+        entry["linear_id"] = member.get("id")
+    return list(by_email.values())
+
+
 def assign_random_members(tickets: Sequence[ProposedTicket], members: Sequence[dict]) -> List[ProposedTicket]:
     """Randomly assign one verified member to each ticket (independent
-    draws — the same member can end up on more than one ticket). Tickets
-    are returned unchanged if there are no verified members to assign."""
+    draws — the same member can end up on more than one ticket). Sets
+    whichever tracker-specific id(s) each member entry carries
+    (clickup_id/linear_id), so the ticket carries the right assignee id no
+    matter which tracker it's later created in. Tickets are returned
+    unchanged if there are no verified members to assign."""
     if not members:
         return list(tickets)
     assigned = []
@@ -85,7 +114,8 @@ def assign_random_members(tickets: Sequence[ProposedTicket], members: Sequence[d
         assigned.append(
             replace(
                 ticket,
-                assignee_user_id=member["id"],
+                assignee_clickup_id=member.get("clickup_id"),
+                assignee_linear_id=member.get("linear_id"),
                 assignee_email=member["email"],
                 assignee_name=member["username"],
             )

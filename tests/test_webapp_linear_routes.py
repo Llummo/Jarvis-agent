@@ -109,7 +109,7 @@ def test_create_issues_passes_assignee_and_due_date(monkeypatch):
             "tickets": [
                 {
                     "title": "Ticket A", "description": "d", "acceptance_criteria": [], "priority": "urgent",
-                    "assignee_user_id": 0, "due_date": "2026-08-24",
+                    "assignee_linear_id": "uuid-123", "due_date": "2026-08-24",
                 },
             ],
         },

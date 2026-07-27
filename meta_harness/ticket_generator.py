@@ -69,18 +69,41 @@ TICKET_EXTRACTION_PROMPT = (
     "anything another ticket depends on comes before the tickets that build on it (e.g. a "
     "backend endpoint before the frontend that calls it, setup/config before the feature that "
     "needs it). "
+    "\n\n"
+    "All human-readable text content in the output (title, epic, user_story, description, "
+    "acceptance_criteria, technical_notes) must be written in SPANISH — this is the working "
+    "language of the team consuming these tickets. Only the JSON field names themselves stay "
+    "in English. "
+    "\n\n"
     'Each ticket must be a JSON object with exactly these fields: '
-    '"title" (string, short — a few words naming the task; do not add numbering or a prefix, '
-    "that is added separately), "
-    '"user_story" (string, in English, following exactly this template: "As a <role>, I want '
-    'to <goal>, so I can <benefit>." — pick whichever role best fits the document\'s context, '
-    'e.g. "user", "admin", "student", "developer"), '
-    '"description" (string — a brief, plain-language explanation of the core of the task and '
+    '"title" (string, short and specific — a few words naming the task, in Spanish; do not add '
+    "numbering or a prefix, that is added separately), "
+    '"epic" (string, in Spanish, upper case, the name of the broader feature/module this ticket '
+    'belongs to, e.g. "GESTIÓN DE POOL DE TALENTO (PERSONAS)" — group related tickets from the '
+    "same area of the document under the same epic name, worded consistently across tickets), "
+    '"ui_route" (string, the frontend route(s)/view(s) this ticket touches, e.g. "/erp/talent/people" '
+    'or "/erp/talent/people/:id" — use " | " to join more than one; empty string "" if the ticket '
+    "has no UI-facing route, e.g. a pure backend/infra ticket), "
+    '"backend_endpoint" (string, the backend HTTP method(s) and path this ticket touches, e.g. '
+    '"GET / POST / PUT / DELETE /api/v1/talent/people" — empty string "" if the ticket has no '
+    "backend endpoint, e.g. a pure frontend/static ticket), "
+    '"user_story" (string, in SPANISH, following exactly this template with real line breaks: '
+    '"Como <rol>,\\nquiero <objetivo>,\\npara <beneficio>." — pick whichever role best fits the '
+    'document\'s context, e.g. "usuario", "administrador", "reclutador", "desarrollador"), '
+    '"description" (string, in Spanish — a brief, concrete explanation of the core of the task and '
     "its flow: what needs to be built and how it should work end to end, written so anyone "
     "picking up the ticket immediately understands it without re-reading the source document; "
     "distinct from and more concrete than the user_story above), "
-    '"acceptance_criteria" (array of strings, each written in Gherkin: "Given <context>, when '
-    '<action>, then <expected outcome>"), '
+    '"acceptance_criteria" (array of strings, in Spanish; each one starts with a short descriptive '
+    'label for that criterion followed by ": " and then Gherkin phrased in Spanish: "Dado que '
+    '<contexto>, cuando <acción>, entonces <resultado esperado>." — for example "Carga de CV: Dado '
+    "que el usuario está en la pantalla 'Agregar persona', cuando adjunte un CV en PDF, entonces el "
+    'sistema debe extraer los datos automáticamente."), '
+    '"technical_notes" (string, in Spanish, OPTIONAL — technical details worth calling out if the '
+    "document actually specifies them: limits/constraints, a permissions matrix (e.g. "
+    '"talent:read, talent:write, recruitment:admin"), state/status models (e.g. "Registro: ACTIVE | '
+    'ARCHIVED"), integration notes, etc. Empty string "" if the document gives no such detail — do '
+    "not invent technical notes that aren't grounded in the document), "
     '"priority" (one of: "urgent", "high", "normal", "low"), '
     '"category" (one of: "backend", "frontend", "deployment", "mundane" — classify by the '
     'primary type of work: "backend" for server/API/database/business-logic work, '
@@ -138,12 +161,17 @@ class ProposedTicket:
     title: str
     description: str
     user_story: str = ""
+    epic: str = ""
+    ui_route: str = ""
+    backend_endpoint: str = ""
+    technical_notes: str = ""
     acceptance_criteria: List[str] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
     category: str = DEFAULT_CATEGORY
     sprint: int = 1
     due_date: Optional[str] = None  # ISO date, set by apply_sprint_due_dates
-    assignee_user_id: Optional[int] = None
+    assignee_clickup_id: Optional[int] = None
+    assignee_linear_id: Optional[str] = None
     assignee_email: Optional[str] = None
     assignee_name: Optional[str] = None
 
@@ -225,6 +253,23 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         warnings.append(f"Ticket #{index} ('{title}'): missing/invalid 'user_story', defaulted to empty")
         user_story = ""
 
+    epic = raw.get("epic")
+    if not isinstance(epic, str):
+        epic = ""
+    epic = epic.strip() or title.strip().upper()
+
+    ui_route = raw.get("ui_route")
+    if not isinstance(ui_route, str):
+        ui_route = ""
+
+    backend_endpoint = raw.get("backend_endpoint")
+    if not isinstance(backend_endpoint, str):
+        backend_endpoint = ""
+
+    technical_notes = raw.get("technical_notes")
+    if not isinstance(technical_notes, str):
+        technical_notes = ""
+
     acceptance_criteria = raw.get("acceptance_criteria")
     if not isinstance(acceptance_criteria, list):
         warnings.append(
@@ -260,6 +305,10 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         title=title.strip(),
         description=description,
         user_story=user_story.strip(),
+        epic=epic,
+        ui_route=ui_route.strip(),
+        backend_endpoint=backend_endpoint.strip(),
+        technical_notes=technical_notes.strip(),
         acceptance_criteria=acceptance_criteria,
         priority=priority,
         category=category,

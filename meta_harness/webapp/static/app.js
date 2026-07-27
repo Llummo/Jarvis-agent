@@ -280,6 +280,8 @@ async function onGenerateTickets(event) {
   formData.append("start_deployment", document.getElementById("start-deployment").value || "1");
   const teamEmailsText = document.getElementById("tickets-team-emails").value.trim();
   if (teamEmailsText) formData.append("team_emails_text", teamEmailsText);
+  const linearTeamId = document.getElementById("tickets-linear-team").value;
+  if (linearTeamId) formData.append("linear_team_id", linearTeamId);
   const projectStart = document.getElementById("tickets-project-start").value;
   const projectEnd = document.getElementById("tickets-project-end").value;
   if (projectStart) formData.append("project_start", projectStart);
@@ -382,7 +384,15 @@ function renderProposedTickets() {
     const priority = escapeHtml(entry.ticket.priority);
     const category = escapeHtml(entry.ticket.category);
     const userStory = entry.ticket.user_story
-      ? `<p class="user-story">${escapeHtml(entry.ticket.user_story)}</p>`
+      ? `<p class="user-story">${escapeHtml(entry.ticket.user_story).replace(/\n/g, "<br>")}</p>`
+      : "";
+    const epicLine = entry.ticket.epic ? `<p class="hint">📄 ${escapeHtml(entry.ticket.epic)}</p>` : "";
+    const routeRows = [];
+    if (entry.ticket.ui_route) routeRows.push(`<strong>📍 Ruta/Vista UI:</strong> ${escapeHtml(entry.ticket.ui_route)}`);
+    if (entry.ticket.backend_endpoint) routeRows.push(`<strong>🔌 Endpoint:</strong> ${escapeHtml(entry.ticket.backend_endpoint)}`);
+    const routes = routeRows.length ? `<div class="evidence">${routeRows.map((r) => `<div>${r}</div>`).join("")}</div>` : "";
+    const technicalNotes = entry.ticket.technical_notes
+      ? `<p class="hint">🛠️ ${escapeHtml(entry.ticket.technical_notes)}</p>`
       : "";
     const planningRows = [];
     if (entry.ticket.sprint) planningRows.push(`<strong>Sprint:</strong> ${entry.ticket.sprint}`);
@@ -395,9 +405,12 @@ function renderProposedTickets() {
       `<h3>${escapeHtml(entry.ticket.title)} ` +
       `<span class="priority-badge priority-${priority}">${priority}</span> ` +
       `<span class="category-badge category-${category}">${category}</span></h3>` +
+      epicLine +
+      routes +
       userStory +
       `<p>${escapeHtml(entry.ticket.description)}</p>` +
       (acItems ? `<ul>${acItems}</ul>` : "") +
+      technicalNotes +
       planning +
       `<div class="ticket-status"></div>`;
 
@@ -478,18 +491,20 @@ async function onVerifyTeam() {
     return;
   }
   verifyBtn.disabled = true;
+  const linearTeamId = document.getElementById("tickets-linear-team").value || null;
   try {
     const body = await fetchJson("/api/tickets/verify-team", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ emails_text: emailsText }),
+      body: JSON.stringify({ emails_text: emailsText, linear_team_id: linearTeamId }),
     });
     const rows = [];
     for (const member of body.verified) {
-      rows.push(`<div class="success-text">✓ ${escapeHtml(member.email)} — ${escapeHtml(member.username)}</div>`);
+      const trackers = [member.clickup_id ? "ClickUp" : null, member.linear_id ? "Linear" : null].filter(Boolean).join(" + ");
+      rows.push(`<div class="success-text">✓ ${escapeHtml(member.email)} — ${escapeHtml(member.username)} (${trackers})</div>`);
     }
     for (const email of body.not_found) {
-      rows.push(`<div class="error-text">✗ ${escapeHtml(email)} — no matching ClickUp workspace member</div>`);
+      rows.push(`<div class="error-text">✗ ${escapeHtml(email)} — no matching ClickUp/Linear workspace member</div>`);
     }
     resultEl.innerHTML = rows.join("") || '<div class="hint">No emails found in the text above.</div>';
     resultEl.hidden = false;
@@ -501,11 +516,32 @@ async function onVerifyTeam() {
   }
 }
 
+async function loadTicketsLinearTeamOptions() {
+  const select = document.getElementById("tickets-linear-team");
+  try {
+    const teams = await fetchJson("/api/linear/teams");
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "(ClickUp only)";
+    select.appendChild(placeholder);
+    for (const team of teams) {
+      const option = document.createElement("option");
+      option.value = team.id;
+      option.textContent = `${team.name} (${team.key})`;
+      select.appendChild(option);
+    }
+  } catch (err) {
+    // Linear may not be configured — the ClickUp-only path still works fine.
+  }
+}
+
 function initTicketsTab() {
   document.getElementById("tickets-generate-form").addEventListener("submit", onGenerateTickets);
   document.getElementById("tickets-create-all").addEventListener("click", onCreateAllTickets);
   document.getElementById("tickets-verify-team-btn").addEventListener("click", onVerifyTeam);
   loadTicketsListOptions();
+  loadTicketsLinearTeamOptions();
 }
 
 // --- Review Ticket (QA Flow) panel ------------------------------------------
@@ -742,10 +778,12 @@ async function refreshKnownProjects() {
 
 function projectOptionsUnion() {
   // Every project name this app actually knows about: previously reported/
-  // reviewed findings, plus every real ClickUp space — a fixed, enumerable
-  // set, which is exactly what makes this a dropdown instead of free text.
+  // reviewed findings, every real ClickUp space, and every real Linear
+  // team — a fixed, enumerable set, which is exactly what makes this a
+  // dropdown instead of free text.
   const options = new Set(knownProjects);
   for (const space of clickupSpaces) options.add(space.name);
+  for (const team of linearTeams) options.add(team.name);
   return Array.from(options).sort();
 }
 
@@ -833,6 +871,11 @@ function renderProjectDropdowns() {
   populateProjectSelect(document.getElementById("qa-report-project"));
   populateProjectSelect(document.getElementById("qa-filter-project"), { includeAnyOption: true });
   updateBaseUrlField();
+  const linearQaProjectSelect = document.getElementById("linear-qa-review-project");
+  if (linearQaProjectSelect) {
+    populateProjectSelect(linearQaProjectSelect, { preferredValue: currentLinearTeamName });
+    updateLinearQaBaseUrlField();
+  }
 }
 
 function selectClickupTask(task) {
@@ -1267,6 +1310,7 @@ let linearTeams = [];
 let linearIssues = [];
 let linearStates = [];
 let selectedLinearIssue = null;
+let currentLinearTeamName = null; // last-picked Linear team, used as the default QA review project
 
 // Linear's priority vocabulary matches the words used by the ticket
 // generator, so proposed tickets need no translation between trackers.
@@ -1351,12 +1395,33 @@ async function loadLinearTeams() {
   }
 }
 
+function populateLinearStatusSelect(select, states) {
+  const previousValue = select.value;
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "(leave as-is)";
+  select.appendChild(placeholder);
+  for (const state of states) {
+    const option = document.createElement("option");
+    option.value = state.id;
+    option.textContent = state.name;
+    select.appendChild(option);
+  }
+  if (states.some((s) => s.id === previousValue)) select.value = previousValue;
+}
+
 async function onLinearTeamChange() {
   const teamId = document.getElementById("linear-picker-team").value;
   const issueSelect = document.getElementById("linear-picker-issue");
   issueSelect.innerHTML = '<option value="">Select a team first</option>';
   issueSelect.disabled = true;
   resetSelectedLinearIssue();
+  document.getElementById("linear-qa-bulk-run-btn").disabled = true;
+  hideLinearBulkResults();
+  const team = linearTeams.find((t) => String(t.id) === teamId);
+  currentLinearTeamName = team ? team.name : null;
+  renderProjectDropdowns();
   if (!teamId) return;
 
   showLinearPickerError(null);
@@ -1377,6 +1442,8 @@ async function onLinearTeamChange() {
       option.textContent = state.name;
       stateSelect.appendChild(option);
     }
+    populateLinearStatusSelect(document.getElementById("linear-qa-status-pass"), linearStates);
+    populateLinearStatusSelect(document.getElementById("linear-qa-status-fail"), linearStates);
 
     issueSelect.innerHTML = "";
     if (!linearIssues.length) {
@@ -1395,6 +1462,7 @@ async function onLinearTeamChange() {
       issueSelect.appendChild(option);
     }
     issueSelect.disabled = false;
+    document.getElementById("linear-qa-bulk-run-btn").disabled = false;
   } catch (err) {
     showLinearPickerError(err.message);
     issueSelect.innerHTML = '<option value="">Failed to load</option>';
@@ -1409,6 +1477,11 @@ function resetSelectedLinearIssue() {
   document.getElementById("linear-state-select").disabled = true;
   document.getElementById("linear-set-state-btn").disabled = true;
   showLinearPickerSuccess(null);
+  document.getElementById("linear-qa-review-selected").textContent = "No issue selected.";
+  document.getElementById("linear-qa-review-analyze-btn").disabled = true;
+  document.getElementById("linear-qa-review-result").hidden = true;
+  showLinearQaReviewError(null);
+  showLinearQaReviewSuccess(null);
 }
 
 function onLinearIssueChange() {
@@ -1425,6 +1498,12 @@ function onLinearIssueChange() {
   document.getElementById("linear-set-state-btn").disabled = false;
   if (issue.state) document.getElementById("linear-state-select").value = issue.state.id;
   showLinearPickerSuccess(null);
+
+  document.getElementById("linear-qa-review-selected").textContent = `Selected: ${issue.title} (${issue.identifier})`;
+  document.getElementById("linear-qa-review-analyze-btn").disabled = false;
+  document.getElementById("linear-qa-review-result").hidden = true;
+  showLinearQaReviewError(null);
+  showLinearQaReviewSuccess(null);
 }
 
 function renderLinearIssueDetail(issue) {
@@ -1539,6 +1618,458 @@ function renderLinearCreateResults(results) {
   }
 }
 
+// --- Review Issue (QA Flow) panel — Linear tab, mirrors the ClickUp panel ---
+// --- above but reuses the team/issue picker already on this tab -----------
+
+function showLinearQaReviewError(message) {
+  const el = document.getElementById("linear-qa-review-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function showLinearQaReviewSuccess(message) {
+  const el = document.getElementById("linear-qa-review-success");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function setLinearQaReviewThinking(visible, message) {
+  const el = document.getElementById("linear-qa-review-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
+function updateLinearQaBaseUrlField() {
+  const project = document.getElementById("linear-qa-review-project").value;
+  document.getElementById("linear-qa-project-base-url").value = projectBaseUrls[project] || "";
+  document.getElementById("linear-qa-project-base-url-status").textContent = "";
+}
+
+async function onSaveLinearQaProjectBaseUrl() {
+  const project = document.getElementById("linear-qa-review-project").value;
+  const baseUrl = document.getElementById("linear-qa-project-base-url").value.trim();
+  const statusEl = document.getElementById("linear-qa-project-base-url-status");
+  statusEl.textContent = "";
+  statusEl.className = "success-text";
+  if (!project) {
+    statusEl.textContent = "Pick a project first.";
+    statusEl.className = "error-text";
+    return;
+  }
+  if (!baseUrl) {
+    statusEl.textContent = "Enter a URL first.";
+    statusEl.className = "error-text";
+    return;
+  }
+  try {
+    const data = await fetchJson("/api/qa/project-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project, base_url: baseUrl }),
+    });
+    projectBaseUrls = data.projects || {};
+    statusEl.textContent = "Saved.";
+  } catch (err) {
+    statusEl.textContent = err.message;
+    statusEl.className = "error-text";
+  }
+}
+
+function renderLinearQaReviewResult(runId, review, finding, reportMarkdown) {
+  const container = document.getElementById("linear-qa-review-result");
+  container.hidden = false;
+  const severity = escapeHtml(review.severity);
+
+  let html =
+    `<h3>${escapeHtml(review.ticket_name)} <span class="priority-badge priority-${severity}">${severity}</span></h3>` +
+    `<p>${escapeHtml(review.observation)}</p>`;
+
+  const evidenceRows = [];
+  if (review.route) evidenceRows.push(`<strong>Route checked:</strong> ${escapeHtml(review.route)}`);
+  if (review.status_code != null) evidenceRows.push(`<strong>HTTP status:</strong> ${review.status_code}`);
+  if (review.http_error) evidenceRows.push(`<strong class="error-text">Error:</strong> ${escapeHtml(review.http_error)}`);
+  if (evidenceRows.length) {
+    html += `<div class="evidence">${evidenceRows.map((row) => `<div>${row}</div>`).join("")}</div>`;
+  }
+  if (review.screenshot_path) {
+    html += `<img class="evidence-image" src="${screenshotUrl(review.screenshot_path)}" alt="Screenshot evidence">`;
+  }
+
+  html += `<div class="ticket-status"></div><div class="report-actions"></div>`;
+  container.innerHTML = html;
+
+  const reportActions = container.querySelector(".report-actions");
+  if (finding) {
+    const mdLink = document.createElement("a");
+    mdLink.href = `/api/qa/findings/${finding.id}/report.md`;
+    mdLink.textContent = "⬇ Markdown";
+    mdLink.setAttribute("download", "");
+    const pdfLink = document.createElement("a");
+    pdfLink.href = `/api/qa/findings/${finding.id}/report.pdf`;
+    pdfLink.textContent = "⬇ PDF";
+    pdfLink.setAttribute("download", "");
+    reportActions.append(mdLink, pdfLink);
+  } else if (reportMarkdown) {
+    const mdButton = document.createElement("button");
+    mdButton.type = "button";
+    mdButton.textContent = "⬇ Markdown";
+    mdButton.addEventListener("click", () => downloadTextFile(`qa-review-${review.ticket_id}.md`, reportMarkdown));
+    reportActions.appendChild(mdButton);
+  }
+
+  const statusEl = container.querySelector(".ticket-status");
+  if (finding) {
+    statusEl.textContent = `Persisted: finding #${finding.id}${finding.linear_issue_id ? ` (Linear: ${finding.linear_issue_id})` : ""}`;
+    statusEl.classList.add("ticket-status-ok");
+  } else {
+    statusEl.textContent = "Not persisted (dry-run)";
+    const button = document.createElement("button");
+    button.textContent = "Persist this finding";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      showLinearQaReviewSuccess(null);
+      showLinearQaReviewError(null);
+      const token = newProgressToken();
+      let lastStep = "";
+      setLinearQaReviewThinking(true, "Persisting…");
+      const stopPolling = pollProgress(token, (steps) => {
+        lastStep = steps[steps.length - 1];
+        setLinearQaReviewThinking(true, lastStep);
+        renderPhaseLog("linear-qa-review-phase-log", steps);
+      });
+      try {
+        const persistedFinding = await fetchJson("/api/qa/reviews/commit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ticket_id: review.ticket_id,
+            ticket_name: review.ticket_name,
+            observation: review.observation,
+            severity: review.severity,
+            project: document.getElementById("linear-qa-review-project").value,
+            tracker: "linear",
+            linear_team_id: document.getElementById("linear-picker-team").value,
+            pass_status: document.getElementById("linear-qa-status-pass").value || null,
+            fail_status: document.getElementById("linear-qa-status-fail").value || null,
+            route: review.route || null,
+            status_code: review.status_code != null ? review.status_code : null,
+            http_error: review.http_error || null,
+            screenshot_path: review.screenshot_path || null,
+            progress_token: token,
+          }),
+        });
+        await stopPolling();
+        renderLinearQaReviewResult(runId, review, persistedFinding);
+        const statusNote = /^(Moved|Finding persisted, but could not move)/.test(lastStep) ? ` ${lastStep}` : "";
+        showLinearQaReviewSuccess(`Finding #${persistedFinding.id} persisted.${statusNote}`);
+        refreshKnownProjects();
+        loadFindings();
+      } catch (err) {
+        await stopPolling();
+        button.disabled = false;
+        showLinearQaReviewError(err.message);
+      } finally {
+        setLinearQaReviewThinking(false);
+      }
+    });
+    container.appendChild(button);
+  }
+}
+
+async function onAnalyzeLinearQaReview(event) {
+  event.preventDefault();
+  if (!selectedLinearIssue) return;
+  showLinearQaReviewError(null);
+  showLinearQaReviewSuccess(null);
+  const project = document.getElementById("linear-qa-review-project").value;
+  if (!project) {
+    showLinearQaReviewError("Pick a project first.");
+    return;
+  }
+  const token = newProgressToken();
+  setLinearQaReviewThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (steps) => {
+    setLinearQaReviewThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("linear-qa-review-phase-log", steps);
+  });
+  try {
+    const result = await fetchJson("/api/qa/reviews", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticket_id: selectedLinearIssue.id, project, tracker: "linear",
+        linear_team_id: document.getElementById("linear-picker-team").value,
+        persist: false, progress_token: token,
+      }),
+    });
+    renderLinearQaReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
+    showLinearQaReviewSuccess("Analysis complete — review the result below.");
+    await loadLinearQaReviewRuns();
+  } catch (err) {
+    showLinearQaReviewError(err.message);
+  } finally {
+    await stopPolling();
+    setLinearQaReviewThinking(false);
+  }
+}
+
+async function loadLinearQaReviewRuns() {
+  const select = document.getElementById("linear-qa-review-runs-select");
+  try {
+    const runs = await fetchJson("/api/qa/reviews");
+    select.innerHTML = "";
+    for (const run of runs) {
+      const option = document.createElement("option");
+      option.value = run.run_id;
+      option.textContent = `${run.run_id} — ${run.ticket_id || "-"} (${run.started_at})`;
+      select.appendChild(option);
+    }
+  } catch (err) {
+    showLinearQaReviewError(err.message);
+  }
+}
+
+async function onReplayLinearQaReview() {
+  const select = document.getElementById("linear-qa-review-runs-select");
+  const runId = select.value;
+  if (!runId) return;
+  showLinearQaReviewError(null);
+  showLinearQaReviewSuccess(null);
+  const token = newProgressToken();
+  setLinearQaReviewThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (steps) => {
+    setLinearQaReviewThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("linear-qa-review-phase-log", steps);
+  });
+  try {
+    const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        persist: false, progress_token: token,
+        linear_team_id: document.getElementById("linear-picker-team").value,
+      }),
+    });
+    renderLinearQaReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
+    showLinearQaReviewSuccess("Replay complete — review the result below.");
+    await loadLinearQaReviewRuns();
+  } catch (err) {
+    showLinearQaReviewError(err.message);
+  } finally {
+    await stopPolling();
+    setLinearQaReviewThinking(false);
+  }
+}
+
+// --- Bulk QA sweep for the Linear tab, mirrors the ClickUp one above -------
+
+let linearBulkReviewResults = [];
+let linearBulkReadmeMarkdown = "";
+
+function showLinearBulkError(message) {
+  const el = document.getElementById("linear-qa-bulk-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function showLinearBulkSuccess(message) {
+  const el = document.getElementById("linear-qa-bulk-success");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function setLinearBulkThinking(visible, message) {
+  const el = document.getElementById("linear-qa-bulk-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
+function clearLinearBulkTable() {
+  linearBulkReviewResults = [];
+  linearBulkReadmeMarkdown = "";
+  document.getElementById("linear-qa-bulk-results").hidden = true;
+  document.querySelector("#linear-qa-bulk-table tbody").innerHTML = "";
+}
+
+function hideLinearBulkResults() {
+  clearLinearBulkTable();
+  showLinearBulkError(null);
+  showLinearBulkSuccess(null);
+}
+
+function onDownloadLinearBulkReadme() {
+  if (!linearBulkReadmeMarkdown) return;
+  downloadTextFile("QA-README.md", linearBulkReadmeMarkdown);
+}
+
+function renderLinearBulkResults() {
+  const tbody = document.querySelector("#linear-qa-bulk-table tbody");
+  tbody.innerHTML = "";
+  const passStatusId = document.getElementById("linear-qa-status-pass").value;
+  const failStatusId = document.getElementById("linear-qa-status-fail").value;
+  const stateName = (id) => (linearStates.find((s) => s.id === id) || {}).name;
+  for (const entry of linearBulkReviewResults) {
+    const row = document.createElement("tr");
+    if (entry.error) {
+      row.innerHTML =
+        `<td>${escapeHtml(entry.ticket_name)}</td>` +
+        `<td class="error-text">Error: ${escapeHtml(entry.error)}</td><td>-</td><td>-</td>`;
+    } else {
+      const passed = reviewPassed(entry.review.severity);
+      const targetStatusId = passed ? passStatusId : failStatusId;
+      const evidenceParts = [];
+      if (entry.review.route) evidenceParts.push(escapeHtml(entry.review.route));
+      if (entry.review.status_code != null) evidenceParts.push(`HTTP ${entry.review.status_code}`);
+      let evidenceCell = evidenceParts.join(" — ") || "-";
+      if (entry.review.screenshot_path) {
+        evidenceCell += ` <a href="${screenshotUrl(entry.review.screenshot_path)}" target="_blank" rel="noopener">screenshot</a>`;
+      }
+      row.innerHTML =
+        `<td>${escapeHtml(entry.ticket_name)}</td>` +
+        `<td class="${severityClass(entry.review.severity)}">${escapeHtml(entry.review.severity)} (${passed ? "pass" : "fail"})</td>` +
+        `<td>${evidenceCell}</td>` +
+        `<td>${targetStatusId ? escapeHtml(stateName(targetStatusId) || targetStatusId) : "(leave as-is)"}</td>`;
+    }
+    tbody.appendChild(row);
+  }
+  document.getElementById("linear-qa-bulk-results").hidden = false;
+}
+
+async function onRunLinearBulkQa() {
+  if (!linearIssues.length) return;
+  const project = document.getElementById("linear-qa-review-project").value;
+  if (!project) {
+    showLinearBulkError("Pick a project first.");
+    return;
+  }
+  hideLinearBulkResults();
+  const runBtn = document.getElementById("linear-qa-bulk-run-btn");
+  runBtn.disabled = true;
+  const token = newProgressToken();
+  setLinearBulkThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (steps) => {
+    setLinearBulkThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("linear-qa-bulk-phase-log", steps);
+  });
+  const teamId = document.getElementById("linear-picker-team").value;
+  const passStatus = document.getElementById("linear-qa-status-pass").value || null;
+  const failStatus = document.getElementById("linear-qa-status-fail").value || null;
+  try {
+    const body = await fetchJson("/api/qa/reviews/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticket_ids: linearIssues.map((i) => i.id), project, tracker: "linear", linear_team_id: teamId,
+        progress_token: token, pass_status: passStatus, fail_status: failStatus,
+      }),
+    });
+    linearBulkReviewResults = body.results.map((r) => {
+      const issue = linearIssues.find((i) => String(i.id) === r.ticket_id);
+      return { ticket_id: r.ticket_id, ticket_name: issue ? issue.title : r.ticket_id, review: r.review, error: r.error };
+    });
+    linearBulkReadmeMarkdown = body.readme_markdown || "";
+    renderLinearBulkResults();
+    const ok = linearBulkReviewResults.filter((r) => !r.error).length;
+    const failed = linearBulkReviewResults.length - ok;
+    showLinearBulkSuccess(
+      failed
+        ? `Reviewed ${ok} of ${linearBulkReviewResults.length} issue(s) — ${failed} failed to analyze, see table below.`
+        : `Reviewed ${ok} issue(s) — check the proposed results below, then confirm to save.`,
+    );
+  } catch (err) {
+    showLinearBulkError(err.message);
+  } finally {
+    await stopPolling();
+    setLinearBulkThinking(false);
+    runBtn.disabled = false;
+  }
+}
+
+async function onConfirmLinearBulkQa() {
+  const project = document.getElementById("linear-qa-review-project").value;
+  const teamId = document.getElementById("linear-picker-team").value;
+  const passStatus = document.getElementById("linear-qa-status-pass").value || null;
+  const failStatus = document.getElementById("linear-qa-status-fail").value || null;
+  const items = linearBulkReviewResults
+    .filter((r) => r.review && !r.error)
+    .map((r) => ({
+      ticket_id: r.review.ticket_id,
+      ticket_name: r.review.ticket_name,
+      observation: r.review.observation,
+      severity: r.review.severity,
+      project,
+      tracker: "linear",
+      linear_team_id: teamId,
+      pass_status: passStatus,
+      fail_status: failStatus,
+      route: r.review.route || null,
+      status_code: r.review.status_code != null ? r.review.status_code : null,
+      http_error: r.review.http_error || null,
+      screenshot_path: r.review.screenshot_path || null,
+    }));
+  if (!items.length) return;
+  showLinearBulkError(null);
+  showLinearBulkSuccess(null);
+  const confirmBtn = document.getElementById("linear-qa-bulk-confirm-btn");
+  confirmBtn.disabled = true;
+  const token = newProgressToken();
+  setLinearBulkThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (steps) => {
+    setLinearBulkThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("linear-qa-bulk-phase-log", steps);
+  });
+  try {
+    const body = await fetchJson("/api/qa/reviews/bulk/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, progress_token: token }),
+    });
+    const ok = body.results.filter((r) => r.finding).length;
+    const failed = body.results.length - ok;
+    if (failed) {
+      const errorList = body.results.filter((r) => r.error).map((r) => `${r.ticket_id}: ${r.error}`).join("; ");
+      showLinearBulkError(`${failed} finding(s) failed to persist — ${errorList}`);
+    }
+    showLinearBulkSuccess(`Persisted ${ok} of ${body.results.length} finding(s), applying any configured state moves.`);
+    clearLinearBulkTable();
+    refreshKnownProjects();
+    loadFindings();
+  } catch (err) {
+    showLinearBulkError(err.message);
+  } finally {
+    await stopPolling();
+    setLinearBulkThinking(false);
+    confirmBtn.disabled = false;
+  }
+}
+
+function initLinearQaReviewPanel() {
+  document.getElementById("linear-qa-review-form").addEventListener("submit", onAnalyzeLinearQaReview);
+  document.getElementById("linear-qa-review-replay-btn").addEventListener("click", onReplayLinearQaReview);
+  document.getElementById("linear-qa-bulk-run-btn").addEventListener("click", onRunLinearBulkQa);
+  document.getElementById("linear-qa-bulk-confirm-btn").addEventListener("click", onConfirmLinearBulkQa);
+  document.getElementById("linear-qa-bulk-readme-btn").addEventListener("click", onDownloadLinearBulkReadme);
+  document.getElementById("linear-qa-review-project").addEventListener("change", updateLinearQaBaseUrlField);
+  document.getElementById("linear-qa-project-base-url-save").addEventListener("click", onSaveLinearQaProjectBaseUrl);
+  loadLinearQaReviewRuns();
+}
+
 function initLinearTab() {
   document.getElementById("linear-picker-team").addEventListener("change", onLinearTeamChange);
   document.getElementById("linear-picker-issue").addEventListener("change", onLinearIssueChange);
@@ -1546,6 +2077,7 @@ function initLinearTab() {
   document.getElementById("linear-create-team").addEventListener("change", onLinearCreateTeamChange);
   document.getElementById("linear-create-all-btn").addEventListener("click", onCreateLinearIssues);
   loadLinearTeams();
+  initLinearQaReviewPanel();
 }
 
 document.addEventListener("DOMContentLoaded", () => {

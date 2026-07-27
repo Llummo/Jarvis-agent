@@ -87,7 +87,7 @@ def post_create_issues(
                 ticket.title,
                 _format_description(ticket),
                 priority=ticket.priority,
-                assignee_id=ticket.assignee_user_id,
+                assignee_id=ticket.assignee_linear_id,
                 due_date=ticket.due_date,
                 project_id=body.project_id,
                 project_path=project_path,
@@ -100,11 +100,39 @@ def post_create_issues(
 
 
 def _format_description(ticket) -> str:
-    lines = []
+    """Same rich template as the ClickUp route's _format_description —
+    duplicated rather than shared, since the two trackers' route modules
+    don't otherwise depend on each other and the template itself is just
+    plain text composition, not business logic worth abstracting."""
+    epic = ticket.epic or ticket.title.upper()
+    lines = [
+        f"📄 USER STORY: {epic}",
+        f"Título: {ticket.title}",
+        "",
+        f"📍 Ruta / Vista UI: {ticket.ui_route or '(no aplica)'}",
+        f"🔌 Endpoint Backend: {ticket.backend_endpoint or '(no aplica)'}",
+        "",
+        "📝 DESCRIPCIÓN",
+    ]
     if ticket.user_story:
-        lines += [ticket.user_story, ""]
-    lines += [ticket.description, "", "Acceptance Criteria:"]
-    lines += [f"- {criterion}" for criterion in ticket.acceptance_criteria] or ["- (none specified)"]
+        lines.append(ticket.user_story)
+        lines.append("")
+    lines.append(ticket.description)
+    lines += [
+        "",
+        "🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)",
+        "- No se proporcionaron recursos visuales; agregar capturas, diagramas o enlaces de referencia si están disponibles.",
+        "",
+        "✅ CRITERIOS DE ACEPTACIÓN",
+    ]
+    for index, criterion in enumerate(ticket.acceptance_criteria, start=1):
+        lines.append(f"📌 Criterio {index}: {criterion}")
+    lines.append("📌 Criterio X: [Espacio para criterios adicionales]")
+    lines += [
+        "",
+        "🛠️ NOTAS TÉCNICAS Y ADICIONALES (opcional)",
+        ticket.technical_notes or "(sin notas adicionales)",
+    ]
     return "\n".join(lines)
 
 

@@ -22,6 +22,7 @@ class FindingOut(BaseModel):
     http_error: Optional[str] = None
     correction_note: Optional[str] = None
     clickup_task_id: Optional[str] = None
+    linear_issue_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -37,7 +38,9 @@ class ReportFindingIn(BaseModel):
     observation: str
     severity: str
     screenshot_path: Optional[str] = None
+    tracker: str = "clickup"
     clickup_list_id: Optional[str] = None
+    linear_team_id: Optional[str] = None
     auto_escalate: bool = True
 
 
@@ -51,12 +54,17 @@ class ProposedTicketOut(BaseModel):
     title: str
     description: str
     user_story: str = ""
+    epic: str = ""
+    ui_route: str = ""
+    backend_endpoint: str = ""
+    technical_notes: str = ""
     acceptance_criteria: list[str]
     priority: str
     category: str
     sprint: int = 1
     due_date: Optional[str] = None
-    assignee_user_id: Optional[int] = None
+    assignee_clickup_id: Optional[int] = None
+    assignee_linear_id: Optional[str] = None
     assignee_email: Optional[str] = None
     assignee_name: Optional[str] = None
 
@@ -70,24 +78,31 @@ class ProposedTicketIn(BaseModel):
     title: str
     description: str
     user_story: str = ""
+    epic: str = ""
+    ui_route: str = ""
+    backend_endpoint: str = ""
+    technical_notes: str = ""
     acceptance_criteria: list[str] = []
     priority: str = "normal"
     category: str = "mundane"
     sprint: int = 1
     due_date: Optional[str] = None
-    assignee_user_id: Optional[int] = None
+    assignee_clickup_id: Optional[int] = None
+    assignee_linear_id: Optional[str] = None
     assignee_email: Optional[str] = None
     assignee_name: Optional[str] = None
 
 
 class VerifyTeamIn(BaseModel):
     emails_text: str
+    linear_team_id: Optional[str] = None
 
 
 class TeamMemberOut(BaseModel):
-    user_id: int
     email: str
     username: str
+    clickup_id: Optional[int] = None
+    linear_id: Optional[str] = None
 
 
 class VerifyTeamOut(BaseModel):
@@ -128,7 +143,9 @@ class ReviewRequestIn(BaseModel):
     ticket_id: str
     project: str
     persist: bool = False
+    tracker: str = "clickup"
     clickup_list_id: Optional[str] = None
+    linear_team_id: Optional[str] = None
     progress_token: Optional[str] = None
     pass_status: Optional[str] = None
     fail_status: Optional[str] = None
@@ -151,6 +168,7 @@ class ReviewResultOut(BaseModel):
 class ReplayReviewIn(BaseModel):
     persist: bool = False
     clickup_list_id: Optional[str] = None
+    linear_team_id: Optional[str] = None
     progress_token: Optional[str] = None
     pass_status: Optional[str] = None
     fail_status: Optional[str] = None
@@ -166,7 +184,9 @@ class CommitReviewIn(BaseModel):
     observation: str
     severity: str
     project: str
+    tracker: str = "clickup"
     clickup_list_id: Optional[str] = None
+    linear_team_id: Optional[str] = None
     pass_status: Optional[str] = None
     fail_status: Optional[str] = None
     progress_token: Optional[str] = None
@@ -179,7 +199,9 @@ class CommitReviewIn(BaseModel):
 class BulkReviewIn(BaseModel):
     ticket_ids: list[str]
     project: str
+    tracker: str = "clickup"
     clickup_list_id: Optional[str] = None
+    linear_team_id: Optional[str] = None
     progress_token: Optional[str] = None
     pass_status: Optional[str] = None
     fail_status: Optional[str] = None
@@ -202,7 +224,9 @@ class BulkCommitItemIn(BaseModel):
     observation: str
     severity: str
     project: str
+    tracker: str = "clickup"
     clickup_list_id: Optional[str] = None
+    linear_team_id: Optional[str] = None
     pass_status: Optional[str] = None
     fail_status: Optional[str] = None
     route: Optional[str] = None

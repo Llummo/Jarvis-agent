@@ -12,6 +12,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 
 from meta_harness.clickup_bridge import ClickUpReadError
+from meta_harness.linear_bridge import LinearReadError
 from meta_harness.project_config import ProjectConfigStore
 from meta_harness.qa_flow import (
     REVIEW_AGENT_NAME,
@@ -57,11 +58,12 @@ def post_review(
         on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
     try:
         review, finding, record = review_and_record(
-            body.ticket_id, project=body.project, clickup_list_id=body.clickup_list_id,
+            body.ticket_id, project=body.project, tracker=body.tracker, clickup_list_id=body.clickup_list_id,
+            linear_team_id=body.linear_team_id,
             persist=body.persist, store=store, on_step=on_step,
             pass_status=body.pass_status, fail_status=body.fail_status, project_config=project_config,
         )
-    except (ClickUpReadError, QAFlowError) as exc:
+    except (ClickUpReadError, LinearReadError, QAFlowError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     report_markdown = render_finding_markdown(finding) if finding else render_review_markdown(review)
     return ReviewResultOut(run_id=record.run_id, review=review, finding=finding, report_markdown=report_markdown)
@@ -92,7 +94,8 @@ def post_commit_review(body: CommitReviewIn, store: QAFindingStore = Depends(get
     )
     try:
         return persist_review(
-            review, project=body.project, clickup_list_id=body.clickup_list_id, store=store,
+            review, project=body.project, tracker=body.tracker, clickup_list_id=body.clickup_list_id,
+            linear_team_id=body.linear_team_id, store=store,
             pass_status=body.pass_status, fail_status=body.fail_status, on_step=on_step,
         )
     except ValueError as exc:
@@ -112,10 +115,11 @@ def post_replay(
         on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
     try:
         _original, review, finding, record = replay_qa_review(
-            run_id, persist=body.persist, clickup_list_id=body.clickup_list_id, store=store, on_step=on_step,
+            run_id, persist=body.persist, clickup_list_id=body.clickup_list_id,
+            linear_team_id=body.linear_team_id, store=store, on_step=on_step,
             pass_status=body.pass_status, fail_status=body.fail_status, project_config=project_config,
         )
-    except (ClickUpReadError, QAFlowError) as exc:
+    except (ClickUpReadError, LinearReadError, QAFlowError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -136,7 +140,8 @@ def post_bulk_review(
         progress.start(body.progress_token)
         on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
     results = review_tickets_bulk(
-        body.ticket_ids, project=body.project, clickup_list_id=body.clickup_list_id, on_step=on_step,
+        body.ticket_ids, project=body.project, tracker=body.tracker, clickup_list_id=body.clickup_list_id,
+        linear_team_id=body.linear_team_id, on_step=on_step,
         project_config=project_config,
     )
     readme_markdown = render_bulk_readme_markdown(
@@ -170,7 +175,8 @@ def post_bulk_commit(body: BulkCommitIn, store: QAFindingStore = Depends(get_qa_
         )
         try:
             finding = persist_review(
-                review, project=item.project, clickup_list_id=item.clickup_list_id, store=store,
+                review, project=item.project, tracker=item.tracker, clickup_list_id=item.clickup_list_id,
+                linear_team_id=item.linear_team_id, store=store,
                 pass_status=item.pass_status, fail_status=item.fail_status, on_step=on_step,
             )
             results.append(BulkCommitResultOut(ticket_id=item.ticket_id, finding=finding))

@@ -1,6 +1,7 @@
 from meta_harness.team_assignment import (
     assign_random_members,
     list_team_members,
+    merge_member_rosters,
     parse_emails,
     verify_team_emails,
 )
@@ -12,7 +13,7 @@ def _team(members):
 
 
 def _member(user_id, email, username):
-    return {"id": user_id, "email": email, "username": username}
+    return {"clickup_id": user_id, "email": email, "username": username}
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +63,7 @@ def test_list_team_members_extracts_id_email_username(monkeypatch):
 
     members = list_team_members()
 
-    assert members == [{"id": 1, "email": "alice@example.com", "username": "Alice"}]
+    assert members == [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}]
 
 
 def test_list_team_members_dedupes_across_teams(monkeypatch):
@@ -96,7 +97,7 @@ def test_verify_team_emails_matches_real_members_case_insensitively(monkeypatch)
 
     verified, not_found = verify_team_emails(["Alice@Example.com"])
 
-    assert verified == [{"id": 1, "email": "alice@example.com", "username": "Alice"}]
+    assert verified == [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}]
     assert not_found == []
 
 
@@ -121,6 +122,48 @@ def test_verify_team_emails_empty_roster_reports_all_not_found(monkeypatch):
     assert not_found == ["alice@example.com"]
 
 
+def test_verify_team_emails_accepts_explicit_members_list():
+    members = [{"clickup_id": 9, "email": "bob@example.com", "username": "Bob"}]
+
+    verified, not_found = verify_team_emails(["bob@example.com"], members=members)
+
+    assert verified == members
+    assert not_found == []
+
+
+# ---------------------------------------------------------------------------
+# merge_member_rosters
+# ---------------------------------------------------------------------------
+
+
+def test_merge_member_rosters_combines_ids_for_same_email():
+    clickup_members = [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}]
+    linear_members = [{"id": "uuid-1", "name": "Alice L", "email": "alice@example.com"}]
+
+    merged = merge_member_rosters(clickup_members, linear_members)
+
+    assert merged == [
+        {"email": "alice@example.com", "username": "Alice", "clickup_id": 1, "linear_id": "uuid-1"}
+    ]
+
+
+def test_merge_member_rosters_keeps_tracker_only_members():
+    clickup_members = [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}]
+    linear_members = [{"id": "uuid-2", "name": "Bob", "email": "bob@example.com"}]
+
+    merged = merge_member_rosters(clickup_members, linear_members)
+    by_email = {m["email"]: m for m in merged}
+
+    assert by_email["alice@example.com"].get("linear_id") is None
+    assert by_email["bob@example.com"] == {"email": "bob@example.com", "username": "Bob", "linear_id": "uuid-2"}
+
+
+def test_merge_member_rosters_skips_linear_members_without_email():
+    merged = merge_member_rosters([], [{"id": "uuid-3", "name": "No Email"}])
+
+    assert merged == []
+
+
 # ---------------------------------------------------------------------------
 # assign_random_members
 # ---------------------------------------------------------------------------
@@ -133,9 +176,21 @@ def test_assign_random_members_attaches_assignee_fields(monkeypatch):
 
     assigned = assign_random_members(tickets, members)
 
-    assert assigned[0].assignee_user_id == 1
+    assert assigned[0].assignee_clickup_id == 1
+    assert assigned[0].assignee_linear_id is None
     assert assigned[0].assignee_email == "alice@example.com"
     assert assigned[0].assignee_name == "Alice"
+
+
+def test_assign_random_members_sets_linear_id_when_present(monkeypatch):
+    monkeypatch.setattr("meta_harness.team_assignment.random.choice", lambda seq: seq[0])
+    members = [{"clickup_id": 1, "linear_id": "uuid-1", "email": "alice@example.com", "username": "Alice"}]
+    tickets = [ProposedTicket(title="t1", description="d")]
+
+    assigned = assign_random_members(tickets, members)
+
+    assert assigned[0].assignee_clickup_id == 1
+    assert assigned[0].assignee_linear_id == "uuid-1"
 
 
 def test_assign_random_members_no_members_returns_tickets_unchanged():
@@ -143,7 +198,7 @@ def test_assign_random_members_no_members_returns_tickets_unchanged():
 
     assigned = assign_random_members(tickets, [])
 
-    assert assigned[0].assignee_user_id is None
+    assert assigned[0].assignee_clickup_id is None
 
 
 def test_assign_random_members_does_not_mutate_input():
@@ -152,7 +207,7 @@ def test_assign_random_members_does_not_mutate_input():
 
     assign_random_members(tickets, members)
 
-    assert tickets[0].assignee_user_id is None
+    assert tickets[0].assignee_clickup_id is None
 
 
 def test_assign_random_members_preserves_other_fields(monkeypatch):
@@ -174,5 +229,5 @@ def test_assign_random_members_can_assign_same_member_to_multiple_tickets(monkey
 
     assigned = assign_random_members(tickets, members)
 
-    assert assigned[0].assignee_user_id == 1
-    assert assigned[1].assignee_user_id == 1
+    assert assigned[0].assignee_clickup_id == 1
+    assert assigned[1].assignee_clickup_id == 1

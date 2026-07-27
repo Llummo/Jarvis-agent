@@ -247,7 +247,7 @@ def test_create_tickets_description_omits_user_story_line_when_absent(monkeypatc
         },
     )
 
-    assert captured["description"].startswith("Do the thing.")
+    assert "📝 DESCRIPCIÓN\nDo the thing." in captured["description"]
 
 
 def test_create_tickets_passes_assignees_and_due_date(monkeypatch):
@@ -266,7 +266,7 @@ def test_create_tickets_passes_assignees_and_due_date(monkeypatch):
             "tickets": [
                 {
                     "title": "Ticket A", "description": "d", "acceptance_criteria": [], "priority": "normal",
-                    "assignee_user_id": 138194537, "due_date": "2026-08-24",
+                    "assignee_clickup_id": 138194537, "due_date": "2026-08-24",
                 },
             ]
         },
@@ -296,16 +296,17 @@ def test_create_tickets_omits_assignees_and_due_date_when_absent(monkeypatch):
 
 
 def test_verify_team_returns_verified_and_not_found(monkeypatch):
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.list_team_members", lambda **kw: [])
     monkeypatch.setattr(
         "meta_harness.webapp.routes_tickets.verify_team_emails",
-        lambda emails: ([{"id": 1, "email": "alice@example.com", "username": "Alice"}], ["ghost@example.com"]),
+        lambda emails, **kw: ([{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}], ["ghost@example.com"]),
     )
 
     response = client.post("/api/tickets/verify-team", json={"emails_text": "alice@example.com, ghost@example.com"})
 
     assert response.status_code == 200
     body = response.json()
-    assert body["verified"] == [{"user_id": 1, "email": "alice@example.com", "username": "Alice"}]
+    assert body["verified"] == [{"email": "alice@example.com", "username": "Alice", "clickup_id": 1, "linear_id": None}]
     assert body["not_found"] == ["ghost@example.com"]
 
 
@@ -317,9 +318,10 @@ def test_generate_tickets_with_team_emails_assigns_members(monkeypatch):
             [],
         ),
     )
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.list_team_members", lambda **kw: [])
     monkeypatch.setattr(
         "meta_harness.webapp.routes_tickets.verify_team_emails",
-        lambda emails: ([{"id": 1, "email": "alice@example.com", "username": "Alice"}], []),
+        lambda emails, **kw: ([{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}], []),
     )
 
     response = client.post(
@@ -330,7 +332,7 @@ def test_generate_tickets_with_team_emails_assigns_members(monkeypatch):
 
     assert response.status_code == 200
     ticket = response.json()["tickets"][0]
-    assert ticket["assignee_user_id"] == 1
+    assert ticket["assignee_clickup_id"] == 1
     assert ticket["assignee_email"] == "alice@example.com"
 
 
@@ -342,9 +344,10 @@ def test_generate_tickets_with_unmatched_team_emails_adds_warning(monkeypatch):
             [],
         ),
     )
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.list_team_members", lambda **kw: [])
     monkeypatch.setattr(
         "meta_harness.webapp.routes_tickets.verify_team_emails",
-        lambda emails: ([], ["ghost@example.com"]),
+        lambda emails, **kw: ([], ["ghost@example.com"]),
     )
 
     response = client.post(
@@ -355,7 +358,7 @@ def test_generate_tickets_with_unmatched_team_emails_adds_warning(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["tickets"][0]["assignee_user_id"] is None
+    assert body["tickets"][0]["assignee_clickup_id"] is None
     assert any("ghost@example.com" in w for w in body["warnings"])
 
 
@@ -368,7 +371,7 @@ def test_generate_tickets_without_team_emails_leaves_tickets_unassigned(monkeypa
         ),
     )
 
-    def boom(emails):
+    def boom(emails, **kw):
         raise AssertionError("must not verify team emails when none were given")
 
     monkeypatch.setattr("meta_harness.webapp.routes_tickets.verify_team_emails", boom)
@@ -376,7 +379,7 @@ def test_generate_tickets_without_team_emails_leaves_tickets_unassigned(monkeypa
     response = client.post("/api/tickets/generate", files={"file": ("spec.txt", b"some text", "text/plain")})
 
     assert response.status_code == 200
-    assert response.json()["tickets"][0]["assignee_user_id"] is None
+    assert response.json()["tickets"][0]["assignee_clickup_id"] is None
 
 
 def test_generate_tickets_with_project_dates_compresses_due_dates(monkeypatch):

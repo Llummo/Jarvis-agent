@@ -192,9 +192,12 @@
         </div>
 
         <h3>Team Members</h3>
-        <p class="hint">Paste team member emails (one per line, or comma/semicolon/space separated). Each is verified against the real ClickUp workspace roster, then generated tickets get a random verified member assigned automatically.</p>
+        <p class="hint">Paste team member emails (one per line, or comma/semicolon/space separated). Each is verified against the real ClickUp workspace roster (and, if a Linear team is picked below, that team's roster too), then generated tickets get a random verified member assigned automatically — with the right id for whichever tracker you create into.</p>
         <textarea id="tickets-team-emails" rows="4" placeholder="alice@example.com&#10;bob@example.com"></textarea>
         <div class="inline-form">
+          <label>Also verify against Linear team:
+            <select id="tickets-linear-team"><option value="">(ClickUp only)</option></select>
+          </label>
           <button type="button" id="tickets-verify-team-btn">Verify Team</button>
         </div>
         <div id="tickets-team-verify-result" class="evidence" hidden></div>
@@ -244,6 +247,84 @@
         <div class="inline-form">
           <select id="linear-state-select" disabled><option value="">Select an issue first</option></select>
           <button type="button" id="linear-set-state-btn" disabled>Move to state</button>
+        </div>
+      </section>
+
+      <section class="panel" id="linear-qa-review-panel">
+        <h2>Review Issue (QA Flow)</h2>
+        <p class="hint">Uses the issue selected above. Dry-run by default, nothing is saved until you persist.</p>
+
+        <div class="inline-form">
+          <label>Base URL for this project:
+            <input type="url" id="linear-qa-project-base-url" placeholder="https://your-app.example.com (optional)">
+          </label>
+          <button type="button" id="linear-qa-project-base-url-save">Save URL</button>
+          <span id="linear-qa-project-base-url-status" class="success-text"></span>
+        </div>
+        <p class="hint">When set, Claude's inferred route is actually checked: a real HTTP request records the status code and a real screenshot is captured.</p>
+
+        <div class="inline-form">
+          <label>On pass, move Linear issue to:
+            <select id="linear-qa-status-pass"><option value="">(leave as-is)</option></select>
+          </label>
+          <label>On fail, move Linear issue to:
+            <select id="linear-qa-status-fail"><option value="">(leave as-is)</option></select>
+          </label>
+        </div>
+        <p class="hint">Applied whenever a finding is persisted — a minor result counts as "pass", major/critical as "fail".</p>
+
+        <div id="linear-qa-review-selected" class="hint">No issue selected.</div>
+
+        <form id="linear-qa-review-form" class="inline-form">
+          <select id="linear-qa-review-project"></select>
+          <button type="submit" id="linear-qa-review-analyze-btn" disabled>Analyze (dry-run)</button>
+        </form>
+
+        <div id="linear-qa-review-thinking" class="thinking-indicator" hidden>
+          <span class="spinner"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="linear-qa-review-phase-log"></ul>
+          </div>
+        </div>
+        <div id="linear-qa-review-error" class="error-banner" hidden></div>
+        <div id="linear-qa-review-success" class="success-banner" hidden></div>
+
+        <div id="linear-qa-review-result" class="ticket-card" hidden></div>
+
+        <h3>QA All Issues in This Team</h3>
+        <p class="hint">Dry-run analyzes every issue currently loaded in the issue dropdown above and generates a QA-README.md, then lets you review and confirm before anything is saved or any state is moved.</p>
+        <button type="button" id="linear-qa-bulk-run-btn" disabled>QA all issues (dry-run)</button>
+
+        <div id="linear-qa-bulk-thinking" class="thinking-indicator" hidden>
+          <span class="spinner"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="linear-qa-bulk-phase-log"></ul>
+          </div>
+        </div>
+        <div id="linear-qa-bulk-error" class="error-banner" hidden></div>
+        <div id="linear-qa-bulk-success" class="success-banner" hidden></div>
+
+        <div id="linear-qa-bulk-results" hidden>
+          <table id="linear-qa-bulk-table">
+            <thead>
+              <tr><th>Issue</th><th>Result</th><th>Evidence</th><th>Proposed state</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <div class="inline-form report-actions">
+            <button type="button" id="linear-qa-bulk-readme-btn">⬇ QA-README.md</button>
+          </div>
+          <div class="inline-form">
+            <button type="button" id="linear-qa-bulk-confirm-btn">Move issues based on QA-README.md results</button>
+          </div>
+        </div>
+
+        <h3>Past Reviews</h3>
+        <div class="inline-form">
+          <select id="linear-qa-review-runs-select"></select>
+          <button id="linear-qa-review-replay-btn" type="button">Replay (dry-run)</button>
         </div>
       </section>
 

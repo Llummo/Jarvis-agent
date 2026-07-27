@@ -314,3 +314,44 @@ def test_post_bulk_commit_saves_route_check_evidence(tmp_path):
     assert finding["status_code"] == 500
     assert finding["http_error"] == "HTTP 500: Internal Server Error"
     assert finding["screenshot_path"] == "qa/screenshots/shot.png"
+
+
+def test_post_review_passes_tracker_and_linear_team_id(monkeypatch):
+    captured = {}
+
+    def fake_review_and_record(ticket_id, **kw):
+        captured.update(kw)
+        return (
+            _review(), None,
+            RunRecord(run_id="run1", agent="qa_ticket_review", subject_id=ticket_id, started_at="t", ok=True),
+        )
+
+    monkeypatch.setattr("meta_harness.webapp.routes_qa_flow.review_and_record", fake_review_and_record)
+
+    response = client.post(
+        "/api/qa/reviews",
+        json={"ticket_id": "I1", "project": "sigo", "tracker": "linear", "linear_team_id": "team-1"},
+    )
+
+    assert response.status_code == 200
+    assert captured["tracker"] == "linear"
+    assert captured["linear_team_id"] == "team-1"
+
+
+def test_post_bulk_review_passes_tracker_and_linear_team_id(monkeypatch):
+    captured = {}
+
+    def fake_bulk(ticket_ids, **kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr("meta_harness.webapp.routes_qa_flow.review_tickets_bulk", fake_bulk)
+
+    response = client.post(
+        "/api/qa/reviews/bulk",
+        json={"ticket_ids": ["I1"], "project": "sigo", "tracker": "linear", "linear_team_id": "team-1"},
+    )
+
+    assert response.status_code == 200
+    assert captured["tracker"] == "linear"
+    assert captured["linear_team_id"] == "team-1"

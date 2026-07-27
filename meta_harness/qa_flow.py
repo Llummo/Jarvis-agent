@@ -30,11 +30,13 @@ def _report(on_step: OnStep, message: str) -> None:
         on_step(message)
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, get_clickup_task, update_clickup_task_status
+from meta_harness.linear_bridge import LinearIssueError, LinearReadError, get_linear_issue, update_linear_issue_state
 from meta_harness.mcp_server.cdp_screenshot import ChromiumNotFoundError, ScreenshotCaptureError, capture_screenshot
 from meta_harness.project_config import ProjectConfigStore
 from meta_harness.qa_findings import SEVERITIES, QAFinding, QAFindingStore, report_qa_issue
 from meta_harness.run_archive import RunArchive, RunRecord, RunStepRecord
 
+TRACKERS = ("clickup", "linear")
 ROUTE_CHECK_TIMEOUT_S = 15.0
 
 # Which severities count as "QA passed" for the purposes of deciding whether
@@ -255,11 +257,39 @@ def perform_route_check(
     return status_code, http_error, screenshot_path
 
 
+def _validate_tracker(tracker: str) -> None:
+    if tracker not in TRACKERS:
+        raise ValueError(f"Invalid tracker '{tracker}'; must be one of {TRACKERS}")
+
+
+def _fetch_ticket(ticket_id: str, tracker: str, project_path: Optional[Path]) -> Tuple[str, str]:
+    """Fetch a ticket/issue from whichever tracker, normalized to
+    (name, description) — the shape review_qa_ticket needs regardless of
+    where it came from."""
+    if tracker == "linear":
+        issue = get_linear_issue(ticket_id, project_path=project_path)
+        return issue.get("title") or ticket_id, issue.get("description") or ""
+    ticket = get_clickup_task(ticket_id, project_path=project_path)
+    return ticket.get("name") or ticket_id, ticket.get("text_content") or ticket.get("description") or ""
+
+
+def _move_status(ticket_id: str, tracker: str, target: str, project_path: Optional[Path]) -> None:
+    """Move a ticket/issue to a new status/state. `target` is a ClickUp
+    status name for tracker="clickup", or a Linear workflow state id for
+    tracker="linear" — the two trackers' own vocabularies, unchanged."""
+    if tracker == "linear":
+        update_linear_issue_state(ticket_id, target, project_path=project_path)
+    else:
+        update_clickup_task_status(ticket_id, target, project_path=project_path)
+
+
 def review_qa_ticket(
     ticket_id: str,
     *,
     project: str,
+    tracker: str = "clickup",
     clickup_list_id: Optional[str] = None,
+    linear_team_id: Optional[str] = None,
     persist: bool = False,
     project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
@@ -268,21 +298,21 @@ def review_qa_ticket(
     fail_status: Optional[str] = None,
     project_config: Optional[ProjectConfigStore] = None,
 ) -> Tuple[QATicketReview, Optional[QAFinding]]:
-    """Fetch a ClickUp ticket and analyze it. Dry-run by default (persist=False):
-    returns the review without saving anything. With persist=True, also
-    reports it as a real QA finding (which, if critical, auto-escalates
-    to a linked ClickUp ticket the same way manual reporting does), and —
-    if pass_status/fail_status are given — moves the ClickUp ticket's
-    status based on the outcome (see persist_review).
+    """Fetch a ticket/issue from `tracker` ("clickup" or "linear") and
+    analyze it. Dry-run by default (persist=False): returns the review
+    without saving anything. With persist=True, also reports it as a real
+    QA finding (which, if critical, auto-escalates to a linked correction
+    ticket in the same tracker the same way manual reporting does), and —
+    if pass_status/fail_status are given — moves the ticket's status/state
+    based on the outcome (see persist_review).
 
     If the project has a base URL configured (project_config.py) and
     Claude's review inferred a route, also performs a real HTTP check and
     screenshot capture against that URL — see perform_route_check.
     """
-    _report(on_step, f"Fetching ticket {ticket_id} from ClickUp…")
-    ticket = get_clickup_task(ticket_id, project_path=project_path)
-    ticket_name = ticket.get("name") or ticket_id
-    ticket_description = ticket.get("text_content") or ticket.get("description") or ""
+    _validate_tracker(tracker)
+    _report(on_step, f"Fetching ticket {ticket_id} from {'Linear' if tracker == 'linear' else 'ClickUp'}…")
+    ticket_name, ticket_description = _fetch_ticket(ticket_id, tracker, project_path)
     _report(on_step, f'Ticket fetched: "{ticket_name}".')
 
     review = analyze_ticket(ticket_id, ticket_name, ticket_description, on_step=on_step)
@@ -297,7 +327,8 @@ def review_qa_ticket(
     if persist:
         _report(on_step, "Saving finding to the database…")
         finding = persist_review(
-            review, project=project, clickup_list_id=clickup_list_id, store=store,
+            review, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
+            linear_team_id=linear_team_id, store=store,
             pass_status=pass_status, fail_status=fail_status, project_path=project_path, on_step=on_step,
         )
     return review, finding
@@ -307,7 +338,9 @@ def persist_review(
     review: QATicketReview,
     *,
     project: str,
+    tracker: str = "clickup",
     clickup_list_id: Optional[str] = None,
+    linear_team_id: Optional[str] = None,
     store: Optional[QAFindingStore] = None,
     pass_status: Optional[str] = None,
     fail_status: Optional[str] = None,
@@ -318,32 +351,36 @@ def persist_review(
     re-fetching or re-analyzing the ticket — what you saw in the dry-run
     is exactly what gets saved, not a fresh (possibly different) analysis.
 
-    If pass_status/fail_status are given, also moves the ClickUp ticket to
-    the status matching the review's outcome (severity "minor" counts as a
-    pass, "major"/"critical" as a fail — see review_passed) — this is the
-    decision the harness makes automatically once a review is persisted.
-    A failed status move never rolls back the finding, which is already
-    saved by this point; it's reported via on_step instead.
+    If pass_status/fail_status are given, also moves the ticket/issue to
+    the status/state matching the review's outcome (severity "minor"
+    counts as a pass, "major"/"critical" as a fail — see review_passed) —
+    this is the decision the harness makes automatically once a review is
+    persisted. `target` must be a ClickUp status name for tracker="clickup"
+    or a Linear workflow state id for tracker="linear". A failed status
+    move never rolls back the finding, which is already saved by this
+    point; it's reported via on_step instead.
     """
+    _validate_tracker(tracker)
     finding = report_qa_issue(
         project, review.ticket_name, review.observation, review.severity,
-        clickup_list_id=clickup_list_id, store=store,
+        tracker=tracker, clickup_list_id=clickup_list_id, linear_team_id=linear_team_id, store=store,
         screenshot_path=review.screenshot_path, checked_route=review.route,
         status_code=review.status_code, http_error=review.http_error,
     )
 
     target_status = pass_status if review_passed(review.severity) else fail_status
     if target_status:
+        tracker_label = "Linear issue" if tracker == "linear" else "ClickUp ticket"
         outcome = "passed" if review_passed(review.severity) else "failed"
         _report(
             on_step,
-            f'QA {outcome} (severity: {review.severity}) — moving ClickUp ticket to "{target_status}"…',
+            f'QA {outcome} (severity: {review.severity}) — moving {tracker_label} to "{target_status}"…',
         )
         try:
-            update_clickup_task_status(review.ticket_id, target_status, project_path=project_path)
-            _report(on_step, f'Moved ClickUp ticket to "{target_status}".')
-        except ClickUpTicketError as exc:
-            _report(on_step, f'Finding persisted, but could not move ClickUp ticket to "{target_status}": {exc}')
+            _move_status(review.ticket_id, tracker, target_status, project_path)
+            _report(on_step, f'Moved {tracker_label} to "{target_status}".')
+        except (ClickUpTicketError, LinearIssueError) as exc:
+            _report(on_step, f'Finding persisted, but could not move {tracker_label} to "{target_status}": {exc}')
 
     return finding
 
@@ -351,6 +388,7 @@ def persist_review(
 def _record_review(
     ticket_id: str,
     project: str,
+    tracker: str,
     review: QATicketReview,
     finding: Optional[QAFinding],
     persist: bool,
@@ -358,6 +396,7 @@ def _record_review(
 ) -> RunRecord:
     payload = {
         "project": project,
+        "tracker": tracker,
         "observation": review.observation,
         "severity": review.severity,
         "persisted": persist,
@@ -379,7 +418,9 @@ def review_and_record(
     ticket_id: str,
     *,
     project: str,
+    tracker: str = "clickup",
     clickup_list_id: Optional[str] = None,
+    linear_team_id: Optional[str] = None,
     persist: bool = False,
     project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
@@ -389,14 +430,15 @@ def review_and_record(
     fail_status: Optional[str] = None,
     project_config: Optional[ProjectConfigStore] = None,
 ) -> Tuple[QATicketReview, Optional[QAFinding], RunRecord]:
-    """Review a ticket and archive the result so it can be replayed later."""
+    """Review a ticket/issue and archive the result so it can be replayed later."""
     review, finding = review_qa_ticket(
-        ticket_id, project=project, clickup_list_id=clickup_list_id,
+        ticket_id, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
+        linear_team_id=linear_team_id,
         persist=persist, project_path=project_path, store=store, on_step=on_step,
         pass_status=pass_status, fail_status=fail_status, project_config=project_config,
     )
     archive = archive if archive is not None else RunArchive(REVIEW_AGENT_NAME)
-    record = _record_review(ticket_id, project, review, finding, persist, archive)
+    record = _record_review(ticket_id, project, tracker, review, finding, persist, archive)
     return review, finding, record
 
 
@@ -405,6 +447,7 @@ def replay_qa_review(
     *,
     persist: bool = False,
     clickup_list_id: Optional[str] = None,
+    linear_team_id: Optional[str] = None,
     project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
     archive: Optional[RunArchive] = None,
@@ -413,21 +456,25 @@ def replay_qa_review(
     fail_status: Optional[str] = None,
     project_config: Optional[ProjectConfigStore] = None,
 ) -> Tuple[RunRecord, QATicketReview, Optional[QAFinding], RunRecord]:
-    """Re-run a previously recorded ticket review against the same ticket.
+    """Re-run a previously recorded ticket review against the same ticket/issue.
 
     Dry-run by default (persist=False), matching review_qa_ticket's
     default — replaying repeatedly must not silently pile up duplicate
-    findings/ClickUp tickets. Pass persist=True to report the replayed
-    result for real.
+    findings/correction tickets. Pass persist=True to report the replayed
+    result for real. The tracker is read back from the original recorded
+    run, same as the project, so a replay always targets the same tracker
+    it was originally reviewed against.
     """
     archive = archive if archive is not None else RunArchive(REVIEW_AGENT_NAME)
     _report(on_step, f"Loading recorded run {run_id}…")
     original = archive.get(run_id)
     original_payload = json.loads(original.steps[0].stdout) if original.steps else {}
     project = original_payload.get("project", "unknown")
+    tracker = original_payload.get("tracker", "clickup")
 
     review, finding, new_record = review_and_record(
-        original.subject_id, project=project, clickup_list_id=clickup_list_id,
+        original.subject_id, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
+        linear_team_id=linear_team_id,
         persist=persist, project_path=project_path, store=store, archive=archive, on_step=on_step,
         pass_status=pass_status, fail_status=fail_status, project_config=project_config,
     )
@@ -438,18 +485,20 @@ def review_tickets_bulk(
     ticket_ids: Sequence[str],
     *,
     project: str,
+    tracker: str = "clickup",
     clickup_list_id: Optional[str] = None,
+    linear_team_id: Optional[str] = None,
     project_path: Optional[Path] = None,
     on_step: OnStep = None,
     project_config: Optional[ProjectConfigStore] = None,
 ) -> List[Tuple[str, Optional[QATicketReview], Optional[str]]]:
-    """Dry-run QA analysis across many tickets at once.
+    """Dry-run QA analysis across many tickets/issues at once.
 
     Never persists anything — matches review_qa_ticket's own dry-run
     default; the caller reviews the batch and commits the ones it wants
     via persist_review/the /bulk/commit route. One ticket failing (a bad
-    ClickUp id, a Claude hiccup) doesn't stop the rest, same as bulk
-    ticket creation's per-item error isolation.
+    id, a Claude hiccup) doesn't stop the rest, same as bulk ticket
+    creation's per-item error isolation.
 
     Returns a list of (ticket_id, review-or-None, error-or-None) in the
     same order as ticket_ids.
@@ -460,10 +509,11 @@ def review_tickets_bulk(
         _report(on_step, f"Reviewing ticket {index}/{total}: {ticket_id}…")
         try:
             review, _finding = review_qa_ticket(
-                ticket_id, project=project, clickup_list_id=clickup_list_id,
+                ticket_id, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
+                linear_team_id=linear_team_id,
                 persist=False, project_path=project_path, on_step=on_step, project_config=project_config,
             )
             results.append((ticket_id, review, None))
-        except (ClickUpReadError, QAFlowError) as exc:
+        except (ClickUpReadError, LinearReadError, QAFlowError) as exc:
             results.append((ticket_id, None, str(exc)))
     return results

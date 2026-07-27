@@ -14,7 +14,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpTicketError, create_clickup_ticket
-from meta_harness.team_assignment import assign_random_members, parse_emails, verify_team_emails
+from meta_harness.linear_bridge import LinearReadError, list_linear_members
+from meta_harness.team_assignment import (
+    assign_random_members,
+    list_team_members,
+    merge_member_rosters,
+    parse_emails,
+    verify_team_emails,
+)
 from meta_harness.ticket_generator import (
     ClaudeNotFoundError,
     TicketExtractionError,
@@ -40,6 +47,23 @@ from meta_harness.webapp.schemas import (
 router = APIRouter()
 
 
+def _merged_roster(linear_team_id: Optional[str], *, on_step=None) -> list[dict]:
+    """The ClickUp roster, merged with a Linear team's roster when a team
+    id is given — a member found in either tracker counts as verifiable,
+    carrying whichever tracker-specific id(s) matched (see
+    team_assignment.merge_member_rosters)."""
+    clickup_members = list_team_members()
+    if not linear_team_id:
+        return clickup_members
+    try:
+        linear_members = list_linear_members(linear_team_id)
+    except LinearReadError as exc:
+        if on_step:
+            on_step(f"Could not load Linear roster, verifying against ClickUp only: {exc}")
+        return clickup_members
+    return merge_member_rosters(clickup_members, linear_members)
+
+
 @router.post("/generate", response_model=GenerateTicketsOut)
 def post_generate_tickets(
     file: UploadFile = File(...),
@@ -48,6 +72,7 @@ def post_generate_tickets(
     start_frontend: int = Form(1),
     start_deployment: int = Form(1),
     team_emails_text: Optional[str] = Form(None),
+    linear_team_id: Optional[str] = Form(None),
     project_start: Optional[str] = Form(None),
     project_end: Optional[str] = Form(None),
     progress_token: Optional[str] = Form(None),
@@ -97,15 +122,16 @@ def post_generate_tickets(
         if on_step:
             on_step("Verifying team members…")
         emails = parse_emails(team_emails_text)
-        verified, not_found = verify_team_emails(emails)
+        roster = _merged_roster(linear_team_id, on_step=on_step)
+        verified, not_found = verify_team_emails(emails, members=roster)
         if verified:
             if on_step:
                 on_step(f"Randomly assigning {len(verified)} verified member(s) to tickets…")
             tickets = assign_random_members(tickets, verified)
         elif emails:
-            warnings.append("None of the given team emails matched a real ClickUp workspace member — tickets left unassigned.")
+            warnings.append("None of the given team emails matched a real ClickUp or Linear workspace member — tickets left unassigned.")
         if not_found:
-            warnings.append(f"Team emails not found in ClickUp: {', '.join(not_found)}")
+            warnings.append(f"Team emails not found in ClickUp/Linear: {', '.join(not_found)}")
 
     if on_step:
         on_step("Done.")
@@ -116,19 +142,55 @@ def post_generate_tickets(
 @router.post("/verify-team", response_model=VerifyTeamOut)
 def post_verify_team(body: VerifyTeamIn) -> VerifyTeamOut:
     emails = parse_emails(body.emails_text)
-    verified, not_found = verify_team_emails(emails)
+    roster = _merged_roster(body.linear_team_id)
+    verified, not_found = verify_team_emails(emails, members=roster)
     return VerifyTeamOut(
-        verified=[TeamMemberOut(user_id=m["id"], email=m["email"], username=m["username"]) for m in verified],
+        verified=[
+            TeamMemberOut(
+                clickup_id=m.get("clickup_id"), linear_id=m.get("linear_id"),
+                email=m["email"], username=m["username"],
+            )
+            for m in verified
+        ],
         not_found=not_found,
     )
 
 
 def _format_description(ticket: ProposedTicketIn) -> str:
-    lines = []
+    """Render the team's standard ticket description template:
+    epic/title header, UI route + backend endpoint, a Spanish user story +
+    concrete description, optional visual-references placeholder, numbered
+    Gherkin acceptance criteria (plus a trailing placeholder for more), and
+    optional technical notes."""
+    epic = ticket.epic or ticket.title.upper()
+    lines = [
+        f"📄 USER STORY: {epic}",
+        f"Título: {ticket.title}",
+        "",
+        f"📍 Ruta / Vista UI: {ticket.ui_route or '(no aplica)'}",
+        f"🔌 Endpoint Backend: {ticket.backend_endpoint or '(no aplica)'}",
+        "",
+        "📝 DESCRIPCIÓN",
+    ]
     if ticket.user_story:
-        lines += [ticket.user_story, ""]
-    lines += [ticket.description, "", "Acceptance Criteria:"]
-    lines += [f"- {criterion}" for criterion in ticket.acceptance_criteria] or ["- (none specified)"]
+        lines.append(ticket.user_story)
+        lines.append("")
+    lines.append(ticket.description)
+    lines += [
+        "",
+        "🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)",
+        "- No se proporcionaron recursos visuales; agregar capturas, diagramas o enlaces de referencia si están disponibles.",
+        "",
+        "✅ CRITERIOS DE ACEPTACIÓN",
+    ]
+    for index, criterion in enumerate(ticket.acceptance_criteria, start=1):
+        lines.append(f"📌 Criterio {index}: {criterion}")
+    lines.append("📌 Criterio X: [Espacio para criterios adicionales]")
+    lines += [
+        "",
+        "🛠️ NOTAS TÉCNICAS Y ADICIONALES (opcional)",
+        ticket.technical_notes or "(sin notas adicionales)",
+    ]
     return "\n".join(lines)
 
 
@@ -154,7 +216,7 @@ def post_create_tickets(
                 _format_description(ticket),
                 list_id=body.list_id,
                 priority=ticket.priority,
-                assignees=[ticket.assignee_user_id] if ticket.assignee_user_id else None,
+                assignees=[ticket.assignee_clickup_id] if ticket.assignee_clickup_id else None,
                 due_date_ms=_due_date_ms(ticket.due_date),
                 project_path=project_path,
             )
