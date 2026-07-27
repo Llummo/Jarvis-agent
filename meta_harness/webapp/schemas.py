@@ -233,3 +233,24 @@ class ProjectConfigIn(BaseModel):
 
 class ProjectConfigOut(BaseModel):
     projects: dict[str, str]
+
+
+class CreateLinearIssuesIn(BaseModel):
+    team_id: str
+    tickets: list[ProposedTicketIn]
+    project_id: Optional[str] = None
+
+
+class LinearIssueCreateResult(BaseModel):
+    ticket: ProposedTicketIn
+    ok: bool
+    linear_issue_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CreateLinearIssuesOut(BaseModel):
+    results: list[LinearIssueCreateResult]
+
+
+class SetLinearStateIn(BaseModel):
+    state_id: str

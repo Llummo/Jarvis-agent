@@ -11,7 +11,7 @@
     <nav class="tabs">
       <button class="tab-button active" data-tab="clickup">ClickUp</button>
       <button class="tab-button" data-tab="tickets">Generate Tickets</button>
-      <button class="tab-button" data-tab="linear" disabled title="Coming soon">Linear</button>
+      <button class="tab-button" data-tab="linear">Linear</button>
     </nav>
   </header>
 
@@ -219,7 +219,55 @@
     </section>
 
     <section id="tab-linear" class="tab-panel" hidden>
-      <p>Linear support is coming soon.</p>
+      <section class="panel" id="linear-browser-panel">
+        <h2>Linear Issues</h2>
+        <p class="hint">Pick a team — its issues load directly below. Read-only browsing; nothing is changed until you move an issue's state.</p>
+
+        <form class="inline-form" id="linear-picker-form">
+          <select id="linear-picker-team"><option value="">Loading teams…</option></select>
+          <select id="linear-picker-issue" disabled><option value="">Select a team first</option></select>
+        </form>
+
+        <div id="linear-picker-thinking" class="thinking-indicator" hidden>
+          <span class="spinner"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="linear-picker-phase-log"></ul>
+          </div>
+        </div>
+        <div id="linear-picker-error" class="error-banner" hidden></div>
+        <div id="linear-picker-success" class="success-banner" hidden></div>
+
+        <div id="linear-issue-detail" class="ticket-card" hidden></div>
+
+        <h3>Move Issue State</h3>
+        <div class="inline-form">
+          <select id="linear-state-select" disabled><option value="">Select an issue first</option></select>
+          <button type="button" id="linear-set-state-btn" disabled>Move to state</button>
+        </div>
+      </section>
+
+      <section class="panel" id="linear-create-panel">
+        <h2>Create Issues in Linear</h2>
+        <p class="hint">Uses the tickets generated on the "Generate Tickets" tab (including user story, Gherkin criteria, assignee and sprint due date) and creates them as real Linear issues instead of ClickUp tasks.</p>
+
+        <div class="inline-form">
+          <select id="linear-create-team"><option value="">Loading teams…</option></select>
+          <select id="linear-create-project"><option value="">No project</option></select>
+          <button type="button" id="linear-create-all-btn" disabled>Create generated tickets in Linear</button>
+        </div>
+
+        <div id="linear-create-thinking" class="thinking-indicator" hidden>
+          <span class="spinner"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="linear-create-phase-log"></ul>
+          </div>
+        </div>
+        <div id="linear-create-error" class="error-banner" hidden></div>
+        <div id="linear-create-success" class="success-banner" hidden></div>
+        <div id="linear-create-results"></div>
+      </section>
     </section>
   </main>
 

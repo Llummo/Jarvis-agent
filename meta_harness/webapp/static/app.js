@@ -1261,6 +1261,293 @@ function initQaReviewPanel() {
   loadProjectConfig();
 }
 
+// --- Linear tab -------------------------------------------------------------
+
+let linearTeams = [];
+let linearIssues = [];
+let linearStates = [];
+let selectedLinearIssue = null;
+
+// Linear's priority vocabulary matches the words used by the ticket
+// generator, so proposed tickets need no translation between trackers.
+function showLinearPickerError(message) {
+  const el = document.getElementById("linear-picker-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function showLinearPickerSuccess(message) {
+  const el = document.getElementById("linear-picker-success");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function setLinearPickerThinking(visible, message) {
+  const el = document.getElementById("linear-picker-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
+function showLinearCreateError(message) {
+  const el = document.getElementById("linear-create-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function showLinearCreateSuccess(message) {
+  const el = document.getElementById("linear-create-success");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function setLinearCreateThinking(visible, message) {
+  const el = document.getElementById("linear-create-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
+function populateTeamSelect(select, teams, placeholder) {
+  select.innerHTML = "";
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = teams.length ? placeholder : "No teams found";
+  select.appendChild(option);
+  for (const team of teams) {
+    const teamOption = document.createElement("option");
+    teamOption.value = team.id;
+    teamOption.textContent = `${team.name} (${team.key})`;
+    select.appendChild(teamOption);
+  }
+}
+
+async function loadLinearTeams() {
+  showLinearPickerError(null);
+  setLinearPickerThinking(true, "Loading Linear teams…");
+  try {
+    linearTeams = await fetchJson("/api/linear/teams");
+    populateTeamSelect(document.getElementById("linear-picker-team"), linearTeams, "Select a team…");
+    populateTeamSelect(document.getElementById("linear-create-team"), linearTeams, "Select a team…");
+  } catch (err) {
+    showLinearPickerError(err.message);
+    document.getElementById("linear-picker-team").innerHTML = '<option value="">Failed to load teams</option>';
+  } finally {
+    setLinearPickerThinking(false);
+  }
+}
+
+async function onLinearTeamChange() {
+  const teamId = document.getElementById("linear-picker-team").value;
+  const issueSelect = document.getElementById("linear-picker-issue");
+  issueSelect.innerHTML = '<option value="">Select a team first</option>';
+  issueSelect.disabled = true;
+  resetSelectedLinearIssue();
+  if (!teamId) return;
+
+  showLinearPickerError(null);
+  setLinearPickerThinking(true, "Loading issues and workflow states…");
+  try {
+    const [issues, states] = await Promise.all([
+      fetchJson(`/api/linear/issues?team_id=${encodeURIComponent(teamId)}`),
+      fetchJson(`/api/linear/states?team_id=${encodeURIComponent(teamId)}`),
+    ]);
+    linearIssues = issues;
+    linearStates = states;
+
+    const stateSelect = document.getElementById("linear-state-select");
+    stateSelect.innerHTML = "";
+    for (const state of linearStates) {
+      const option = document.createElement("option");
+      option.value = state.id;
+      option.textContent = state.name;
+      stateSelect.appendChild(option);
+    }
+
+    issueSelect.innerHTML = "";
+    if (!linearIssues.length) {
+      issueSelect.innerHTML = '<option value="">No issues found</option>';
+      return;
+    }
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select an issue…";
+    issueSelect.appendChild(placeholder);
+    for (const issue of linearIssues) {
+      const option = document.createElement("option");
+      option.value = issue.id;
+      const state = issue.state ? issue.state.name : "-";
+      option.textContent = `${issue.identifier} — ${issue.title} (${state})`;
+      issueSelect.appendChild(option);
+    }
+    issueSelect.disabled = false;
+  } catch (err) {
+    showLinearPickerError(err.message);
+    issueSelect.innerHTML = '<option value="">Failed to load</option>';
+  } finally {
+    setLinearPickerThinking(false);
+  }
+}
+
+function resetSelectedLinearIssue() {
+  selectedLinearIssue = null;
+  document.getElementById("linear-issue-detail").hidden = true;
+  document.getElementById("linear-state-select").disabled = true;
+  document.getElementById("linear-set-state-btn").disabled = true;
+  showLinearPickerSuccess(null);
+}
+
+function onLinearIssueChange() {
+  const issueId = document.getElementById("linear-picker-issue").value;
+  if (!issueId) {
+    resetSelectedLinearIssue();
+    return;
+  }
+  const issue = linearIssues.find((i) => String(i.id) === issueId);
+  if (!issue) return;
+  selectedLinearIssue = issue;
+  renderLinearIssueDetail(issue);
+  document.getElementById("linear-state-select").disabled = false;
+  document.getElementById("linear-set-state-btn").disabled = false;
+  if (issue.state) document.getElementById("linear-state-select").value = issue.state.id;
+  showLinearPickerSuccess(null);
+}
+
+function renderLinearIssueDetail(issue) {
+  const container = document.getElementById("linear-issue-detail");
+  const rows = [];
+  if (issue.state) rows.push(`<strong>State:</strong> ${escapeHtml(issue.state.name)}`);
+  if (issue.assignee) rows.push(`<strong>Assignee:</strong> ${escapeHtml(issue.assignee.name)}`);
+  if (issue.dueDate) rows.push(`<strong>Due:</strong> ${escapeHtml(issue.dueDate)}`);
+  container.innerHTML =
+    `<h3>${escapeHtml(issue.identifier)} — ${escapeHtml(issue.title)}</h3>` +
+    (rows.length ? `<div class="evidence">${rows.map((r) => `<div>${r}</div>`).join("")}</div>` : "") +
+    `<p>${escapeHtml((issue.description || "(no description)").slice(0, 600))}</p>`;
+  container.hidden = false;
+}
+
+async function onSetLinearState() {
+  if (!selectedLinearIssue) return;
+  const stateId = document.getElementById("linear-state-select").value;
+  if (!stateId) return;
+  const button = document.getElementById("linear-set-state-btn");
+  button.disabled = true;
+  showLinearPickerError(null);
+  showLinearPickerSuccess(null);
+  setLinearPickerThinking(true, "Moving issue state in Linear…");
+  try {
+    const updated = await fetchJson(`/api/linear/issues/${encodeURIComponent(selectedLinearIssue.id)}/state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state_id: stateId }),
+    });
+    const newState = updated.state ? updated.state.name : stateId;
+    showLinearPickerSuccess(`Moved ${selectedLinearIssue.identifier} to "${newState}".`);
+    selectedLinearIssue.state = updated.state || selectedLinearIssue.state;
+    renderLinearIssueDetail(selectedLinearIssue);
+  } catch (err) {
+    showLinearPickerError(err.message);
+  } finally {
+    setLinearPickerThinking(false);
+    button.disabled = false;
+  }
+}
+
+async function onLinearCreateTeamChange() {
+  const teamId = document.getElementById("linear-create-team").value;
+  const projectSelect = document.getElementById("linear-create-project");
+  projectSelect.innerHTML = '<option value="">No project</option>';
+  document.getElementById("linear-create-all-btn").disabled = !teamId;
+  if (!teamId) return;
+  try {
+    const projects = await fetchJson(`/api/linear/projects?team_id=${encodeURIComponent(teamId)}`);
+    for (const project of projects) {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.textContent = project.name;
+      projectSelect.appendChild(option);
+    }
+  } catch (err) {
+    showLinearCreateError(err.message);
+  }
+}
+
+async function onCreateLinearIssues() {
+  const teamId = document.getElementById("linear-create-team").value;
+  if (!teamId) return;
+  const pending = proposedTickets.filter((e) => e.status !== "created");
+  if (!pending.length) {
+    showLinearCreateError('No generated tickets to create — use the "Generate Tickets" tab first.');
+    return;
+  }
+  showLinearCreateError(null);
+  showLinearCreateSuccess(null);
+  const button = document.getElementById("linear-create-all-btn");
+  button.disabled = true;
+  setLinearCreateThinking(true, `Creating ${pending.length} issue(s) in Linear…`);
+  const projectId = document.getElementById("linear-create-project").value || null;
+  try {
+    const body = await fetchJson("/api/linear/issues", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team_id: teamId, tickets: pending.map((e) => e.ticket), project_id: projectId }),
+    });
+    const created = body.results.filter((r) => r.ok).length;
+    const failed = body.results.length - created;
+    renderLinearCreateResults(body.results);
+    showLinearCreateSuccess(
+      failed
+        ? `Created ${created} of ${body.results.length} issue(s) — ${failed} failed, see details below.`
+        : `Created ${created} issue(s) in Linear.`,
+    );
+  } catch (err) {
+    showLinearCreateError(err.message);
+  } finally {
+    setLinearCreateThinking(false);
+    button.disabled = false;
+  }
+}
+
+function renderLinearCreateResults(results) {
+  const container = document.getElementById("linear-create-results");
+  container.innerHTML = "";
+  for (const result of results) {
+    const row = document.createElement("div");
+    row.className = "ticket-status";
+    if (result.ok) {
+      row.classList.add("ticket-status-ok");
+      row.textContent = `Created: ${result.ticket.title} (${result.linear_issue_id})`;
+    } else {
+      row.classList.add("ticket-status-error");
+      row.textContent = `Failed: ${result.ticket.title} — ${result.error}`;
+    }
+    container.appendChild(row);
+  }
+}
+
+function initLinearTab() {
+  document.getElementById("linear-picker-team").addEventListener("change", onLinearTeamChange);
+  document.getElementById("linear-picker-issue").addEventListener("change", onLinearIssueChange);
+  document.getElementById("linear-set-state-btn").addEventListener("click", onSetLinearState);
+  document.getElementById("linear-create-team").addEventListener("change", onLinearCreateTeamChange);
+  document.getElementById("linear-create-all-btn").addEventListener("click", onCreateLinearIssues);
+  loadLinearTeams();
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   initQaFilters();
@@ -1268,4 +1555,5 @@ document.addEventListener("DOMContentLoaded", () => {
   loadFindings();
   initTicketsTab();
   initQaReviewPanel();
+  initLinearTab();
 });
