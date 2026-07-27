@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
-from meta_harness.linear_bridge import LinearReadError, list_linear_members
+from meta_harness.linear_bridge import LinearIssueError, LinearReadError, list_linear_members
 from meta_harness.module_relevance import ClaudeNotFoundError as ModuleClaudeNotFoundError
 from meta_harness.module_relevance import (
     ModuleRelevanceError,
@@ -30,6 +30,8 @@ from meta_harness.team_assignment import (
     parse_emails,
     verify_team_emails,
 )
+from meta_harness.ticket_format import format_clickup_description
+from meta_harness.ticket_reformat import apply_reformatted_ticket, reformat_ticket
 from meta_harness.ticket_generator import (
     ClaudeNotFoundError,
     TicketExtractionError,
@@ -53,6 +55,10 @@ from meta_harness.webapp.schemas import (
     ModuleRelevanceItemOut,
     ModuleRelevanceOut,
     ModuleRelevanceSummaryOut,
+    ApplyReformatIn,
+    ApplyReformatOut,
+    ReformatTicketIn,
+    ReformatTicketOut,
     ProposedTicketIn,
     TeamMemberOut,
     TicketCreateResult,
@@ -239,53 +245,6 @@ def post_verify_team(body: VerifyTeamIn) -> VerifyTeamOut:
     )
 
 
-def _criterion_text(criterion) -> str:
-    """One-line Gherkin rendering — ClickUp keeps criteria compact, unlike
-    Linear's bulleted house format (see routes_linear._format_description)."""
-    if criterion.text:
-        return f"{criterion.name}: {criterion.text}" if criterion.name else criterion.text
-    clause = f"Dado que {criterion.given}, cuando {criterion.when}, entonces {criterion.then}."
-    return f"{criterion.name}: {clause}" if criterion.name else clause
-
-
-def _format_description(ticket: ProposedTicketIn) -> str:
-    """Render the team's standard ticket description template:
-    epic/title header, UI route + backend endpoint, a Spanish user story +
-    concrete description, optional visual-references placeholder, numbered
-    Gherkin acceptance criteria (plus a trailing placeholder for more), and
-    optional technical notes."""
-    epic = ticket.epic or ticket.title.upper()
-    lines = [
-        f"📄 USER STORY: {epic}",
-        f"Título: {ticket.title}",
-        "",
-        f"📍 Ruta / Vista UI: {ticket.ui_route or '(no aplica)'}",
-        f"🔌 Endpoint Backend: {ticket.backend_endpoint or '(no aplica)'}",
-        "",
-        "📝 DESCRIPCIÓN",
-    ]
-    if ticket.user_story:
-        lines.append(ticket.user_story)
-        lines.append("")
-    lines.append(ticket.description)
-    lines += [
-        "",
-        "🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)",
-        "- No se proporcionaron recursos visuales; agregar capturas, diagramas o enlaces de referencia si están disponibles.",
-        "",
-        "✅ CRITERIOS DE ACEPTACIÓN",
-    ]
-    for index, criterion in enumerate(ticket.acceptance_criteria, start=1):
-        lines.append(f"📌 Criterio {index}: {_criterion_text(criterion)}")
-    lines.append("📌 Criterio X: [Espacio para criterios adicionales]")
-    lines += [
-        "",
-        "🛠️ NOTAS TÉCNICAS Y ADICIONALES (opcional)",
-        ticket.technical_notes or "(sin notas adicionales)",
-    ]
-    return "\n".join(lines)
-
-
 def _due_date_ms(due_date_iso: Optional[str]) -> Optional[int]:
     """Convert an ISO date string (e.g. from apply_sprint_due_dates) into
     the Unix-milliseconds timestamp ClickUp's API expects."""
@@ -311,7 +270,7 @@ def post_create_tickets(
         try:
             task_id = create_clickup_ticket(
                 ticket.title,
-                _format_description(ticket),
+                format_clickup_description(ticket),
                 list_id=body.list_id,
                 priority=ticket.priority,
                 assignees=[ticket.assignee_clickup_id] if ticket.assignee_clickup_id else None,
@@ -391,4 +350,46 @@ def post_module_relevance_bulk(body: ModuleRelevanceBulkIn) -> ModuleRelevanceBu
             ModuleRelevanceItemOut(ticket_id=tid, relevance=rel, error=err) for tid, rel, err in ordered
         ],
         report_markdown=render_module_report_markdown(body.module_name, results),
+    )
+
+
+@router.post("/reformat", response_model=ReformatTicketOut)
+def post_reformat_ticket(body: ReformatTicketIn) -> ReformatTicketOut:
+    """Propose a reformatted version of an existing ticket. Read-only —
+    nothing is written until /reformat/apply is called."""
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
+    try:
+        return reformat_ticket(body.ticket_id, tracker=body.tracker, on_step=on_step)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ClaudeNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ClickUpReadError, LinearReadError, TicketGenerationError, TicketParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/reformat/apply", response_model=ApplyReformatOut)
+def post_apply_reformat(body: ApplyReformatIn) -> ApplyReformatOut:
+    """Write an already-reviewed rewrite back to the tracker."""
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
+    try:
+        updated = apply_reformatted_ticket(
+            body.ticket_id,
+            tracker=body.tracker,
+            title=body.title,
+            description=body.description,
+            on_step=on_step,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ClickUpTicketError, LinearIssueError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ApplyReformatOut(
+        ok=True, ticket_id=body.ticket_id, title=updated.get("title") or updated.get("name")
     )

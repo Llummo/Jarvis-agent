@@ -269,11 +269,66 @@
         </div>
       </section>
 
-      <!-- Step 4 — module relevance -->
+      <!-- Step 4 — reformat an existing ticket -->
       <section class="step">
         <div class="panel">
           <div class="panel-head">
             <span class="step-number">4</span>
+            <div>
+              <h2>Fix an existing ticket's format</h2>
+              <p class="hint">Pick an existing ticket and the assistant will restructure what it already says into the standard format. You review the result before anything is saved.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="clickup-reformat-ticket">Ticket to reformat</label>
+                <select id="clickup-reformat-ticket" disabled><option value="">Choose a destination in step 1 first</option></select>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="clickup-reformat-btn" class="btn-primary" disabled>Modify</button>
+            </div>
+
+            <div id="clickup-reformat-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="clickup-reformat-phase-log"></ul>
+              </div>
+            </div>
+            <div id="clickup-reformat-error" class="error-banner" hidden></div>
+            <div id="clickup-reformat-success" class="success-banner" hidden></div>
+
+            <div id="clickup-reformat-result" hidden>
+              <h3>Proposed rewrite</h3>
+              <div class="diff-grid">
+                <div class="diff-pane">
+                  <div class="ticket-section-label">Current</div>
+                  <div class="diff-title" id="clickup-reformat-old-title"></div>
+                  <pre class="diff-body" id="clickup-reformat-old-body"></pre>
+                </div>
+                <div class="diff-pane diff-pane-new">
+                  <div class="ticket-section-label">After reformatting</div>
+                  <div class="diff-title" id="clickup-reformat-new-title"></div>
+                  <pre class="diff-body" id="clickup-reformat-new-body"></pre>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-reformat-apply-btn" class="btn-success">Confirm and update the ticket</button>
+                <button type="button" id="clickup-reformat-discard-btn">Discard</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 5 — module relevance -->
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-number">5</span>
             <div>
               <h2>Does this ticket belong to a module?</h2>
               <p class="hint">Pick a ticket, paste the module's official documentation, and get a reasoned verdict on whether the ticket is work on that module.</p>
@@ -335,7 +390,7 @@
       <section class="step">
         <div class="panel">
           <div class="panel-head">
-            <span class="step-number">5</span>
+            <span class="step-number">6</span>
             <div>
               <h2>Findings</h2>
               <p class="hint">Everything QA has recorded. Close a finding once it has been corrected.</p>
@@ -662,11 +717,66 @@
         </div>
       </section>
 
-      <!-- Step 4 — module relevance -->
+      <!-- Step 4 — reformat an existing ticket -->
       <section class="step">
         <div class="panel">
           <div class="panel-head">
             <span class="step-number">4</span>
+            <div>
+              <h2>Fix an existing issue's format</h2>
+              <p class="hint">Pick an existing issue and the assistant will restructure what it already says into the standard format. You review the result before anything is saved.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="linear-reformat-ticket">Issue to reformat</label>
+                <select id="linear-reformat-ticket" disabled><option value="">Choose a destination in step 1 first</option></select>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="linear-reformat-btn" class="btn-primary" disabled>Modify</button>
+            </div>
+
+            <div id="linear-reformat-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-reformat-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-reformat-error" class="error-banner" hidden></div>
+            <div id="linear-reformat-success" class="success-banner" hidden></div>
+
+            <div id="linear-reformat-result" hidden>
+              <h3>Proposed rewrite</h3>
+              <div class="diff-grid">
+                <div class="diff-pane">
+                  <div class="ticket-section-label">Current</div>
+                  <div class="diff-title" id="linear-reformat-old-title"></div>
+                  <pre class="diff-body" id="linear-reformat-old-body"></pre>
+                </div>
+                <div class="diff-pane diff-pane-new">
+                  <div class="ticket-section-label">After reformatting</div>
+                  <div class="diff-title" id="linear-reformat-new-title"></div>
+                  <pre class="diff-body" id="linear-reformat-new-body"></pre>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-reformat-apply-btn" class="btn-success">Confirm and update the issue</button>
+                <button type="button" id="linear-reformat-discard-btn">Discard</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 5 — module relevance -->
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-number">5</span>
             <div>
               <h2>Does this issue belong to a module?</h2>
               <p class="hint">Pick a issue, paste the module's official documentation, and get a reasoned verdict on whether the issue is work on that module.</p>
@@ -728,7 +838,7 @@
       <section class="step">
         <div class="panel">
           <div class="panel-head">
-            <span class="step-number">5</span>
+            <span class="step-number">6</span>
             <div>
               <h2>Findings</h2>
               <p class="hint">Everything QA has recorded. Close a finding once it has been corrected.</p>

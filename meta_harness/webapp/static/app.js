@@ -377,6 +377,7 @@ function createTrackerPanel(tracker) {
     bulkResults: [],
     bulkReadme: "",
     moduleReport: "",
+    reformat: null,
     knownProjects: [],
   };
 
@@ -502,7 +503,7 @@ function createTrackerPanel(tracker) {
   async function loadTickets() {
     // One fetch feeds every ticket dropdown on the tab (QA review and the
     // module check), so they can never drift out of sync.
-    const selects = [el("qa-ticket"), el("module-ticket")];
+    const selects = [el("qa-ticket"), el("module-ticket"), el("reformat-ticket")];
     if (!state.scope || (tracker.containerRequired && !state.container)) {
       selects.forEach((select) => {
         select.innerHTML = '<option value="">Choose a destination in step 1 first</option>';
@@ -510,6 +511,8 @@ function createTrackerPanel(tracker) {
       });
       el("qa-bulk-run-btn").disabled = true;
       el("module-check-all-btn").disabled = true;
+      el("reformat-btn").disabled = true;
+      clearReformat();
       return;
     }
     thinking("scope", true, `Loading ${tracker.noun}s…`);
@@ -525,6 +528,7 @@ function createTrackerPanel(tracker) {
       });
       el("qa-bulk-run-btn").disabled = state.tickets.length === 0;
       el("module-check-all-btn").disabled = state.tickets.length === 0;
+      el("reformat-btn").disabled = state.tickets.length === 0;
     } catch (err) {
       banner("scope-error", err.message);
       selects.forEach((select) => {
@@ -1346,6 +1350,93 @@ function createTrackerPanel(tracker) {
     }
   }
 
+  // --- Reformat an existing ticket ------------------------------------------
+
+  function clearReformat() {
+    state.reformat = null;
+    el("reformat-result").hidden = true;
+    banner("reformat-error", null);
+    banner("reformat-success", null);
+  }
+
+  function renderReformat(result) {
+    el("reformat-old-title").textContent = result.original_title;
+    el("reformat-old-body").textContent = result.original_description || "(no description)";
+    el("reformat-new-title").textContent = result.formatted_title;
+    el("reformat-new-body").textContent = result.formatted_description;
+    el("reformat-result").hidden = false;
+  }
+
+  async function onReformat() {
+    const ticketId = el("reformat-ticket").value;
+    banner("reformat-error", null);
+    banner("reformat-success", null);
+    if (!ticketId) {
+      banner("reformat-error", `Pick a ${tracker.noun} to reformat.`);
+      return;
+    }
+    clearReformat();
+    const button = el("reformat-btn");
+    button.disabled = true;
+    const token = newProgressToken();
+    thinking("reformat", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("reformat", true, steps[steps.length - 1]);
+      phaseLog("reformat", steps);
+    });
+    try {
+      const result = await fetchJson("/api/tickets/reformat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket_id: ticketId, tracker: tracker.key, progress_token: token }),
+      });
+      state.reformat = result;
+      renderReformat(result);
+    } catch (err) {
+      banner("reformat-error", err.message);
+    } finally {
+      await stop();
+      thinking("reformat", false);
+      button.disabled = false;
+    }
+  }
+
+  async function onApplyReformat() {
+    if (!state.reformat) return;
+    const button = el("reformat-apply-btn");
+    button.disabled = true;
+    banner("reformat-error", null);
+    const token = newProgressToken();
+    thinking("reformat", true, "Saving…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("reformat", true, steps[steps.length - 1]);
+      phaseLog("reformat", steps);
+    });
+    try {
+      // Send exactly what was previewed, so what was approved is what lands.
+      await fetchJson("/api/tickets/reformat/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticket_id: state.reformat.ticket_id,
+          tracker: tracker.key,
+          title: state.reformat.formatted_title,
+          description: state.reformat.formatted_description,
+          progress_token: token,
+        }),
+      });
+      banner("reformat-success", `Updated “${state.reformat.formatted_title}” in ${tracker.label}.`);
+      clearReformat();
+      await loadTickets();
+    } catch (err) {
+      banner("reformat-error", err.message);
+      button.disabled = false;
+    } finally {
+      await stop();
+      thinking("reformat", false);
+    }
+  }
+
   // --- Module relevance -----------------------------------------------------
 
   const VERDICT_LABELS = {
@@ -1734,6 +1825,9 @@ function createTrackerPanel(tracker) {
       el(`filter-${name}`).addEventListener("change", loadFindings);
     }
     el("report-submit").addEventListener("click", onReportFinding);
+    el("reformat-btn").addEventListener("click", onReformat);
+    el("reformat-apply-btn").addEventListener("click", onApplyReformat);
+    el("reformat-discard-btn").addEventListener("click", clearReformat);
     el("module-check-btn").addEventListener("click", onCheckModule);
     el("module-check-all-btn").addEventListener("click", onCheckAllModule);
     el("module-report-btn").addEventListener("click", () => {

@@ -357,6 +357,50 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-top: 0.5rem;
 }
 
+/* ---------- Before/after reformat view ---------------------------------- */
+
+.diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.875rem;
+  margin: 0.875rem 0;
+}
+
+.diff-pane {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.875rem;
+  background: var(--surface-sunken);
+  min-width: 0;
+}
+
+.diff-pane-new { border-color: var(--accent); background: var(--accent-soft); }
+
+.diff-title {
+  font-size: var(--text-sm);
+  font-weight: 650;
+  margin: 0.25rem 0 0.5rem;
+  word-break: break-word;
+}
+
+.diff-body {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  max-height: 24rem;
+  overflow-y: auto;
+  color: var(--ink-muted);
+}
+
+.diff-pane-new .diff-body { color: var(--ink); }
+
+@media (max-width: 760px) {
+  .diff-grid { grid-template-columns: 1fr; }
+}
+
 /* ---------- Module relevance verdicts ----------------------------------- */
 
 .verdict-related { background: var(--success-soft); color: var(--success); border-color: #bfe3cd; }

@@ -358,3 +358,35 @@ class ModuleRelevanceBulkOut(BaseModel):
     aligned: list[ModuleRelevanceOut]
     results: list[ModuleRelevanceItemOut]
     report_markdown: str = ""
+
+
+class ReformatTicketIn(BaseModel):
+    ticket_id: str
+    tracker: str = "clickup"
+    progress_token: Optional[str] = None
+
+
+class ReformatTicketOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticket_id: str
+    tracker: str
+    original_title: str
+    original_description: str
+    ticket: ProposedTicketOut
+    formatted_title: str
+    formatted_description: str
+
+
+class ApplyReformatIn(BaseModel):
+    ticket_id: str
+    tracker: str = "clickup"
+    title: Optional[str] = None
+    description: Optional[str] = None
+    progress_token: Optional[str] = None
+
+
+class ApplyReformatOut(BaseModel):
+    ok: bool
+    ticket_id: str
+    title: Optional[str] = None

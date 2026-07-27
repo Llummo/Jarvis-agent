@@ -152,3 +152,27 @@ def update_linear_issue_state(
     if not isinstance(payload, dict):
         raise LinearIssueError(f"Expected a JSON object for the updated issue, got: {payload!r}")
     return payload
+
+
+def update_linear_issue(
+    issue_id: str,
+    *,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    project_path: Optional[Path] = None,
+) -> dict:
+    """Edit an existing issue's title and/or description. Fields left as
+    None are not sent, so nothing is blanked out by accident."""
+    if title is None and description is None:
+        raise ValueError("Provide a title and/or a description to update")
+
+    args = ["linear", "update-issue", "--issue-id", issue_id]
+    if title is not None:
+        args += ["--title", title]
+    if description is not None:
+        args += ["--description", description]
+
+    payload = _run_harness_json(args, project_path=project_path, error_cls=LinearIssueError)
+    if not isinstance(payload, dict):
+        raise LinearIssueError(f"Expected a JSON object for the updated issue, got: {payload!r}")
+    return payload
