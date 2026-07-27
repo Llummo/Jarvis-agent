@@ -84,10 +84,15 @@ def list_linear_projects(team_id: str, *, project_path: Optional[Path] = None) -
     return payload
 
 
-def list_linear_issues(team_id: str, *, first: int = 50, project_path: Optional[Path] = None) -> List[dict]:
-    payload = _run_harness_json(
-        ["linear", "issues", "--team-id", team_id, "--first", str(first)], project_path=project_path
-    )
+def list_linear_issues(
+    team_id: str, *, limit: Optional[int] = None, project_path: Optional[Path] = None
+) -> List[dict]:
+    """Every issue on the team. `limit` caps the total; omitting it fetches
+    all of them (the CLI walks Linear's cursor pagination)."""
+    args = ["linear", "issues", "--team-id", team_id]
+    if limit is not None:
+        args += ["--limit", str(limit)]
+    payload = _run_harness_json(args, project_path=project_path)
     if not isinstance(payload, list):
         raise LinearReadError(f"Expected a JSON array of issues, got: {payload!r}")
     return payload

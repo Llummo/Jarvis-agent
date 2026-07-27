@@ -60,10 +60,12 @@ def get_projects(
 @router.get("/issues")
 def get_issues(
     team_id: str = Query(...),
-    first: int = 50,
+    limit: Optional[int] = None,
     project_path: Optional[Path] = Depends(get_linear_project_path),
 ) -> list:
-    return list_linear_issues(team_id, first=first, project_path=project_path)
+    """Defaults to every issue on the team — a fixed page size here would
+    silently hide work from every dropdown that feeds off this."""
+    return list_linear_issues(team_id, limit=limit, project_path=project_path)
 
 
 @router.get("/issues/{issue_id}")

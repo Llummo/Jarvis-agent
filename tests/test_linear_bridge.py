@@ -58,13 +58,25 @@ def test_list_linear_members(tmp_path, monkeypatch):
     assert members[0]["email"] == "a@x.com"
 
 
-def test_list_linear_issues_passes_first(tmp_path, monkeypatch):
+def test_list_linear_issues_passes_limit(tmp_path, monkeypatch):
     calls = []
     _fake_run(monkeypatch, calls, json.dumps([{"id": "i1"}]))
 
-    list_linear_issues("t1", first=10, project_path=tmp_path)
+    list_linear_issues("t1", limit=10, project_path=tmp_path)
 
-    assert "--first" in calls[0] and "10" in calls[0]
+    assert "--limit" in calls[0] and "10" in calls[0]
+
+
+def test_list_linear_issues_fetches_everything_by_default(tmp_path, monkeypatch):
+    # No --limit means the CLI walks every page; capping here would silently
+    # hide issues from every dropdown that feeds off this call.
+    calls = []
+    _fake_run(monkeypatch, calls, json.dumps([{"id": "i1"}]))
+
+    list_linear_issues("t1", project_path=tmp_path)
+
+    assert "--limit" not in calls[0]
+    assert "--first" not in calls[0]
 
 
 def test_get_linear_issue(tmp_path, monkeypatch):
