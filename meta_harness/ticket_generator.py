@@ -46,6 +46,17 @@ SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
 TICKET_EXTRACTION_PROMPT = (
     "Extract a JSON array of tickets from the requirements document provided via stdin. "
+    "Decompose the document into small, specific, independently-completable tickets — err on "
+    "the side of MORE, smaller tickets rather than fewer broad ones. A ticket should be one "
+    "concrete unit of work a single person could pick up and finish, not a whole feature or "
+    'section. For example, "build the login page" is too broad on its own — split it into '
+    "separate tickets for the login form UI, client-side validation, the authentication API "
+    "call, and error/failure-state handling. If a requirement bundles several distinct pieces "
+    "of functionality (several CRUD operations, several form fields with different validation "
+    "rules, several pages or views, several endpoints), give each one that stands on its own "
+    "its own ticket. Don't go the other way either — each ticket must still be coherent, "
+    "meaningful work a developer would recognize as a real task, not a single line of code or "
+    "a sub-step of another ticket. "
     "Order the array in a logical implementation sequence — foundational or setup work and "
     "anything another ticket depends on comes before the tickets that build on it (e.g. a "
     "backend endpoint before the frontend that calls it, setup/config before the feature that "
