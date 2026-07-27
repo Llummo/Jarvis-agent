@@ -17,6 +17,9 @@ class FindingOut(BaseModel):
     severity: str
     status: str
     screenshot_path: Optional[str] = None
+    checked_route: Optional[str] = None
+    status_code: Optional[int] = None
+    http_error: Optional[str] = None
     correction_note: Optional[str] = None
     clickup_task_id: Optional[str] = None
     created_at: str
@@ -88,6 +91,10 @@ class QATicketReviewOut(BaseModel):
     ticket_name: str
     observation: str
     severity: str
+    route: Optional[str] = None
+    status_code: Optional[int] = None
+    http_error: Optional[str] = None
+    screenshot_path: Optional[str] = None
 
 
 class ReviewRequestIn(BaseModel):
@@ -111,6 +118,7 @@ class ReviewResultOut(BaseModel):
     run_id: str
     review: QATicketReviewOut
     finding: Optional[FindingOut] = None
+    report_markdown: str = ""
 
 
 class ReplayReviewIn(BaseModel):
@@ -135,6 +143,10 @@ class CommitReviewIn(BaseModel):
     pass_status: Optional[str] = None
     fail_status: Optional[str] = None
     progress_token: Optional[str] = None
+    route: Optional[str] = None
+    status_code: Optional[int] = None
+    http_error: Optional[str] = None
+    screenshot_path: Optional[str] = None
 
 
 class BulkReviewIn(BaseModel):
@@ -142,6 +154,8 @@ class BulkReviewIn(BaseModel):
     project: str
     clickup_list_id: Optional[str] = None
     progress_token: Optional[str] = None
+    pass_status: Optional[str] = None
+    fail_status: Optional[str] = None
 
 
 class BulkReviewItemOut(BaseModel):
@@ -152,6 +166,7 @@ class BulkReviewItemOut(BaseModel):
 
 class BulkReviewOut(BaseModel):
     results: list[BulkReviewItemOut]
+    readme_markdown: str = ""
 
 
 class BulkCommitItemIn(BaseModel):
@@ -163,6 +178,10 @@ class BulkCommitItemIn(BaseModel):
     clickup_list_id: Optional[str] = None
     pass_status: Optional[str] = None
     fail_status: Optional[str] = None
+    route: Optional[str] = None
+    status_code: Optional[int] = None
+    http_error: Optional[str] = None
+    screenshot_path: Optional[str] = None
 
 
 class BulkCommitIn(BaseModel):
@@ -178,3 +197,12 @@ class BulkCommitResultOut(BaseModel):
 
 class BulkCommitOut(BaseModel):
     results: list[BulkCommitResultOut]
+
+
+class ProjectConfigIn(BaseModel):
+    project: str
+    base_url: str
+
+
+class ProjectConfigOut(BaseModel):
+    projects: dict[str, str]

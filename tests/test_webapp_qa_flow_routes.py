@@ -202,6 +202,28 @@ def test_post_commit_review_moves_status_on_pass(tmp_path, monkeypatch):
     assert calls == [("T1", "done")]
 
 
+def test_post_commit_review_saves_route_check_evidence(tmp_path):
+    test_client = _client_with_store(tmp_path)
+
+    response = test_client.post(
+        "/api/qa/reviews/commit",
+        json={
+            "ticket_id": "T1", "ticket_name": "Fix login bug",
+            "observation": "Check login", "severity": "critical", "project": "sigo-front",
+            "route": "/login", "status_code": 500, "http_error": "HTTP 500: Internal Server Error",
+            "screenshot_path": "qa/screenshots/shot.png",
+        },
+    )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checked_route"] == "/login"
+    assert body["status_code"] == 500
+    assert body["http_error"] == "HTTP 500: Internal Server Error"
+    assert body["screenshot_path"] == "qa/screenshots/shot.png"
+
+
 def test_post_bulk_review_returns_per_ticket_results(monkeypatch):
     def fake_bulk(ticket_ids, **kw):
         return [(tid, _review(), None) for tid in ticket_ids]
@@ -266,3 +288,29 @@ def test_post_bulk_commit_persists_each_item_and_isolates_failures(tmp_path, mon
     assert results[1]["finding"] is None
     assert results[1]["error"] is not None
     assert calls == [("T1", "done")]
+
+
+def test_post_bulk_commit_saves_route_check_evidence(tmp_path):
+    test_client = _client_with_store(tmp_path)
+
+    response = test_client.post(
+        "/api/qa/reviews/bulk/commit",
+        json={
+            "items": [
+                {
+                    "ticket_id": "T1", "ticket_name": "Fix login bug", "observation": "Check login",
+                    "severity": "critical", "project": "sigo-front",
+                    "route": "/login", "status_code": 500, "http_error": "HTTP 500: Internal Server Error",
+                    "screenshot_path": "qa/screenshots/shot.png",
+                },
+            ]
+        },
+    )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    finding = response.json()["results"][0]["finding"]
+    assert finding["checked_route"] == "/login"
+    assert finding["status_code"] == 500
+    assert finding["http_error"] == "HTTP 500: Internal Server Error"
+    assert finding["screenshot_path"] == "qa/screenshots/shot.png"

@@ -99,4 +99,6 @@ def test_post_generate_tickets_with_progress_token_records_steps(monkeypatch):
     assert progress.get("tok4") == [
         'Extracting text from "spec.txt"…',
         "Sending document to Claude for ticket extraction — this can take a minute…",
+        "Numbering 1 ticket(s)…",
+        "Done.",
     ]

@@ -81,9 +81,21 @@
 
         <div id="qa-picker-thinking" class="thinking-indicator" hidden>
           <span class="spinner"></span>
-          <span class="thinking-text"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="qa-picker-phase-log"></ul>
+          </div>
         </div>
         <div id="qa-picker-error" class="error-banner" hidden></div>
+
+        <div class="inline-form">
+          <label>Base URL for this project:
+            <input type="url" id="qa-project-base-url" placeholder="https://your-app.example.com (optional)">
+          </label>
+          <button type="button" id="qa-project-base-url-save">Save URL</button>
+          <span id="qa-project-base-url-status" class="success-text"></span>
+        </div>
+        <p class="hint">When set, Claude's inferred route is actually checked: a real HTTP request records the status code and a real screenshot is captured.</p>
 
         <div class="inline-form">
           <label>On pass, move ClickUp ticket to:
@@ -104,7 +116,10 @@
 
         <div id="qa-review-thinking" class="thinking-indicator" hidden>
           <span class="spinner"></span>
-          <span class="thinking-text"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="qa-review-phase-log"></ul>
+          </div>
         </div>
         <div id="qa-review-error" class="error-banner" hidden></div>
         <div id="qa-review-success" class="success-banner" hidden></div>
@@ -112,12 +127,15 @@
         <div id="qa-review-result" class="ticket-card" hidden></div>
 
         <h3>QA All Tickets in This List</h3>
-        <p class="hint">Dry-run analyzes every ticket currently loaded in the ticket dropdown above, then lets you review and confirm before anything is saved or any status is moved.</p>
+        <p class="hint">Dry-run analyzes every ticket currently loaded in the ticket dropdown above and generates a QA-README.md, then lets you review and confirm before anything is saved or any status is moved.</p>
         <button type="button" id="qa-bulk-run-btn" disabled>QA all tickets (dry-run)</button>
 
         <div id="qa-bulk-thinking" class="thinking-indicator" hidden>
           <span class="spinner"></span>
-          <span class="thinking-text"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="qa-bulk-phase-log"></ul>
+          </div>
         </div>
         <div id="qa-bulk-error" class="error-banner" hidden></div>
         <div id="qa-bulk-success" class="success-banner" hidden></div>
@@ -125,11 +143,14 @@
         <div id="qa-bulk-results" hidden>
           <table id="qa-bulk-table">
             <thead>
-              <tr><th>Ticket</th><th>Result</th><th>Proposed status</th></tr>
+              <tr><th>Ticket</th><th>Result</th><th>Evidence</th><th>Proposed status</th></tr>
             </thead>
             <tbody></tbody>
           </table>
-          <button type="button" id="qa-bulk-confirm-btn">Confirm and apply</button>
+          <div class="inline-form">
+            <button type="button" id="qa-bulk-readme-btn">Download QA-README.md</button>
+            <button type="button" id="qa-bulk-confirm-btn">Move tickets based on QA-README.md results</button>
+          </div>
         </div>
 
         <h3>Past Reviews</h3>
@@ -163,7 +184,10 @@
 
         <div id="tickets-thinking" class="thinking-indicator" hidden>
           <span class="spinner"></span>
-          <span class="thinking-text"></span>
+          <div>
+            <div class="thinking-text"></div>
+            <ul class="phase-log" id="tickets-phase-log"></ul>
+          </div>
         </div>
         <div id="tickets-error" class="error-banner" hidden></div>
         <div id="tickets-warnings" class="error-banner" hidden></div>

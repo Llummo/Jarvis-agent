@@ -68,17 +68,21 @@ function newProgressToken() {
 
 // Polls GET /api/progress/{token} while a long agent call (Claude, ClickUp
 // fetch, retry-with-repair) is in flight, so the loading indicator can show
-// what's actually happening instead of a single static message. Returns a
-// stop function — call it once the main request settles; it does one final
-// read first, to catch a step recorded just before the response landed.
-function pollProgress(token, onMessage) {
+// what's actually happening instead of a single static message. onSteps
+// receives the FULL list of steps so far (not just the latest one) — a
+// message that only shows the last step flashes by too fast to read on a
+// fast operation, which is why "Starting…" was all that was ever visible.
+// Returns a stop function — call it once the main request settles; it does
+// one final read first, to catch a step recorded just before the response
+// landed.
+function pollProgress(token, onSteps) {
   let stopped = false;
   let timer = null;
   const tick = async () => {
     if (stopped) return;
     try {
       const data = await fetchJson(`/api/progress/${encodeURIComponent(token)}`);
-      if (data.steps && data.steps.length) onMessage(data.steps[data.steps.length - 1]);
+      if (data.steps && data.steps.length) onSteps(data.steps);
     } catch (err) {
       // best-effort — a polling failure must never interrupt the main action
     }
@@ -90,11 +94,30 @@ function pollProgress(token, onMessage) {
     if (timer) clearTimeout(timer);
     try {
       const data = await fetchJson(`/api/progress/${encodeURIComponent(token)}`);
-      if (data.steps && data.steps.length) onMessage(data.steps[data.steps.length - 1]);
+      if (data.steps && data.steps.length) onSteps(data.steps);
     } catch (err) {
       // ignore — this is just a best-effort final flush
     }
   };
+}
+
+function renderPhaseLog(logId, steps) {
+  const el = document.getElementById(logId);
+  if (!el) return;
+  el.innerHTML = steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+function downloadTextFile(filename, content, mimeType = "text/markdown") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function severityClass(severity) {
@@ -261,7 +284,10 @@ async function onGenerateTickets(event) {
   const submitButton = event.target.querySelector('button[type="submit"]');
   submitButton.disabled = true;
   setThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (message) => setThinking(true, message));
+  const stopPolling = pollProgress(token, (steps) => {
+    setThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("tickets-phase-log", steps);
+  });
   try {
     const body = await fetchJson("/api/tickets/generate", { method: "POST", body: formData });
     proposedTickets = body.tickets.map((ticket) => ({ ticket, status: "pending" }));
@@ -702,10 +728,59 @@ function populateProjectSelect(select, { includeAnyOption = false, preferredValu
   }
 }
 
+let projectBaseUrls = {}; // { projectName: baseUrl } — enables real screenshot + status-code checks
+
+async function loadProjectConfig() {
+  try {
+    const data = await fetchJson("/api/qa/project-config");
+    projectBaseUrls = data.projects || {};
+  } catch (err) {
+    projectBaseUrls = {};
+  }
+  updateBaseUrlField();
+}
+
+function updateBaseUrlField() {
+  const project = document.getElementById("qa-review-project").value;
+  document.getElementById("qa-project-base-url").value = projectBaseUrls[project] || "";
+  document.getElementById("qa-project-base-url-status").textContent = "";
+}
+
+async function onSaveProjectBaseUrl() {
+  const project = document.getElementById("qa-review-project").value;
+  const baseUrl = document.getElementById("qa-project-base-url").value.trim();
+  const statusEl = document.getElementById("qa-project-base-url-status");
+  statusEl.textContent = "";
+  statusEl.className = "success-text";
+  if (!project) {
+    statusEl.textContent = "Pick a project first.";
+    statusEl.className = "error-text";
+    return;
+  }
+  if (!baseUrl) {
+    statusEl.textContent = "Enter a URL first.";
+    statusEl.className = "error-text";
+    return;
+  }
+  try {
+    const data = await fetchJson("/api/qa/project-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project, base_url: baseUrl }),
+    });
+    projectBaseUrls = data.projects || {};
+    statusEl.textContent = "Saved.";
+  } catch (err) {
+    statusEl.textContent = err.message;
+    statusEl.className = "error-text";
+  }
+}
+
 function renderProjectDropdowns() {
   populateProjectSelect(document.getElementById("qa-review-project"), { preferredValue: currentSpaceName });
   populateProjectSelect(document.getElementById("qa-report-project"));
   populateProjectSelect(document.getElementById("qa-filter-project"), { includeAnyOption: true });
+  updateBaseUrlField();
 }
 
 function selectClickupTask(task) {
@@ -744,14 +819,52 @@ function setReviewThinking(visible, message) {
   if (visible) el.querySelector(".thinking-text").textContent = message;
 }
 
-function renderReviewResult(runId, review, finding) {
+function screenshotUrl(screenshotPath) {
+  const name = screenshotPath.split("/").pop();
+  return `/api/qa/screenshots/${encodeURIComponent(name)}`;
+}
+
+function renderReviewResult(runId, review, finding, reportMarkdown) {
   const container = document.getElementById("qa-review-result");
   container.hidden = false;
   const severity = escapeHtml(review.severity);
-  container.innerHTML =
+
+  let html =
     `<h3>${escapeHtml(review.ticket_name)} <span class="priority-badge priority-${severity}">${severity}</span></h3>` +
-    `<p>${escapeHtml(review.observation)}</p>` +
-    `<div class="ticket-status"></div>`;
+    `<p>${escapeHtml(review.observation)}</p>`;
+
+  const evidenceRows = [];
+  if (review.route) evidenceRows.push(`<strong>Route checked:</strong> ${escapeHtml(review.route)}`);
+  if (review.status_code != null) evidenceRows.push(`<strong>HTTP status:</strong> ${review.status_code}`);
+  if (review.http_error) evidenceRows.push(`<strong class="error-text">Error:</strong> ${escapeHtml(review.http_error)}`);
+  if (evidenceRows.length) {
+    html += `<div class="evidence">${evidenceRows.map((row) => `<div>${row}</div>`).join("")}</div>`;
+  }
+  if (review.screenshot_path) {
+    html += `<img class="evidence-image" src="${screenshotUrl(review.screenshot_path)}" alt="Screenshot evidence">`;
+  }
+
+  html += `<div class="ticket-status"></div><div class="report-actions"></div>`;
+  container.innerHTML = html;
+
+  const reportActions = container.querySelector(".report-actions");
+  if (finding) {
+    const mdLink = document.createElement("a");
+    mdLink.href = `/api/qa/findings/${finding.id}/report.md`;
+    mdLink.textContent = "Download Markdown";
+    mdLink.setAttribute("download", "");
+    const pdfLink = document.createElement("a");
+    pdfLink.href = `/api/qa/findings/${finding.id}/report.pdf`;
+    pdfLink.textContent = "Download PDF";
+    pdfLink.setAttribute("download", "");
+    reportActions.append(mdLink, pdfLink);
+  } else if (reportMarkdown) {
+    const mdButton = document.createElement("button");
+    mdButton.type = "button";
+    mdButton.textContent = "Download Markdown";
+    mdButton.addEventListener("click", () => downloadTextFile(`qa-review-${review.ticket_id}.md`, reportMarkdown));
+    reportActions.appendChild(mdButton);
+  }
 
   const statusEl = container.querySelector(".ticket-status");
   if (finding) {
@@ -768,9 +881,10 @@ function renderReviewResult(runId, review, finding) {
       const token = newProgressToken();
       let lastStep = "";
       setReviewThinking(true, "Persisting…");
-      const stopPolling = pollProgress(token, (message) => {
-        lastStep = message;
-        setReviewThinking(true, message);
+      const stopPolling = pollProgress(token, (steps) => {
+        lastStep = steps[steps.length - 1];
+        setReviewThinking(true, lastStep);
+        renderPhaseLog("qa-review-phase-log", steps);
       });
       try {
         const persistedFinding = await fetchJson("/api/qa/reviews/commit", {
@@ -784,6 +898,10 @@ function renderReviewResult(runId, review, finding) {
             project: document.getElementById("qa-review-project").value,
             pass_status: document.getElementById("qa-status-pass").value || null,
             fail_status: document.getElementById("qa-status-fail").value || null,
+            route: review.route || null,
+            status_code: review.status_code != null ? review.status_code : null,
+            http_error: review.http_error || null,
+            screenshot_path: review.screenshot_path || null,
             progress_token: token,
           }),
         });
@@ -817,14 +935,17 @@ async function onAnalyzeReview(event) {
   }
   const token = newProgressToken();
   setReviewThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (message) => setReviewThinking(true, message));
+  const stopPolling = pollProgress(token, (steps) => {
+    setReviewThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("qa-review-phase-log", steps);
+  });
   try {
     const result = await fetchJson("/api/qa/reviews", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ticket_id: selectedTicket.id, project, persist: false, progress_token: token }),
     });
-    renderReviewResult(result.run_id, result.review, result.finding);
+    renderReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
     showQaReviewSuccess("Analysis complete — review the result below.");
     await loadReviewRuns();
   } catch (err) {
@@ -859,14 +980,17 @@ async function onReplayReview() {
   showQaReviewSuccess(null);
   const token = newProgressToken();
   setReviewThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (message) => setReviewThinking(true, message));
+  const stopPolling = pollProgress(token, (steps) => {
+    setReviewThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("qa-review-phase-log", steps);
+  });
   try {
     const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ persist: false, progress_token: token }),
     });
-    renderReviewResult(result.run_id, result.review, result.finding);
+    renderReviewResult(result.run_id, result.review, result.finding, result.report_markdown);
     showQaReviewSuccess("Replay complete — review the result below.");
     await loadReviewRuns();
   } catch (err) {
@@ -881,6 +1005,7 @@ async function onReplayReview() {
 // --- then confirm to persist + apply status moves for the ones you keep ---
 
 let bulkReviewResults = []; // [{ ticket_id, ticket_name, review, error }]
+let bulkReadmeMarkdown = ""; // QA-README.md content for the current bulk sweep
 
 // Mirrors qa_flow.review_passed on the backend: a minor result counts as a
 // pass, major/critical as a fail — same threshold, kept in sync by hand
@@ -918,8 +1043,14 @@ function setBulkThinking(visible, message) {
 
 function clearBulkTable() {
   bulkReviewResults = [];
+  bulkReadmeMarkdown = "";
   document.getElementById("qa-bulk-results").hidden = true;
   document.querySelector("#qa-bulk-table tbody").innerHTML = "";
+}
+
+function onDownloadBulkReadme() {
+  if (!bulkReadmeMarkdown) return;
+  downloadTextFile("QA-README.md", bulkReadmeMarkdown);
 }
 
 function hideBulkResults() {
@@ -938,13 +1069,21 @@ function renderBulkResults() {
     if (entry.error) {
       row.innerHTML =
         `<td>${escapeHtml(entry.ticket_name)}</td>` +
-        `<td class="error-text">Error: ${escapeHtml(entry.error)}</td><td>-</td>`;
+        `<td class="error-text">Error: ${escapeHtml(entry.error)}</td><td>-</td><td>-</td>`;
     } else {
       const passed = reviewPassed(entry.review.severity);
       const targetStatus = passed ? passStatus : failStatus;
+      const evidenceParts = [];
+      if (entry.review.route) evidenceParts.push(escapeHtml(entry.review.route));
+      if (entry.review.status_code != null) evidenceParts.push(`HTTP ${entry.review.status_code}`);
+      let evidenceCell = evidenceParts.join(" — ") || "-";
+      if (entry.review.screenshot_path) {
+        evidenceCell += ` <a href="${screenshotUrl(entry.review.screenshot_path)}" target="_blank" rel="noopener">screenshot</a>`;
+      }
       row.innerHTML =
         `<td>${escapeHtml(entry.ticket_name)}</td>` +
         `<td class="${severityClass(entry.review.severity)}">${escapeHtml(entry.review.severity)} (${passed ? "pass" : "fail"})</td>` +
+        `<td>${evidenceCell}</td>` +
         `<td>${targetStatus ? escapeHtml(targetStatus) : "(leave as-is)"}</td>`;
     }
     tbody.appendChild(row);
@@ -964,17 +1103,26 @@ async function onRunBulkQa() {
   runBtn.disabled = true;
   const token = newProgressToken();
   setBulkThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (message) => setBulkThinking(true, message));
+  const stopPolling = pollProgress(token, (steps) => {
+    setBulkThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("qa-bulk-phase-log", steps);
+  });
+  const passStatus = document.getElementById("qa-status-pass").value || null;
+  const failStatus = document.getElementById("qa-status-fail").value || null;
   try {
     const body = await fetchJson("/api/qa/reviews/bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket_ids: clickupTickets.map((t) => t.id), project, progress_token: token }),
+      body: JSON.stringify({
+        ticket_ids: clickupTickets.map((t) => t.id), project, progress_token: token,
+        pass_status: passStatus, fail_status: failStatus,
+      }),
     });
     bulkReviewResults = body.results.map((r) => {
       const ticket = clickupTickets.find((t) => String(t.id) === r.ticket_id);
       return { ticket_id: r.ticket_id, ticket_name: ticket ? ticket.name : r.ticket_id, review: r.review, error: r.error };
     });
+    bulkReadmeMarkdown = body.readme_markdown || "";
     renderBulkResults();
     const ok = bulkReviewResults.filter((r) => !r.error).length;
     const failed = bulkReviewResults.length - ok;
@@ -1006,6 +1154,10 @@ async function onConfirmBulkQa() {
       project,
       pass_status: passStatus,
       fail_status: failStatus,
+      route: r.review.route || null,
+      status_code: r.review.status_code != null ? r.review.status_code : null,
+      http_error: r.review.http_error || null,
+      screenshot_path: r.review.screenshot_path || null,
     }));
   if (!items.length) return;
   showBulkError(null);
@@ -1014,7 +1166,10 @@ async function onConfirmBulkQa() {
   confirmBtn.disabled = true;
   const token = newProgressToken();
   setBulkThinking(true, "Starting…");
-  const stopPolling = pollProgress(token, (message) => setBulkThinking(true, message));
+  const stopPolling = pollProgress(token, (steps) => {
+    setBulkThinking(true, steps[steps.length - 1]);
+    renderPhaseLog("qa-bulk-phase-log", steps);
+  });
   try {
     const body = await fetchJson("/api/qa/reviews/bulk/commit", {
       method: "POST",
@@ -1045,9 +1200,13 @@ function initQaReviewPanel() {
   document.getElementById("qa-review-replay-btn").addEventListener("click", onReplayReview);
   document.getElementById("qa-bulk-run-btn").addEventListener("click", onRunBulkQa);
   document.getElementById("qa-bulk-confirm-btn").addEventListener("click", onConfirmBulkQa);
+  document.getElementById("qa-bulk-readme-btn").addEventListener("click", onDownloadBulkReadme);
+  document.getElementById("qa-review-project").addEventListener("change", updateBaseUrlField);
+  document.getElementById("qa-project-base-url-save").addEventListener("click", onSaveProjectBaseUrl);
   initTicketPicker();
   refreshKnownProjects();
   loadReviewRuns();
+  loadProjectConfig();
 }
 
 document.addEventListener("DOMContentLoaded", () => {

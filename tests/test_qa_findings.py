@@ -124,3 +124,57 @@ def test_qa_finding_store_persists_across_instances(tmp_path):
 
     assert len(reopened) == 1
     assert reopened[0].project == "p"
+
+
+def test_report_qa_issue_saves_route_check_evidence(tmp_path):
+    finding = report_qa_issue(
+        "sigo-front", "Fix login bug", "Check login", "major", store=_store(tmp_path),
+        checked_route="/login", status_code=500, http_error="HTTP 500: Internal Server Error",
+        screenshot_path="qa/screenshots/shot.png",
+    )
+
+    assert finding.checked_route == "/login"
+    assert finding.status_code == 500
+    assert finding.http_error == "HTTP 500: Internal Server Error"
+    assert finding.screenshot_path == "qa/screenshots/shot.png"
+
+
+def test_existing_database_migrates_to_include_new_columns(tmp_path):
+    # Simulate a database created before checked_route/status_code/http_error
+    # existed, to prove the ALTER TABLE migration in QAFindingStore.__init__
+    # doesn't break (or lose data from) an already-populated older database.
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE qa_findings (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            project          TEXT NOT NULL,
+            route            TEXT NOT NULL,
+            observation      TEXT NOT NULL,
+            severity         TEXT NOT NULL,
+            status           TEXT NOT NULL DEFAULT 'open',
+            screenshot_path  TEXT,
+            correction_note  TEXT,
+            clickup_task_id  TEXT,
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO qa_findings (project, route, observation, severity, status, created_at, updated_at) "
+        "VALUES ('p', '/r', 'old finding', 'minor', 'open', 't', 't')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = QAFindingStore(path)
+    findings = store.list()
+
+    assert len(findings) == 1
+    assert findings[0].observation == "old finding"
+    assert findings[0].checked_route is None
+    assert findings[0].status_code is None

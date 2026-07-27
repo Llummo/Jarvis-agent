@@ -1,8 +1,11 @@
 import json
+import urllib.error
 
 import pytest
 
 from meta_harness.clickup_bridge import ClickUpTicketError
+from meta_harness.mcp_server.cdp_screenshot import ScreenshotCaptureError
+from meta_harness.project_config import ProjectConfigStore
 from meta_harness.qa_findings import QAFindingStore
 from meta_harness.qa_flow import (
     ClaudeNotFoundError,
@@ -10,6 +13,7 @@ from meta_harness.qa_flow import (
     ReviewGenerationError,
     ReviewParseError,
     analyze_ticket,
+    perform_route_check,
     persist_review,
     replay_qa_review,
     review_and_record,
@@ -18,6 +22,17 @@ from meta_harness.qa_flow import (
     review_tickets_bulk,
 )
 from meta_harness.run_archive import RunArchive
+
+
+class FakeHTTPResponse:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
 
 
 class Result:
@@ -114,8 +129,9 @@ def test_analyze_ticket_reports_steps_via_on_step(monkeypatch):
     analyze_ticket("T1", "title", "desc", timeout_s=5, on_step=steps.append)
 
     assert steps[0] == "Claude is analyzing the ticket…"
-    assert "attempt 2/3" in steps[1]
-    assert "did not return valid JSON" in steps[1]
+    assert steps[1] == "Received Claude's response — validating…"
+    assert "attempt 2/3" in steps[2]
+    assert "did not return valid JSON" in steps[2]
 
 
 def test_analyze_ticket_rejects_invalid_severity(monkeypatch):
@@ -126,6 +142,41 @@ def test_analyze_ticket_rejects_invalid_severity(monkeypatch):
     )
 
     with pytest.raises(ReviewParseError, match="invalid severity"):
+        analyze_ticket("T1", "title", "desc", timeout_s=5, max_attempts=1)
+
+
+def test_analyze_ticket_parses_inferred_route(monkeypatch):
+    monkeypatch.setattr("meta_harness.qa_flow.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.subprocess.run",
+        lambda *a, **k: Result(stdout=json.dumps({"observation": "x", "severity": "minor", "route": "/login"})),
+    )
+
+    review = analyze_ticket("T1", "title", "desc", timeout_s=5)
+
+    assert review.route == "/login"
+
+
+def test_analyze_ticket_route_defaults_to_none_when_absent(monkeypatch):
+    monkeypatch.setattr("meta_harness.qa_flow.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.subprocess.run",
+        lambda *a, **k: Result(stdout=json.dumps({"observation": "x", "severity": "minor"})),
+    )
+
+    review = analyze_ticket("T1", "title", "desc", timeout_s=5)
+
+    assert review.route is None
+
+
+def test_analyze_ticket_rejects_non_string_route(monkeypatch):
+    monkeypatch.setattr("meta_harness.qa_flow.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.subprocess.run",
+        lambda *a, **k: Result(stdout=json.dumps({"observation": "x", "severity": "minor", "route": 123})),
+    )
+
+    with pytest.raises(ReviewParseError, match="invalid 'route'"):
         analyze_ticket("T1", "title", "desc", timeout_s=5, max_attempts=1)
 
 
@@ -464,3 +515,177 @@ def test_review_tickets_bulk_reports_progress_per_ticket(monkeypatch):
     review_tickets_bulk(["T1", "T2"], project="sigo-front", on_step=steps.append)
 
     assert steps[0] == "Reviewing ticket 1/2: T1…"
+
+
+# ---------------------------------------------------------------------------
+# perform_route_check — real HTTP + screenshot evidence for an inferred route
+# ---------------------------------------------------------------------------
+
+
+def test_perform_route_check_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
+    )
+    shot_path = tmp_path / "shot.png"
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: shot_path)
+
+    status_code, http_error, screenshot_path = perform_route_check("https://app.example.com", "/login")
+
+    assert status_code == 200
+    assert http_error is None
+    assert screenshot_path == str(shot_path)
+
+
+def test_perform_route_check_joins_base_url_and_route(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        return FakeHTTPResponse(200)
+
+    monkeypatch.setattr("meta_harness.qa_flow.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+
+    perform_route_check("https://app.example.com/", "/login")
+
+    assert captured["url"] == "https://app.example.com/login"
+
+
+def test_perform_route_check_http_error_still_returns_status_code(monkeypatch):
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError("https://app.example.com/missing", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr("meta_harness.qa_flow.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+
+    status_code, http_error, _screenshot_path = perform_route_check("https://app.example.com", "/missing")
+
+    assert status_code == 404
+    assert "404" in http_error
+
+
+def test_perform_route_check_url_error_has_no_status_code(monkeypatch):
+    def fake_urlopen(req, timeout):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr("meta_harness.qa_flow.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+
+    status_code, http_error, _screenshot_path = perform_route_check("https://app.example.com", "/login")
+
+    assert status_code is None
+    assert "Connection refused" in http_error
+
+
+def test_perform_route_check_screenshot_failure_keeps_status_code(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
+    )
+
+    def boom(url):
+        raise ScreenshotCaptureError("chromium crashed")
+
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", boom)
+
+    status_code, http_error, screenshot_path = perform_route_check("https://app.example.com", "/login")
+
+    assert status_code == 200
+    assert http_error is None
+    assert screenshot_path is None
+
+
+def test_perform_route_check_reports_steps(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
+    )
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+
+    steps = []
+    perform_route_check("https://app.example.com", "/login", on_step=steps.append)
+
+    assert any("Checking" in s for s in steps)
+    assert steps[-1] == "Screenshot captured."
+
+
+# ---------------------------------------------------------------------------
+# review_qa_ticket — wiring perform_route_check when a base URL is configured
+# ---------------------------------------------------------------------------
+
+
+def _mock_analysis_with_route(monkeypatch, severity="major", route="/login"):
+    monkeypatch.setattr("meta_harness.qa_flow.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.subprocess.run",
+        lambda *a, **k: Result(
+            stdout=json.dumps({"observation": "Check login", "severity": severity, "route": route})
+        ),
+    )
+
+
+def test_review_qa_ticket_performs_route_check_when_base_url_configured(tmp_path, monkeypatch):
+    _mock_ticket_fetch(monkeypatch)
+    _mock_analysis_with_route(monkeypatch, route="/login")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
+    )
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+
+    config = ProjectConfigStore(tmp_path / "cfg.json")
+    config.set_base_url("sigo-front", "https://sigo-front.example.com")
+
+    review, _finding = review_qa_ticket("T1", project="sigo-front", project_config=config)
+
+    assert review.route == "/login"
+    assert review.status_code == 200
+    assert review.screenshot_path == "shot.png"
+
+
+def test_review_qa_ticket_skips_route_check_without_base_url(tmp_path, monkeypatch):
+    _mock_ticket_fetch(monkeypatch)
+    _mock_analysis_with_route(monkeypatch, route="/login")
+
+    def boom(*a, **kw):
+        raise AssertionError("must not perform a route check with no base URL configured")
+
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", boom)
+
+    config = ProjectConfigStore(tmp_path / "cfg.json")  # no base URL set
+
+    review, _finding = review_qa_ticket("T1", project="sigo-front", project_config=config)
+
+    assert review.status_code is None
+    assert review.screenshot_path is None
+
+
+def test_review_qa_ticket_skips_route_check_without_inferred_route(tmp_path, monkeypatch):
+    _mock_ticket_fetch(monkeypatch)
+    _mock_analysis_with_route(monkeypatch, route=None)
+
+    def boom(*a, **kw):
+        raise AssertionError("must not perform a route check with no inferred route")
+
+    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", boom)
+
+    config = ProjectConfigStore(tmp_path / "cfg.json")
+    config.set_base_url("sigo-front", "https://sigo-front.example.com")
+
+    review, _finding = review_qa_ticket("T1", project="sigo-front", project_config=config)
+
+    assert review.route is None
+    assert review.status_code is None
+
+
+def test_persist_review_saves_route_check_evidence(tmp_path):
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(
+        ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="major",
+        route="/login", status_code=500, http_error="HTTP 500: Internal Server Error",
+        screenshot_path="qa/screenshots/shot.png",
+    )
+
+    finding = persist_review(review, project="sigo-front", store=store)
+
+    assert finding.checked_route == "/login"
+    assert finding.status_code == 500
+    assert finding.http_error == "HTTP 500: Internal Server Error"
+    assert finding.screenshot_path == "qa/screenshots/shot.png"
