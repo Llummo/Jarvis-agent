@@ -16,7 +16,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
 from meta_harness.linear_bridge import LinearReadError, list_linear_members
 from meta_harness.module_relevance import ClaudeNotFoundError as ModuleClaudeNotFoundError
-from meta_harness.module_relevance import ModuleRelevanceError, analyze_module_relevance
+from meta_harness.module_relevance import (
+    ModuleRelevanceError,
+    analyze_module_relevance,
+    analyze_modules_bulk,
+    render_module_report_markdown,
+    sort_by_relevance,
+)
 from meta_harness.team_assignment import (
     assign_random_members,
     list_team_members,
@@ -41,8 +47,12 @@ from meta_harness.webapp.schemas import (
     CreateTicketsOut,
     GenerateFromIdeaIn,
     GenerateTicketsOut,
+    ModuleRelevanceBulkIn,
+    ModuleRelevanceBulkOut,
     ModuleRelevanceIn,
+    ModuleRelevanceItemOut,
     ModuleRelevanceOut,
+    ModuleRelevanceSummaryOut,
     ProposedTicketIn,
     TeamMemberOut,
     TicketCreateResult,
@@ -340,3 +350,45 @@ def post_module_relevance(body: ModuleRelevanceIn) -> ModuleRelevanceOut:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (ClickUpReadError, LinearReadError, ModuleRelevanceError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/module-relevance/bulk", response_model=ModuleRelevanceBulkOut)
+def post_module_relevance_bulk(body: ModuleRelevanceBulkIn) -> ModuleRelevanceBulkOut:
+    """Check every given ticket against one module in a single sweep and
+    report which of them align with it. Read-only on both trackers."""
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
+    try:
+        results = analyze_modules_bulk(
+            body.ticket_ids,
+            tracker=body.tracker,
+            module_name=body.module_name,
+            module_context=body.module_context,
+            on_step=on_step,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ModuleClaudeNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    ordered = sort_by_relevance(results)
+    analyzed = [rel for _tid, rel, err in ordered if rel and not err]
+    aligned = [rel for rel in analyzed if rel.is_related]
+    summary = ModuleRelevanceSummaryOut(
+        analyzed=len(analyzed),
+        related=sum(1 for rel in analyzed if rel.verdict == "related"),
+        partially_related=sum(1 for rel in analyzed if rel.verdict == "partially_related"),
+        unrelated=sum(1 for rel in analyzed if rel.verdict == "unrelated"),
+        failed=len(results) - len(analyzed),
+    )
+    return ModuleRelevanceBulkOut(
+        module_name=body.module_name,
+        summary=summary,
+        aligned=aligned,
+        results=[
+            ModuleRelevanceItemOut(ticket_id=tid, relevance=rel, error=err) for tid, rel, err in ordered
+        ],
+        report_markdown=render_module_report_markdown(body.module_name, results),
+    )

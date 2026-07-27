@@ -657,3 +657,62 @@ def test_module_relevance_missing_context_returns_400(monkeypatch):
     )
 
     assert response.status_code == 400
+
+
+def test_module_relevance_bulk_lists_aligned_tickets_first(monkeypatch):
+    from meta_harness.module_relevance import ModuleRelevance
+
+    def make(ticket_id, verdict, confidence, name):
+        return ModuleRelevance(
+            ticket_id=ticket_id, ticket_name=name, module_name="Personas", verdict=verdict,
+            confidence=confidence, rationale="Motivo.", matched_aspects=[], module_gaps=[],
+        )
+
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.analyze_modules_bulk",
+        lambda ticket_ids, **kw: [
+            ("T1", make("T1", "unrelated", 0.9, "Asistencia"), None),
+            ("T2", make("T2", "related", 0.95, "Ficha de persona"), None),
+            ("T3", None, "no se pudo leer"),
+        ],
+    )
+
+    response = client.post(
+        "/api/tickets/module-relevance/bulk",
+        json={"ticket_ids": ["T1", "T2", "T3"], "module_name": "Personas", "module_context": "doc"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == {
+        "analyzed": 2, "related": 1, "partially_related": 0, "unrelated": 1, "failed": 1
+    }
+    # "aligned" is the direct answer to which tickets belong to the module
+    assert [r["ticket_name"] for r in body["aligned"]] == ["Ficha de persona"]
+    # full results are ordered aligned-first, errors last
+    assert [r["ticket_id"] for r in body["results"]] == ["T2", "T1", "T3"]
+    assert body["results"][2]["error"] == "no se pudo leer"
+    assert "# Módulo: Personas" in body["report_markdown"]
+
+
+def test_module_relevance_bulk_passes_tracker_and_context(monkeypatch):
+    captured = {}
+
+    def fake(ticket_ids, **kw):
+        captured.update(kw)
+        captured["ticket_ids"] = list(ticket_ids)
+        return []
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.analyze_modules_bulk", fake)
+
+    client.post(
+        "/api/tickets/module-relevance/bulk",
+        json={
+            "ticket_ids": ["I1", "I2"], "module_name": "Personas",
+            "module_context": "doc oficial", "tracker": "linear",
+        },
+    )
+
+    assert captured["ticket_ids"] == ["I1", "I2"]
+    assert captured["tracker"] == "linear"
+    assert captured["module_context"] == "doc oficial"

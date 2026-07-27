@@ -326,3 +326,35 @@ class ModuleRelevanceOut(BaseModel):
     rationale: str
     matched_aspects: list[str]
     module_gaps: list[str]
+
+
+class ModuleRelevanceBulkIn(BaseModel):
+    ticket_ids: list[str]
+    module_name: str
+    module_context: str
+    tracker: str = "clickup"
+    progress_token: Optional[str] = None
+
+
+class ModuleRelevanceItemOut(BaseModel):
+    ticket_id: str
+    relevance: Optional[ModuleRelevanceOut] = None
+    error: Optional[str] = None
+
+
+class ModuleRelevanceSummaryOut(BaseModel):
+    analyzed: int
+    related: int
+    partially_related: int
+    unrelated: int
+    failed: int
+
+
+class ModuleRelevanceBulkOut(BaseModel):
+    module_name: str
+    summary: ModuleRelevanceSummaryOut
+    # Tickets that belong to the module (related or partially), most
+    # confident first — this is the direct answer to "which ones align?".
+    aligned: list[ModuleRelevanceOut]
+    results: list[ModuleRelevanceItemOut]
+    report_markdown: str = ""

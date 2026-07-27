@@ -16,11 +16,12 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
-from meta_harness.clickup_bridge import get_clickup_task
-from meta_harness.linear_bridge import get_linear_issue
+from meta_harness.clickup_bridge import ClickUpReadError, get_clickup_task
+from meta_harness.linear_bridge import LinearReadError, get_linear_issue
 
 OnStep = Optional[Callable[[str], None]]
 
@@ -238,3 +239,131 @@ def analyze_module_relevance(
         _report(on_step, f"Verdict: {result.verdict} (confidence {result.confidence:.0%}).")
         return result
     raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
+
+
+# The order a reviewer actually wants to read results in: what belongs to the
+# module first, then the borderline cases, then everything ruled out.
+_VERDICT_ORDER = {"related": 0, "partially_related": 1, "unrelated": 2}
+
+VERDICT_LABELS = {
+    "related": "Pertenece al módulo",
+    "partially_related": "Parcialmente relacionado",
+    "unrelated": "No pertenece al módulo",
+}
+
+
+def analyze_modules_bulk(
+    ticket_ids: Sequence[str],
+    *,
+    tracker: str = "clickup",
+    module_name: str,
+    module_context: str,
+    project_path: Optional[Path] = None,
+    timeout_s: Optional[float] = None,
+    on_step: OnStep = None,
+) -> List[Tuple[str, Optional[ModuleRelevance], Optional[str]]]:
+    """Check many tickets against one module in a single sweep.
+
+    Read-only, and one ticket failing (a bad id, a Claude hiccup) never
+    stops the rest — same per-item isolation as the bulk QA sweep. Returns
+    (ticket_id, relevance-or-None, error-or-None) in the same order as
+    ticket_ids; sorting for presentation is the caller's job.
+    """
+    results: List[Tuple[str, Optional[ModuleRelevance], Optional[str]]] = []
+    total = len(ticket_ids)
+    for index, ticket_id in enumerate(ticket_ids, start=1):
+        _report(on_step, f"Checking {index}/{total} against “{module_name}”…")
+        try:
+            relevance = analyze_module_relevance(
+                ticket_id,
+                tracker=tracker,
+                module_name=module_name,
+                module_context=module_context,
+                project_path=project_path,
+                timeout_s=timeout_s,
+            )
+            results.append((ticket_id, relevance, None))
+        except (ClickUpReadError, LinearReadError, ModuleRelevanceError) as exc:
+            results.append((ticket_id, None, str(exc)))
+
+    aligned = sum(1 for _tid, rel, err in results if rel and not err and rel.is_related)
+    _report(on_step, f"Done — {aligned} of {total} ticket(s) align with “{module_name}”.")
+    return results
+
+
+def sort_by_relevance(
+    results: Sequence[Tuple[str, Optional[ModuleRelevance], Optional[str]]],
+) -> List[Tuple[str, Optional[ModuleRelevance], Optional[str]]]:
+    """Related first, then partially related, then unrelated, then errors —
+    with the most confident calls at the top of each group."""
+
+    def key(item):
+        _ticket_id, relevance, error = item
+        if error or relevance is None:
+            return (3, 0.0)
+        return (_VERDICT_ORDER.get(relevance.verdict, 2), -relevance.confidence)
+
+    return sorted(results, key=key)
+
+
+def render_module_report_markdown(
+    module_name: str,
+    results: Sequence[Tuple[str, Optional[ModuleRelevance], Optional[str]]],
+) -> str:
+    """Render a whole sweep as one shareable Markdown report, leading with
+    the list of tickets that actually belong to the module — that list is
+    the answer to the question being asked."""
+    ordered = sort_by_relevance(results)
+    analyzed = [(tid, rel) for tid, rel, err in ordered if rel and not err]
+    failed = [(tid, err) for tid, rel, err in ordered if err or rel is None]
+    by_verdict = {
+        verdict: [(tid, rel) for tid, rel in analyzed if rel.verdict == verdict] for verdict in VERDICTS
+    }
+
+    lines = [
+        f"# Módulo: {module_name}",
+        "",
+        f"- **Generado:** {datetime.now(timezone.utc).isoformat()}",
+        f"- **Tickets analizados:** {len(analyzed)} de {len(results)}",
+        f"- **Pertenecen al módulo:** {len(by_verdict['related'])}",
+        f"- **Parcialmente relacionados:** {len(by_verdict['partially_related'])}",
+        f"- **No pertenecen:** {len(by_verdict['unrelated'])}",
+    ]
+    if failed:
+        lines.append(f"- **No se pudieron analizar:** {len(failed)}")
+
+    aligned = by_verdict["related"] + by_verdict["partially_related"]
+    lines += ["", "## Tickets que se alinean con el módulo", ""]
+    if aligned:
+        for _ticket_id, relevance in aligned:
+            marker = "✅" if relevance.verdict == "related" else "🟡"
+            lines.append(
+                f"- {marker} **{relevance.ticket_name}** — {VERDICT_LABELS[relevance.verdict]} "
+                f"({relevance.confidence:.0%})"
+            )
+    else:
+        lines.append("_Ningún ticket analizado pertenece a este módulo._")
+
+    lines += ["", "## Detalle", ""]
+    for _ticket_id, relevance in analyzed:
+        lines += [
+            f"### {relevance.ticket_name} — {VERDICT_LABELS[relevance.verdict]} ({relevance.confidence:.0%})",
+            "",
+            f"- **Ticket ID:** {relevance.ticket_id}",
+            "",
+            relevance.rationale,
+        ]
+        if relevance.matched_aspects:
+            lines += ["", "**Coincide en:**", ""]
+            lines += [f"- {aspect}" for aspect in relevance.matched_aspects]
+        if relevance.module_gaps:
+            lines += ["", "**Fuera del módulo:**", ""]
+            lines += [f"- {gap}" for gap in relevance.module_gaps]
+        lines.append("")
+
+    if failed:
+        lines += ["## No se pudieron analizar", ""]
+        lines += [f"- `{ticket_id}`: {error}" for ticket_id, error in failed]
+        lines.append("")
+
+    return "\n".join(lines) + "\n"

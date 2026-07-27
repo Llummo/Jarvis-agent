@@ -376,6 +376,7 @@ function createTrackerPanel(tracker) {
     chatHistory: [],
     bulkResults: [],
     bulkReadme: "",
+    moduleReport: "",
     knownProjects: [],
   };
 
@@ -508,6 +509,7 @@ function createTrackerPanel(tracker) {
         select.disabled = true;
       });
       el("qa-bulk-run-btn").disabled = true;
+      el("module-check-all-btn").disabled = true;
       return;
     }
     thinking("scope", true, `Loading ${tracker.noun}s…`);
@@ -522,6 +524,7 @@ function createTrackerPanel(tracker) {
         select.disabled = state.tickets.length === 0;
       });
       el("qa-bulk-run-btn").disabled = state.tickets.length === 0;
+      el("module-check-all-btn").disabled = state.tickets.length === 0;
     } catch (err) {
       banner("scope-error", err.message);
       selects.forEach((select) => {
@@ -1381,6 +1384,117 @@ function createTrackerPanel(tracker) {
     container.innerHTML = html;
   }
 
+  function clearModuleBulk() {
+    state.moduleReport = "";
+    el("module-bulk-results").hidden = true;
+    document.querySelector(`#${prefix}-module-bulk-table tbody`).innerHTML = "";
+    el("module-aligned").innerHTML = "";
+    banner("module-summary", null);
+  }
+
+  function renderModuleBulk(body) {
+    // The aligned list is the answer to the question being asked, so it goes
+    // first and in plain language; the table underneath is the evidence.
+    const aligned = el("module-aligned");
+    if (body.aligned.length) {
+      aligned.innerHTML =
+        `<div class="ticket-section-label">These ${tracker.noun}s belong to “${escapeHtml(body.module_name)}”</div>` +
+        body.aligned
+          .map(
+            (r) =>
+              `<div>${r.verdict === "related" ? "✅" : "🟡"} <strong>${escapeHtml(r.ticket_name)}</strong> — ` +
+              `${escapeHtml(VERDICT_LABELS[r.verdict] || r.verdict)} (${Math.round(r.confidence * 100)}%)</div>`,
+          )
+          .join("");
+    } else {
+      aligned.innerHTML = `<div>No ${tracker.noun} in this list belongs to “${escapeHtml(body.module_name)}”.</div>`;
+    }
+
+    const tbody = document.querySelector(`#${prefix}-module-bulk-table tbody`);
+    tbody.innerHTML = "";
+    for (const item of body.results) {
+      const row = document.createElement("tr");
+      if (item.error || !item.relevance) {
+        row.innerHTML =
+          `<td class="mono">${escapeHtml(item.ticket_id)}</td>` +
+          `<td class="error-text">Could not analyze</td><td>—</td><td>${escapeHtml(item.error || "")}</td>`;
+      } else {
+        const r = item.relevance;
+        row.innerHTML =
+          `<td>${escapeHtml(r.ticket_name)}</td>` +
+          `<td><span class="badge verdict-${escapeHtml(r.verdict)}">${escapeHtml(VERDICT_LABELS[r.verdict] || r.verdict)}</span></td>` +
+          `<td>${Math.round(r.confidence * 100)}%</td>` +
+          `<td>${escapeHtml(r.rationale)}</td>`;
+      }
+      tbody.appendChild(row);
+    }
+
+    const s = body.summary;
+    banner(
+      "module-summary",
+      `${s.related} belong to this module, ${s.partially_related} partially, ${s.unrelated} do not` +
+        (s.failed ? `, ${s.failed} could not be analyzed` : "") +
+        ` — out of ${s.analyzed + s.failed} ${tracker.noun}(s).`,
+    );
+    el("module-bulk-results").hidden = false;
+  }
+
+  function moduleInputs() {
+    const moduleName = el("module-name").value.trim();
+    const moduleContext = el("module-context").value.trim();
+    if (!moduleName) {
+      banner("module-error", "Give the module a name.");
+      return null;
+    }
+    if (!moduleContext) {
+      banner("module-error", "Paste the module's documentation — the verdict is based on it.");
+      return null;
+    }
+    return { moduleName, moduleContext };
+  }
+
+  async function onCheckAllModule() {
+    banner("module-error", null);
+    if (!state.tickets.length) {
+      banner("module-error", `Choose a destination in step 1 so there are ${tracker.noun}s to check.`);
+      return;
+    }
+    const inputs = moduleInputs();
+    if (!inputs) return;
+
+    clearModuleBulk();
+    el("module-result").hidden = true;
+    const button = el("module-check-all-btn");
+    button.disabled = true;
+    const token = newProgressToken();
+    thinking("module", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("module", true, steps[steps.length - 1]);
+      phaseLog("module", steps);
+    });
+    try {
+      const body = await fetchJson("/api/tickets/module-relevance/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticket_ids: state.tickets.map((t) => t.id),
+          tracker: tracker.key,
+          module_name: inputs.moduleName,
+          module_context: inputs.moduleContext,
+          progress_token: token,
+        }),
+      });
+      state.moduleReport = body.report_markdown || "";
+      renderModuleBulk(body);
+    } catch (err) {
+      banner("module-error", err.message);
+    } finally {
+      await stop();
+      thinking("module", false);
+      button.disabled = false;
+    }
+  }
+
   async function onCheckModule() {
     const ticketId = el("module-ticket").value;
     const moduleName = el("module-name").value.trim();
@@ -1399,6 +1513,7 @@ function createTrackerPanel(tracker) {
       return;
     }
     el("module-result").hidden = true;
+    clearModuleBulk();
     const button = el("module-check-btn");
     button.disabled = true;
     const token = newProgressToken();
@@ -1620,6 +1735,10 @@ function createTrackerPanel(tracker) {
     }
     el("report-submit").addEventListener("click", onReportFinding);
     el("module-check-btn").addEventListener("click", onCheckModule);
+    el("module-check-all-btn").addEventListener("click", onCheckAllModule);
+    el("module-report-btn").addEventListener("click", () => {
+      if (state.moduleReport) downloadTextFile("module-report.md", state.moduleReport);
+    });
 
     renderChat();
     renderTeamMembers();

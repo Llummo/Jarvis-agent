@@ -297,7 +297,8 @@
             </div>
 
             <div class="btn-row">
-              <button type="button" id="clickup-module-check-btn" class="btn-primary">Check relevance</button>
+              <button type="button" id="clickup-module-check-btn" class="btn-primary">Check this ticket</button>
+              <button type="button" id="clickup-module-check-all-btn" disabled>Check every ticket in this list</button>
             </div>
 
             <div id="clickup-module-thinking" class="thinking-indicator" hidden>
@@ -308,7 +309,24 @@
               </div>
             </div>
             <div id="clickup-module-error" class="error-banner" hidden></div>
+            <div id="clickup-module-summary" class="success-banner" hidden></div>
             <div id="clickup-module-result" class="ticket-card" hidden></div>
+
+            <div id="clickup-module-bulk-results" hidden>
+              <h3>Which tickets align with this module</h3>
+              <div id="clickup-module-aligned" class="evidence"></div>
+              <div class="table-wrap">
+                <table id="clickup-module-bulk-table">
+                  <thead>
+                    <tr><th>Ticket</th><th>Verdict</th><th>Confidence</th><th>Reasoning</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-module-report-btn">Download module report</button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -672,7 +690,8 @@
             </div>
 
             <div class="btn-row">
-              <button type="button" id="linear-module-check-btn" class="btn-primary">Check relevance</button>
+              <button type="button" id="linear-module-check-btn" class="btn-primary">Check this issue</button>
+              <button type="button" id="linear-module-check-all-btn" disabled>Check every issue in this list</button>
             </div>
 
             <div id="linear-module-thinking" class="thinking-indicator" hidden>
@@ -683,7 +702,24 @@
               </div>
             </div>
             <div id="linear-module-error" class="error-banner" hidden></div>
+            <div id="linear-module-summary" class="success-banner" hidden></div>
             <div id="linear-module-result" class="ticket-card" hidden></div>
+
+            <div id="linear-module-bulk-results" hidden>
+              <h3>Which issues align with this module</h3>
+              <div id="linear-module-aligned" class="evidence"></div>
+              <div class="table-wrap">
+                <table id="linear-module-bulk-table">
+                  <thead>
+                    <tr><th>Issue</th><th>Verdict</th><th>Confidence</th><th>Reasoning</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-module-report-btn">Download module report</button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
