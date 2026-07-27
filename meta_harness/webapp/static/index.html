@@ -145,15 +145,18 @@
                   <input type="number" id="clickup-start-deployment" min="1" value="1">
                 </div>
                 <div class="field field-wide">
-                  <label for="clickup-team-emails">Team member emails</label>
-                  <textarea id="clickup-team-emails" rows="3" placeholder="alice@example.com&#10;bob@example.com"></textarea>
-                  <span class="field-note">One per line. Verified against the real workspace, then assigned to tickets at random.</span>
+                  <label class="field-label">Detected team members</label>
+                  <div id="clickup-team-members" class="member-list">
+                    <span class="field-note">Choose a destination in step 1 to load your team.</span>
+                  </div>
+                  <span class="field-note">Read straight from your workspace — no typing. Ticked members are assigned to generated tickets at random.</span>
                 </div>
               </div>
               <div class="btn-row">
-                <button type="button" id="clickup-verify-team-btn">Verify team</button>
+                <button type="button" id="clickup-refresh-team-btn">Refresh list</button>
+                <button type="button" id="clickup-team-all-btn">Select all</button>
+                <button type="button" id="clickup-team-none-btn">Select none</button>
               </div>
-              <div id="clickup-team-verify-result" class="evidence" hidden></div>
             </details>
 
             <div id="clickup-generate-thinking" class="thinking-indicator" hidden>
@@ -473,15 +476,18 @@
                   <input type="number" id="linear-start-deployment" min="1" value="1">
                 </div>
                 <div class="field field-wide">
-                  <label for="linear-team-emails">Team member emails</label>
-                  <textarea id="linear-team-emails" rows="3" placeholder="alice@example.com&#10;bob@example.com"></textarea>
-                  <span class="field-note">One per line. Verified against the real workspace, then assigned to issues at random.</span>
+                  <label class="field-label">Detected team members</label>
+                  <div id="linear-team-members" class="member-list">
+                    <span class="field-note">Choose a destination in step 1 to load your team.</span>
+                  </div>
+                  <span class="field-note">Read straight from your workspace — no typing. Ticked members are assigned to generated issues at random.</span>
                 </div>
               </div>
               <div class="btn-row">
-                <button type="button" id="linear-verify-team-btn">Verify team</button>
+                <button type="button" id="linear-refresh-team-btn">Refresh list</button>
+                <button type="button" id="linear-team-all-btn">Select all</button>
+                <button type="button" id="linear-team-none-btn">Select none</button>
               </div>
-              <div id="linear-team-verify-result" class="evidence" hidden></div>
             </details>
 
             <div id="linear-generate-thinking" class="thinking-indicator" hidden>

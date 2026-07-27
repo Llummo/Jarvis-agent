@@ -357,6 +357,7 @@ function createTrackerPanel(tracker) {
     tickets: [],
     selectedTicket: null,
     proposed: [], // [{ ticket, status, createdId, error }]
+    members: [], // [{ email, username, clickup_id, linear_id, selected }]
     chatHistory: [],
     bulkResults: [],
     bulkReadme: "",
@@ -469,6 +470,8 @@ function createTrackerPanel(tracker) {
     } finally {
       thinking("scope", false);
     }
+    // Roster depends only on the scope, so refresh it as soon as one is picked.
+    loadTeamMembers();
   }
 
   async function onContainerChange() {
@@ -557,8 +560,8 @@ function createTrackerPanel(tracker) {
     const formData = new FormData();
     formData.append("file", file);
     Object.entries(startNumbers()).forEach(([key, value]) => formData.append(key, value));
-    const emails = el("team-emails").value.trim();
-    if (emails) formData.append("team_emails_text", emails);
+    const emails = selectedMemberEmails();
+    if (emails.length) formData.append("team_emails_text", emails.join("\n"));
     if (tracker.key === "linear" && state.scope) formData.append("linear_team_id", state.scope.id);
     const start = el("project-start").value;
     const end = el("project-end").value;
@@ -749,40 +752,65 @@ function createTrackerPanel(tracker) {
     banner("generate-warnings", null);
   }
 
-  async function onVerifyTeam() {
-    const text = el("team-emails").value;
-    const result = el("team-verify-result");
-    const button = el("verify-team-btn");
-    if (!text.trim()) {
-      result.hidden = false;
-      result.innerHTML = '<div class="error-text">Paste at least one email first.</div>';
+  // --- auto-detected team members ------------------------------------------
+
+  function renderTeamMembers() {
+    const node = el("team-members");
+    if (!state.members.length) {
+      node.innerHTML = state.scope
+        ? '<span class="field-note">No assignable members found in this workspace.</span>'
+        : '<span class="field-note">Choose a destination in step 1 to load your team.</span>';
       return;
     }
+    node.innerHTML = state.members
+      .map(
+        (member, index) =>
+          `<label class="member-chip">` +
+          `<input type="checkbox" data-member="${index}"${member.selected ? " checked" : ""}>` +
+          `<span class="member-chip-name">${escapeHtml(member.username)}</span>` +
+          `<span class="member-chip-email">${escapeHtml(member.email)}</span>` +
+          `</label>`,
+      )
+      .join("");
+    node.querySelectorAll("input[data-member]").forEach((input) => {
+      input.addEventListener("change", () => {
+        state.members[Number(input.dataset.member)].selected = input.checked;
+      });
+    });
+  }
+
+  async function loadTeamMembers() {
+    if (!state.scope) {
+      state.members = [];
+      renderTeamMembers();
+      return;
+    }
+    const button = el("refresh-team-btn");
     button.disabled = true;
     try {
-      const body = await fetchJson("/api/tickets/verify-team", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          emails_text: text,
-          linear_team_id: tracker.key === "linear" && state.scope ? state.scope.id : null,
-        }),
-      });
-      const rows = body.verified.map((m) => {
-        const found = [m.clickup_id ? "ClickUp" : null, m.linear_id ? "Linear" : null].filter(Boolean).join(" + ");
-        return `<div class="success-text">✓ ${escapeHtml(m.email)} — ${escapeHtml(m.username)} (${found})</div>`;
-      });
-      rows.push(
-        ...body.not_found.map((e) => `<div class="error-text">✗ ${escapeHtml(e)} — no matching workspace member</div>`),
-      );
-      result.innerHTML = rows.join("") || '<div class="field-note">No emails found in the text above.</div>';
-      result.hidden = false;
+      const params = new URLSearchParams({ tracker: tracker.key });
+      if (tracker.key === "linear") params.set("linear_team_id", state.scope.id);
+      const members = await fetchJson(`/api/tickets/team-members?${params.toString()}`);
+      // Everyone is opted in by default: the common case is "assign across the
+      // whole team", so it should need no clicks at all.
+      state.members = members.map((member) => ({ ...member, selected: true }));
     } catch (err) {
-      result.innerHTML = `<div class="error-text">${escapeHtml(err.message)}</div>`;
-      result.hidden = false;
+      state.members = [];
+      el("team-members").innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
+      return;
     } finally {
       button.disabled = false;
     }
+    renderTeamMembers();
+  }
+
+  function setAllMembers(selected) {
+    state.members.forEach((member) => (member.selected = selected));
+    renderTeamMembers();
+  }
+
+  function selectedMemberEmails() {
+    return state.members.filter((m) => m.selected).map((m) => m.email);
   }
 
   // --- Step 3: QA review ----------------------------------------------------
@@ -1373,7 +1401,9 @@ function createTrackerPanel(tracker) {
     el("chat-reset").addEventListener("click", onChatReset);
     el("create-all").addEventListener("click", onCreateAll);
     el("clear-tickets").addEventListener("click", onClearTickets);
-    el("verify-team-btn").addEventListener("click", onVerifyTeam);
+    el("refresh-team-btn").addEventListener("click", loadTeamMembers);
+    el("team-all-btn").addEventListener("click", () => setAllMembers(true));
+    el("team-none-btn").addEventListener("click", () => setAllMembers(false));
 
     el("qa-ticket").addEventListener("change", onTicketChange);
     el("qa-base-url-save").addEventListener("click", onSaveBaseUrl);
@@ -1391,6 +1421,7 @@ function createTrackerPanel(tracker) {
     el("report-submit").addEventListener("click", onReportFinding);
 
     renderChat();
+    renderTeamMembers();
     loadScopes();
     loadFindings();
     loadReviewRuns();

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from meta_harness.clickup_bridge import ClickUpTicketError
+from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError
 from meta_harness.ticket_generator import (
     ClaudeNotFoundError,
     ProposedTicket,
@@ -517,3 +517,71 @@ def test_from_idea_claude_missing_returns_503(monkeypatch):
     response = client.post("/api/tickets/from-idea", json={"idea": "algo"})
 
     assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# /api/tickets/team-members — auto-detected, assignable-in-this-tracker roster
+# ---------------------------------------------------------------------------
+
+
+def test_team_members_returns_clickup_roster_by_default(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.list_team_members",
+        lambda **kw: [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}],
+    )
+
+    response = client.get("/api/tickets/team-members")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"email": "alice@example.com", "username": "Alice", "clickup_id": 1, "linear_id": None}
+    ]
+
+
+def test_team_members_for_linear_only_returns_members_with_a_linear_id(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.list_team_members",
+        lambda **kw: [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}],
+    )
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.list_linear_members",
+        lambda team_id, **kw: [{"id": "uuid-b", "name": "Bob", "email": "bob@example.com"}],
+    )
+
+    response = client.get("/api/tickets/team-members", params={"tracker": "linear", "linear_team_id": "T1"})
+
+    assert response.status_code == 200
+    # Alice has no Linear id, so she is not assignable in Linear and is excluded.
+    assert [m["email"] for m in response.json()] == ["bob@example.com"]
+    assert response.json()[0]["linear_id"] == "uuid-b"
+
+
+def test_team_members_for_clickup_excludes_linear_only_people(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.list_team_members",
+        lambda **kw: [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}],
+    )
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.list_linear_members",
+        lambda team_id, **kw: [{"id": "uuid-b", "name": "Bob", "email": "bob@example.com"}],
+    )
+
+    response = client.get("/api/tickets/team-members", params={"tracker": "clickup", "linear_team_id": "T1"})
+
+    assert [m["email"] for m in response.json()] == ["alice@example.com"]
+
+
+def test_team_members_survives_clickup_being_unreachable(monkeypatch):
+    def boom(**kw):
+        raise ClickUpReadError("clickup is down")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.list_team_members", boom)
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.list_linear_members",
+        lambda team_id, **kw: [{"id": "uuid-b", "name": "Bob", "email": "bob@example.com"}],
+    )
+
+    response = client.get("/api/tickets/team-members", params={"tracker": "linear", "linear_team_id": "T1"})
+
+    assert response.status_code == 200
+    assert [m["email"] for m in response.json()] == ["bob@example.com"]

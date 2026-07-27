@@ -13,7 +13,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from meta_harness.clickup_bridge import ClickUpTicketError, create_clickup_ticket
+from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
 from meta_harness.linear_bridge import LinearReadError, list_linear_members
 from meta_harness.team_assignment import (
     assign_random_members,
@@ -53,8 +53,17 @@ def _merged_roster(linear_team_id: Optional[str], *, on_step=None) -> list[dict]
     """The ClickUp roster, merged with a Linear team's roster when a team
     id is given — a member found in either tracker counts as verifiable,
     carrying whichever tracker-specific id(s) matched (see
-    team_assignment.merge_member_rosters)."""
-    clickup_members = list_team_members()
+    team_assignment.merge_member_rosters).
+
+    Either tracker being unreachable degrades to the other one's roster
+    rather than failing outright, so a Linear-only (or ClickUp-only) setup
+    still gets a usable member list."""
+    try:
+        clickup_members = list_team_members()
+    except ClickUpReadError as exc:
+        if on_step:
+            on_step(f"Could not load the ClickUp roster: {exc}")
+        clickup_members = []
     if not linear_team_id:
         return clickup_members
     try:
@@ -173,6 +182,30 @@ def post_generate_from_idea(body: GenerateFromIdeaIn) -> GenerateTicketsOut:
     if on_step:
         on_step("Done.")
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
+
+
+@router.get("/team-members", response_model=list[TeamMemberOut])
+def get_team_members(
+    tracker: str = "clickup", linear_team_id: Optional[str] = None
+) -> list[TeamMemberOut]:
+    """The real people the harness can actually assign work to in `tracker`.
+
+    Only members carrying an id for that tracker are returned, so every
+    name the UI offers is genuinely assignable there — no typing a list of
+    emails by hand and hoping they match.
+    """
+    roster = _merged_roster(linear_team_id)
+    id_field = "linear_id" if tracker == "linear" else "clickup_id"
+    return [
+        TeamMemberOut(
+            email=member["email"],
+            username=member["username"],
+            clickup_id=member.get("clickup_id"),
+            linear_id=member.get("linear_id"),
+        )
+        for member in roster
+        if member.get(id_field)
+    ]
 
 
 @router.post("/verify-team", response_model=VerifyTeamOut)
