@@ -260,9 +260,18 @@ def test_prompt_requires_spanish_user_story_template():
     assert "para <beneficio>" in TICKET_EXTRACTION_PROMPT
 
 
-def test_prompt_requires_gherkin_acceptance_criteria_in_spanish():
-    assert "Gherkin" in TICKET_EXTRACTION_PROMPT
-    assert "Dado que <contexto>, cuando <acción>, entonces <resultado esperado>" in TICKET_EXTRACTION_PROMPT
+def test_prompt_requires_structured_spanish_acceptance_criteria():
+    # Criteria must come back as parts, not one flattened sentence -- Linear's
+    # house format renders Given/When/Then on separate bullets.
+    assert '"acceptance_criteria" (array of objects' in TICKET_EXTRACTION_PROMPT
+    for field in ('"name"', '"given"', '"when"', '"then"'):
+        assert field in TICKET_EXTRACTION_PROMPT
+    assert "Dado que" in TICKET_EXTRACTION_PROMPT
+
+
+def test_prompt_defines_the_parent_child_hierarchy_contract():
+    assert '"parent_title"' in TICKET_EXTRACTION_PROMPT
+    assert "never nest more than one level deep" in TICKET_EXTRACTION_PROMPT
 
 
 def test_prompt_requires_a_brief_description_distinct_from_user_story():
@@ -712,8 +721,8 @@ VALID_IDEA_TICKET = json.dumps(
 
 def test_idea_prompt_reuses_the_same_ticket_field_contract():
     # The chat path must produce structurally identical tickets to the
-    # document path -- same fields, same Spanish Gherkin format.
-    assert "Dado que <contexto>, cuando <acción>, entonces <resultado esperado>" in IDEA_TICKET_PROMPT
+    # document path -- same fields, same structured Spanish criteria.
+    assert '"acceptance_criteria" (array of objects' in IDEA_TICKET_PROMPT
     assert '"epic"' in IDEA_TICKET_PROMPT
     assert '"technical_notes"' in IDEA_TICKET_PROMPT
     assert "SPANISH" in IDEA_TICKET_PROMPT

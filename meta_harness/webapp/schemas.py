@@ -48,6 +48,16 @@ class CloseFindingIn(BaseModel):
     correction_note: str
 
 
+class AcceptanceCriterionModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str = ""
+    given: str = ""
+    when: str = ""
+    then: str = ""
+    text: str = ""
+
+
 class ProposedTicketOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -58,7 +68,8 @@ class ProposedTicketOut(BaseModel):
     ui_route: str = ""
     backend_endpoint: str = ""
     technical_notes: str = ""
-    acceptance_criteria: list[str]
+    parent_title: str = ""
+    acceptance_criteria: list[AcceptanceCriterionModel]
     priority: str
     category: str
     sprint: int = 1
@@ -82,7 +93,8 @@ class ProposedTicketIn(BaseModel):
     ui_route: str = ""
     backend_endpoint: str = ""
     technical_notes: str = ""
-    acceptance_criteria: list[str] = []
+    parent_title: str = ""
+    acceptance_criteria: list[AcceptanceCriterionModel] = []
     priority: str = "normal"
     category: str = "mundane"
     sprint: int = 1
@@ -293,3 +305,24 @@ class CreateLinearIssuesOut(BaseModel):
 
 class SetLinearStateIn(BaseModel):
     state_id: str
+
+
+class ModuleRelevanceIn(BaseModel):
+    ticket_id: str
+    module_name: str
+    module_context: str
+    tracker: str = "clickup"
+    progress_token: Optional[str] = None
+
+
+class ModuleRelevanceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticket_id: str
+    ticket_name: str
+    module_name: str
+    verdict: str
+    confidence: float
+    rationale: str
+    matched_aspects: list[str]
+    module_gaps: list[str]

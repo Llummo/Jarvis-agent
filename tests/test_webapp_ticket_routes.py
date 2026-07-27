@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError
 from meta_harness.ticket_generator import (
+    AcceptanceCriterion,
     ClaudeNotFoundError,
     ProposedTicket,
     TicketExtractionError,
@@ -20,7 +21,8 @@ def test_generate_tickets_returns_proposed_tickets(monkeypatch):
                 ProposedTicket(
                     title="Build login page",
                     user_story="As a user, I want to log in, so I can access my account.",
-                    description="desc", acceptance_criteria=["Given ..., when ..., then ..."],
+                    description="desc",
+                    acceptance_criteria=[AcceptanceCriterion(name="C1", given="a", when="b", then="c")],
                     priority="high", category="backend",
                 )
             ],
@@ -37,7 +39,8 @@ def test_generate_tickets_returns_proposed_tickets(monkeypatch):
     assert ticket["title"] == "TAB-01 | Build login page"
     assert ticket["user_story"] == "As a user, I want to log in, so I can access my account."
     assert ticket["description"] == "desc"
-    assert ticket["acceptance_criteria"] == ["Given ..., when ..., then ..."]
+    assert ticket["acceptance_criteria"][0]["name"] == "C1"
+    assert ticket["acceptance_criteria"][0]["given"] == "a"
     assert ticket["priority"] == "high"
     assert ticket["category"] == "backend"
     assert ticket["due_date"] is not None  # apply_sprint_due_dates always sets this
@@ -190,7 +193,10 @@ def test_create_tickets_description_includes_acceptance_criteria(monkeypatch):
                 {
                     "title": "Ticket A",
                     "description": "Do the thing.",
-                    "acceptance_criteria": ["Criterion one", "Criterion two"],
+                    "acceptance_criteria": [
+                        {"name": "Uno", "given": "g1", "when": "w1", "then": "t1"},
+                        {"name": "Dos", "given": "g2", "when": "w2", "then": "t2"},
+                    ],
                     "priority": "normal",
                 },
             ]
@@ -198,8 +204,8 @@ def test_create_tickets_description_includes_acceptance_criteria(monkeypatch):
     )
 
     assert "Do the thing." in captured["description"]
-    assert "Criterion one" in captured["description"]
-    assert "Criterion two" in captured["description"]
+    assert "Uno: Dado que g1, cuando w1, entonces t1." in captured["description"]
+    assert "Dos: Dado que g2, cuando w2, entonces t2." in captured["description"]
 
 
 def test_create_tickets_description_includes_user_story(monkeypatch):
@@ -585,3 +591,69 @@ def test_team_members_survives_clickup_being_unreachable(monkeypatch):
 
     assert response.status_code == 200
     assert [m["email"] for m in response.json()] == ["bob@example.com"]
+
+
+# ---------------------------------------------------------------------------
+# /api/tickets/module-relevance
+# ---------------------------------------------------------------------------
+
+
+def test_module_relevance_returns_the_verdict(monkeypatch):
+    from meta_harness.module_relevance import ModuleRelevance
+
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.analyze_module_relevance",
+        lambda ticket_id, **kw: ModuleRelevance(
+            ticket_id=ticket_id, ticket_name="Editar ficha", module_name=kw["module_name"],
+            verdict="related", confidence=0.87, rationale="Encaja con el módulo.",
+            matched_aspects=["Ficha de persona"], module_gaps=[],
+        ),
+    )
+
+    response = client.post(
+        "/api/tickets/module-relevance",
+        json={"ticket_id": "T1", "module_name": "Personas", "module_context": "doc oficial"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["verdict"] == "related"
+    assert body["confidence"] == 0.87
+    assert body["matched_aspects"] == ["Ficha de persona"]
+
+
+def test_module_relevance_passes_tracker_through(monkeypatch):
+    from meta_harness.module_relevance import ModuleRelevance
+
+    captured = {}
+
+    def fake(ticket_id, **kw):
+        captured.update(kw)
+        return ModuleRelevance(
+            ticket_id=ticket_id, ticket_name="x", module_name="Personas", verdict="unrelated",
+            confidence=0.1, rationale="No.", matched_aspects=[], module_gaps=["Otro módulo"],
+        )
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.analyze_module_relevance", fake)
+
+    client.post(
+        "/api/tickets/module-relevance",
+        json={"ticket_id": "I1", "module_name": "Personas", "module_context": "doc", "tracker": "linear"},
+    )
+
+    assert captured["tracker"] == "linear"
+    assert captured["module_context"] == "doc"
+
+
+def test_module_relevance_missing_context_returns_400(monkeypatch):
+    def boom(ticket_id, **kw):
+        raise ValueError("module_context is required")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.analyze_module_relevance", boom)
+
+    response = client.post(
+        "/api/tickets/module-relevance",
+        json={"ticket_id": "T1", "module_name": "Personas", "module_context": ""},
+    )
+
+    assert response.status_code == 400

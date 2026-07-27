@@ -312,6 +312,67 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-compose { display: flex; gap: 0.5rem; align-items: flex-end; }
 .chat-compose .field { flex: 1; }
 
+/* A drafted ticket is shown as a wide assistant bubble with its own actions,
+   so the whole review-and-add loop happens inside the conversation instead of
+   in a detached list further down the page. */
+.chat-msg-ticket {
+  align-self: flex-start;
+  max-width: 100%;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.875rem 1rem;
+}
+
+.chat-ticket-title {
+  font-size: var(--text-base);
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.chat-ticket-body { font-size: var(--text-sm); }
+.chat-ticket-body .ticket-section { margin-top: 0.625rem; }
+.chat-ticket-body ul { margin: 0; padding-left: 1.125rem; }
+.chat-ticket-body li { margin-bottom: 0.1875rem; }
+.chat-ticket-body li::marker { color: var(--accent); }
+
+.chat-ticket-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.875rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.chat-subticket {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 0.625rem;
+  margin-top: 0.5rem;
+}
+
+/* ---------- Module relevance verdicts ----------------------------------- */
+
+.verdict-related { background: var(--success-soft); color: var(--success); border-color: #bfe3cd; }
+.verdict-partially_related { background: var(--warning-soft); color: var(--warning); border-color: #f0dcb8; }
+.verdict-unrelated { background: var(--danger-soft); color: var(--danger); border-color: #f2c3c2; }
+
+.confidence-bar {
+  height: 0.375rem;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  overflow: hidden;
+  margin-top: 0.25rem;
+}
+
+.confidence-bar span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
 /* ---------- Auto-detected team members ---------------------------------- */
 
 .member-list {
@@ -658,6 +719,9 @@ details.advanced[open] > summary { margin-bottom: 0.875rem; }
   .warning-banner { border-color: #4a3a1e; }
   .thinking-indicator, .selected-callout { border-color: #333c5c; }
   .spinner { border-color: #333c5c; border-top-color: var(--accent); }
+  .verdict-related { border-color: #29452f; }
+  .verdict-partially_related { border-color: #4a3a1e; }
+  .verdict-unrelated { border-color: #55302f; }
 }
 
 /* ---------- Small screens ----------------------------------------------- */

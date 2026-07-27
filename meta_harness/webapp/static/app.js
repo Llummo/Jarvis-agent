@@ -263,24 +263,33 @@ const TRACKERS = {
   },
 };
 
-// --- Ticket card rendering (shared) -----------------------------------------
+// --- Ticket rendering (shared) ----------------------------------------------
 
-function renderTicketCard(entry, index, tracker, onCreate) {
-  const ticket = entry.ticket;
-  const card = document.createElement("div");
-  card.className = "ticket-card";
+// Criteria arrive as {name, given, when, then} so each tracker can lay them
+// out its own way; this is the compact one-line form used in previews.
+function criterionText(criterion) {
+  if (!criterion) return "";
+  if (criterion.text) return criterion.name ? `${criterion.name}: ${criterion.text}` : criterion.text;
+  const clause = `Dado que ${criterion.given}, cuando ${criterion.when}, entonces ${criterion.then}.`;
+  return criterion.name ? `${criterion.name}: ${clause}` : clause;
+}
 
+function ticketBadges(ticket) {
+  return (
+    `<span class="badge priority-${escapeHtml(ticket.priority)}">${escapeHtml(ticket.priority)}</span>` +
+    `<span class="badge category-${escapeHtml(ticket.category)}">${escapeHtml(ticket.category)}</span>` +
+    (ticket.parent_title ? `<span class="badge priority-low">subticket</span>` : "")
+  );
+}
+
+function ticketBodyHtml(ticket) {
   const parts = [];
   if (ticket.epic) parts.push(`<p class="ticket-epic">${escapeHtml(ticket.epic)}</p>`);
-  parts.push(
-    `<h3>${escapeHtml(ticket.title)}` +
-      `<span class="badge priority-${escapeHtml(ticket.priority)}">${escapeHtml(ticket.priority)}</span>` +
-      `<span class="badge category-${escapeHtml(ticket.category)}">${escapeHtml(ticket.category)}</span></h3>`,
-  );
 
   const routeBits = [];
   if (ticket.ui_route) routeBits.push(`<span><strong>Screen:</strong> <span class="mono">${escapeHtml(ticket.ui_route)}</span></span>`);
   if (ticket.backend_endpoint) routeBits.push(`<span><strong>Endpoint:</strong> <span class="mono">${escapeHtml(ticket.backend_endpoint)}</span></span>`);
+  if (ticket.parent_title) routeBits.push(`<span><strong>Subticket of:</strong> ${escapeHtml(ticket.parent_title)}</span>`);
   if (routeBits.length) parts.push(`<div class="meta-row">${routeBits.join("")}</div>`);
 
   if (ticket.user_story) {
@@ -289,25 +298,31 @@ function renderTicketCard(entry, index, tracker, onCreate) {
         `<p class="user-story">${escapeHtml(ticket.user_story)}</p></div>`,
     );
   }
-
   parts.push(
     `<div class="ticket-section"><div class="ticket-section-label">Description</div>` +
       `<p>${escapeHtml(ticket.description)}</p></div>`,
   );
-
   if (ticket.acceptance_criteria && ticket.acceptance_criteria.length) {
-    const items = ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
+    const items = ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(criterionText(c))}</li>`).join("");
     parts.push(
       `<div class="ticket-section"><div class="ticket-section-label">Acceptance criteria</div><ul>${items}</ul></div>`,
     );
   }
-
   if (ticket.technical_notes) {
     parts.push(
       `<div class="ticket-section"><div class="ticket-section-label">Technical notes</div>` +
         `<p>${escapeHtml(ticket.technical_notes)}</p></div>`,
     );
   }
+  return parts.join("");
+}
+
+function renderTicketCard(entry, index, tracker, onCreate) {
+  const ticket = entry.ticket;
+  const card = document.createElement("div");
+  card.className = "ticket-card";
+
+  const parts = [`<h3>${escapeHtml(ticket.title)}${ticketBadges(ticket)}</h3>`, ticketBodyHtml(ticket)];
 
   const planning = [];
   if (ticket.sprint) planning.push(`<span><strong>Sprint:</strong> ${escapeHtml(ticket.sprint)}</span>`);
@@ -484,31 +499,35 @@ function createTrackerPanel(tracker) {
   }
 
   async function loadTickets() {
-    const select = el("qa-ticket");
+    // One fetch feeds every ticket dropdown on the tab (QA review and the
+    // module check), so they can never drift out of sync.
+    const selects = [el("qa-ticket"), el("module-ticket")];
     if (!state.scope || (tracker.containerRequired && !state.container)) {
-      select.innerHTML = '<option value="">Choose a destination in step 1 first</option>';
-      select.disabled = true;
+      selects.forEach((select) => {
+        select.innerHTML = '<option value="">Choose a destination in step 1 first</option>';
+        select.disabled = true;
+      });
       el("qa-bulk-run-btn").disabled = true;
       return;
     }
     thinking("scope", true, `Loading ${tracker.noun}s…`);
     try {
       state.tickets = await tracker.loadTickets(state.scope, state.container);
-      fillSelect(
-        select,
-        state.tickets.map((t) => ({
-          value: t.id,
-          label: t.stateLabel ? `${t.name} (${t.stateLabel})` : t.name,
-        })),
-        `Select a ${tracker.noun}…`,
-        { keepValue: false },
-      );
-      select.disabled = state.tickets.length === 0;
+      const options = state.tickets.map((t) => ({
+        value: t.id,
+        label: t.stateLabel ? `${t.name} (${t.stateLabel})` : t.name,
+      }));
+      selects.forEach((select) => {
+        fillSelect(select, options, `Select a ${tracker.noun}…`, { keepValue: false });
+        select.disabled = state.tickets.length === 0;
+      });
       el("qa-bulk-run-btn").disabled = state.tickets.length === 0;
     } catch (err) {
       banner("scope-error", err.message);
-      select.innerHTML = '<option value="">Failed to load</option>';
-      select.disabled = true;
+      selects.forEach((select) => {
+        select.innerHTML = '<option value="">Failed to load</option>';
+        select.disabled = true;
+      });
     } finally {
       thinking("scope", false);
     }
@@ -591,6 +610,9 @@ function createTrackerPanel(tracker) {
 
   // --- chat mode ------------------------------------------------------------
 
+  // The conversation holds plain text turns AND drafted-ticket turns. A
+  // ticket turn renders as a wide bubble with its own Add/Discard buttons, so
+  // the user never has to hunt for the result somewhere further down the page.
   function renderChat() {
     const log = el("chat-log");
     if (!state.chatHistory.length) {
@@ -599,13 +621,100 @@ function createTrackerPanel(tracker) {
         `candidatos a Excel”. You'll get back a fully formatted ${tracker.noun} you can review and add.</div>`;
       return;
     }
-    log.innerHTML = state.chatHistory
-      .map(
-        (turn) =>
-          `<div class="chat-msg chat-msg-${turn.role === "assistant" ? "bot" : "user"}">${escapeHtml(turn.content)}</div>`,
-      )
-      .join("");
+
+    log.innerHTML = "";
+    state.chatHistory.forEach((turn, turnIndex) => {
+      if (turn.kind !== "tickets") {
+        const bubble = document.createElement("div");
+        bubble.className = `chat-msg chat-msg-${turn.role === "assistant" ? "bot" : "user"}`;
+        bubble.textContent = turn.content;
+        log.appendChild(bubble);
+        return;
+      }
+
+      const bubble = document.createElement("div");
+      bubble.className = "chat-msg chat-msg-ticket";
+      const heading =
+        turn.entries.length === 1
+          ? `Here's the ${tracker.noun} I drafted:`
+          : `Here are the ${turn.entries.length} ${tracker.noun}s I drafted:`;
+      bubble.innerHTML = `<p class="ticket-section-label">${escapeHtml(heading)}</p>`;
+
+      turn.entries.forEach((entry) => {
+        const block = document.createElement("div");
+        block.className = entry.ticket.parent_title ? "chat-ticket-body chat-subticket" : "chat-ticket-body";
+        block.innerHTML =
+          `<div class="chat-ticket-title">${escapeHtml(entry.ticket.title)}${ticketBadges(entry.ticket)}</div>` +
+          ticketBodyHtml(entry.ticket) +
+          `<div class="ticket-status"></div>`;
+        const statusEl = block.querySelector(".ticket-status");
+        if (entry.status === "created") {
+          statusEl.textContent = `✓ Added to ${tracker.label} (${entry.createdId})`;
+          statusEl.classList.add("ticket-status-ok");
+        } else if (entry.status === "error") {
+          statusEl.textContent = `✗ Could not add: ${entry.error}`;
+          statusEl.classList.add("ticket-status-error");
+        } else if (entry.status === "creating") {
+          statusEl.textContent = "Adding…";
+        }
+        bubble.appendChild(block);
+      });
+
+      const pending = turn.entries.filter((e) => e.status !== "created");
+      if (pending.length && turn.status !== "discarded") {
+        const actions = document.createElement("div");
+        actions.className = "chat-ticket-actions";
+
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "btn-success";
+        add.textContent =
+          turn.entries.length === 1
+            ? `Add ${tracker.noun} to ${tracker.label}`
+            : `Add all ${turn.entries.length} to ${tracker.label}`;
+        add.disabled = turn.entries.some((e) => e.status === "creating");
+        add.addEventListener("click", () => addChatTickets(turnIndex));
+
+        const discard = document.createElement("button");
+        discard.type = "button";
+        discard.textContent = "Discard";
+        discard.addEventListener("click", () => {
+          turn.status = "discarded";
+          renderChat();
+        });
+
+        actions.append(add, discard);
+        bubble.appendChild(actions);
+      } else if (turn.status === "discarded") {
+        const note = document.createElement("div");
+        note.className = "field-note";
+        note.textContent = "Discarded.";
+        bubble.appendChild(note);
+      }
+
+      log.appendChild(bubble);
+    });
+
     log.scrollTop = log.scrollHeight;
+  }
+
+  async function addChatTickets(turnIndex) {
+    if (!destinationReady()) return;
+    const turn = state.chatHistory[turnIndex];
+    const pending = turn.entries.filter((e) => e.status !== "created");
+    if (!pending.length) return;
+    pending.forEach((e) => (e.status = "creating"));
+    renderChat();
+    try {
+      await postCreate(pending);
+    } catch (err) {
+      pending.forEach((e) => {
+        e.status = "error";
+        e.error = err.message;
+      });
+    }
+    renderChat();
+    loadTickets();
   }
 
   async function onChatSubmit(event) {
@@ -617,7 +726,11 @@ function createTrackerPanel(tracker) {
     banner("generate-success", null);
     banner("generate-warnings", null);
 
-    const history = state.chatHistory.slice();
+    // Only the plain-text turns are conversation context for the model; a
+    // drafted-ticket turn is replayed as the summary line it produced.
+    const history = state.chatHistory
+      .filter((turn) => turn.kind !== "tickets" || turn.summary)
+      .map((turn) => ({ role: turn.role, content: turn.kind === "tickets" ? turn.summary : turn.content }));
     state.chatHistory.push({ role: "user", content: idea });
     renderChat();
     input.value = "";
@@ -636,14 +749,15 @@ function createTrackerPanel(tracker) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ idea, history, ...startNumbers(), progress_token: token }),
       });
-      const titles = body.tickets.map((t) => `• ${t.title}`).join("\n");
-      const reply =
-        body.tickets.length === 1
-          ? `I drafted this ${tracker.noun}:\n${titles}\n\nReview it below and add it when it looks right.`
-          : `I drafted ${body.tickets.length} ${tracker.noun}s:\n${titles}\n\nReview them below and add them when they look right.`;
-      state.chatHistory.push({ role: "assistant", content: reply });
+      state.chatHistory.push({
+        role: "assistant",
+        kind: "tickets",
+        entries: body.tickets.map((ticket) => ({ ticket, status: "pending" })),
+        // Replayed as this model's own prior turn when the user refines.
+        summary: body.tickets.map((t) => `- ${t.title}: ${t.description}`).join("\n"),
+      });
       renderChat();
-      acceptGenerated(body, null);
+      banner("generate-warnings", body.warnings && body.warnings.length ? `Note: ${body.warnings.join("; ")}` : null);
     } catch (err) {
       state.chatHistory.push({ role: "assistant", content: `Sorry — ${err.message}` });
       renderChat();
@@ -1229,7 +1343,93 @@ function createTrackerPanel(tracker) {
     }
   }
 
-  // --- Step 4: findings -----------------------------------------------------
+  // --- Module relevance -----------------------------------------------------
+
+  const VERDICT_LABELS = {
+    related: "Belongs to this module",
+    partially_related: "Partially related",
+    unrelated: "Does not belong to this module",
+  };
+
+  function renderModuleResult(result) {
+    const container = el("module-result");
+    container.hidden = false;
+    const verdict = escapeHtml(result.verdict);
+    const percent = Math.round((result.confidence || 0) * 100);
+
+    let html =
+      `<h3>${escapeHtml(result.ticket_name)}` +
+      `<span class="badge verdict-${verdict}">${escapeHtml(VERDICT_LABELS[result.verdict] || result.verdict)}</span></h3>` +
+      `<div class="meta-row"><span><strong>Module:</strong> ${escapeHtml(result.module_name)}</span></div>` +
+      `<div class="ticket-section"><div class="ticket-section-label">Confidence — ${percent}%</div>` +
+      `<div class="confidence-bar"><span style="width:${percent}%"></span></div></div>` +
+      `<div class="ticket-section"><div class="ticket-section-label">Reasoning</div>` +
+      `<p>${escapeHtml(result.rationale)}</p></div>`;
+
+    if (result.matched_aspects && result.matched_aspects.length) {
+      html +=
+        `<div class="ticket-section"><div class="ticket-section-label">Overlaps with the module</div><ul>` +
+        result.matched_aspects.map((a) => `<li>${escapeHtml(a)}</li>`).join("") +
+        `</ul></div>`;
+    }
+    if (result.module_gaps && result.module_gaps.length) {
+      html +=
+        `<div class="ticket-section"><div class="ticket-section-label">Falls outside the module</div><ul>` +
+        result.module_gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("") +
+        `</ul></div>`;
+    }
+    container.innerHTML = html;
+  }
+
+  async function onCheckModule() {
+    const ticketId = el("module-ticket").value;
+    const moduleName = el("module-name").value.trim();
+    const moduleContext = el("module-context").value.trim();
+    banner("module-error", null);
+    if (!ticketId) {
+      banner("module-error", `Pick a ${tracker.noun} to check.`);
+      return;
+    }
+    if (!moduleName) {
+      banner("module-error", "Give the module a name.");
+      return;
+    }
+    if (!moduleContext) {
+      banner("module-error", "Paste the module's documentation — the verdict is based on it.");
+      return;
+    }
+    el("module-result").hidden = true;
+    const button = el("module-check-btn");
+    button.disabled = true;
+    const token = newProgressToken();
+    thinking("module", true, "Starting…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("module", true, steps[steps.length - 1]);
+      phaseLog("module", steps);
+    });
+    try {
+      const result = await fetchJson("/api/tickets/module-relevance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticket_id: ticketId,
+          tracker: tracker.key,
+          module_name: moduleName,
+          module_context: moduleContext,
+          progress_token: token,
+        }),
+      });
+      renderModuleResult(result);
+    } catch (err) {
+      banner("module-error", err.message);
+    } finally {
+      await stop();
+      thinking("module", false);
+      button.disabled = false;
+    }
+  }
+
+  // --- Step 5: findings -----------------------------------------------------
 
   function projectOptions() {
     const options = new Set(state.knownProjects);
@@ -1419,6 +1619,7 @@ function createTrackerPanel(tracker) {
       el(`filter-${name}`).addEventListener("change", loadFindings);
     }
     el("report-submit").addEventListener("click", onReportFinding);
+    el("module-check-btn").addEventListener("click", onCheckModule);
 
     renderChat();
     renderTeamMembers();

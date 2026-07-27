@@ -116,7 +116,7 @@
               <form id="clickup-chat-form" class="chat-compose">
                 <div class="field">
                   <label for="clickup-chat-input">Your idea</label>
-                  <textarea id="clickup-chat-input" rows="2" placeholder="Describe the feature or change you want…"></textarea>
+                  <textarea id="clickup-chat-input" rows="4" placeholder="Describe the feature or change you want…"></textarea>
                 </div>
                 <button type="submit" class="btn-primary">Send</button>
               </form>
@@ -269,11 +269,55 @@
         </div>
       </section>
 
-      <!-- Step 4 — findings -->
+      <!-- Step 4 — module relevance -->
       <section class="step">
         <div class="panel">
           <div class="panel-head">
             <span class="step-number">4</span>
+            <div>
+              <h2>Does this ticket belong to a module?</h2>
+              <p class="hint">Pick a ticket, paste the module's official documentation, and get a reasoned verdict on whether the ticket is work on that module.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="clickup-module-ticket">Ticket to check</label>
+                <select id="clickup-module-ticket" disabled><option value="">Choose a destination in step 1 first</option></select>
+              </div>
+              <div class="field field-wide">
+                <label for="clickup-module-name">Module name</label>
+                <input type="text" id="clickup-module-name" placeholder="Personas / Gestión de Pool de Talento">
+              </div>
+              <div class="field field-wide">
+                <label for="clickup-module-context">Module documentation</label>
+                <textarea id="clickup-module-context" rows="6" placeholder="Paste the official documentation describing what this module covers…"></textarea>
+                <span class="field-note">The verdict is based only on what you paste here, so include the module's real scope.</span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="clickup-module-check-btn" class="btn-primary">Check relevance</button>
+            </div>
+
+            <div id="clickup-module-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="clickup-module-phase-log"></ul>
+              </div>
+            </div>
+            <div id="clickup-module-error" class="error-banner" hidden></div>
+            <div id="clickup-module-result" class="ticket-card" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 5 — findings -->
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-number">5</span>
             <div>
               <h2>Findings</h2>
               <p class="hint">Everything QA has recorded. Close a finding once it has been corrected.</p>
@@ -447,7 +491,7 @@
               <form id="linear-chat-form" class="chat-compose">
                 <div class="field">
                   <label for="linear-chat-input">Your idea</label>
-                  <textarea id="linear-chat-input" rows="2" placeholder="Describe the feature or change you want…"></textarea>
+                  <textarea id="linear-chat-input" rows="4" placeholder="Describe the feature or change you want…"></textarea>
                 </div>
                 <button type="submit" class="btn-primary">Send</button>
               </form>
@@ -600,11 +644,55 @@
         </div>
       </section>
 
-      <!-- Step 4 — findings -->
+      <!-- Step 4 — module relevance -->
       <section class="step">
         <div class="panel">
           <div class="panel-head">
             <span class="step-number">4</span>
+            <div>
+              <h2>Does this issue belong to a module?</h2>
+              <p class="hint">Pick a issue, paste the module's official documentation, and get a reasoned verdict on whether the issue is work on that module.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="linear-module-ticket">Issue to check</label>
+                <select id="linear-module-ticket" disabled><option value="">Choose a destination in step 1 first</option></select>
+              </div>
+              <div class="field field-wide">
+                <label for="linear-module-name">Module name</label>
+                <input type="text" id="linear-module-name" placeholder="Personas / Gestión de Pool de Talento">
+              </div>
+              <div class="field field-wide">
+                <label for="linear-module-context">Module documentation</label>
+                <textarea id="linear-module-context" rows="6" placeholder="Paste the official documentation describing what this module covers…"></textarea>
+                <span class="field-note">The verdict is based only on what you paste here, so include the module's real scope.</span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="linear-module-check-btn" class="btn-primary">Check relevance</button>
+            </div>
+
+            <div id="linear-module-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-module-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-module-error" class="error-banner" hidden></div>
+            <div id="linear-module-result" class="ticket-card" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 5 — findings -->
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-number">5</span>
             <div>
               <h2>Findings</h2>
               <p class="hint">Everything QA has recorded. Close a finding once it has been corrected.</p>

@@ -120,9 +120,13 @@ def create_clickup_ticket(
     priority: Optional[str] = None,
     assignees: Optional[Sequence[int]] = None,
     due_date_ms: Optional[int] = None,
+    parent: Optional[str] = None,
     project_path: Optional[Path] = None,
 ) -> str:
-    """Create a ClickUp task via the p-harness CLI; return its task id."""
+    """Create a ClickUp task via the p-harness CLI; return its task id.
+
+    `parent` nests the new task under an existing one as a subtask, which
+    is how a generated parent/subticket hierarchy is materialized."""
     if priority is not None and priority not in CLICKUP_PRIORITY_WORDS:
         raise ValueError(f"priority must be one of {CLICKUP_PRIORITY_WORDS}, got {priority!r}")
 
@@ -147,6 +151,8 @@ def create_clickup_ticket(
         command += ["--assignees", ",".join(str(a) for a in assignees)]
     if due_date_ms is not None:
         command += ["--due-date", str(due_date_ms)]
+    if parent:
+        command += ["--parent", parent]
 
     completed = subprocess.run(command, cwd=resolved_path, capture_output=True, text=True)
     if completed.returncode != 0:

@@ -15,6 +15,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
 from meta_harness.linear_bridge import LinearReadError, list_linear_members
+from meta_harness.module_relevance import ClaudeNotFoundError as ModuleClaudeNotFoundError
+from meta_harness.module_relevance import ModuleRelevanceError, analyze_module_relevance
 from meta_harness.team_assignment import (
     assign_random_members,
     list_team_members,
@@ -39,6 +41,8 @@ from meta_harness.webapp.schemas import (
     CreateTicketsOut,
     GenerateFromIdeaIn,
     GenerateTicketsOut,
+    ModuleRelevanceIn,
+    ModuleRelevanceOut,
     ProposedTicketIn,
     TeamMemberOut,
     TicketCreateResult,
@@ -225,6 +229,15 @@ def post_verify_team(body: VerifyTeamIn) -> VerifyTeamOut:
     )
 
 
+def _criterion_text(criterion) -> str:
+    """One-line Gherkin rendering — ClickUp keeps criteria compact, unlike
+    Linear's bulleted house format (see routes_linear._format_description)."""
+    if criterion.text:
+        return f"{criterion.name}: {criterion.text}" if criterion.name else criterion.text
+    clause = f"Dado que {criterion.given}, cuando {criterion.when}, entonces {criterion.then}."
+    return f"{criterion.name}: {clause}" if criterion.name else clause
+
+
 def _format_description(ticket: ProposedTicketIn) -> str:
     """Render the team's standard ticket description template:
     epic/title header, UI route + backend endpoint, a Spanish user story +
@@ -253,7 +266,7 @@ def _format_description(ticket: ProposedTicketIn) -> str:
         "✅ CRITERIOS DE ACEPTACIÓN",
     ]
     for index, criterion in enumerate(ticket.acceptance_criteria, start=1):
-        lines.append(f"📌 Criterio {index}: {criterion}")
+        lines.append(f"📌 Criterio {index}: {_criterion_text(criterion)}")
     lines.append("📌 Criterio X: [Espacio para criterios adicionales]")
     lines += [
         "",
@@ -277,8 +290,14 @@ def post_create_tickets(
     body: CreateTicketsIn,
     project_path: Optional[Path] = Depends(get_clickup_project_path),
 ) -> CreateTicketsOut:
-    results: list[TicketCreateResult] = []
-    for ticket in body.tickets:
+    # Parents first, so a subtask can be nested under a task that already
+    # exists — see the matching comment in routes_linear.post_create_issues.
+    order = sorted(range(len(body.tickets)), key=lambda i: bool(body.tickets[i].parent_title))
+    created_ids: dict[str, str] = {}
+    results: list[Optional[TicketCreateResult]] = [None] * len(body.tickets)
+
+    for index in order:
+        ticket = body.tickets[index]
         try:
             task_id = create_clickup_ticket(
                 ticket.title,
@@ -287,10 +306,37 @@ def post_create_tickets(
                 priority=ticket.priority,
                 assignees=[ticket.assignee_clickup_id] if ticket.assignee_clickup_id else None,
                 due_date_ms=_due_date_ms(ticket.due_date),
+                parent=created_ids.get(ticket.parent_title) if ticket.parent_title else None,
                 project_path=project_path,
             )
         except (ClickUpTicketError, ValueError) as exc:
-            results.append(TicketCreateResult(ticket=ticket, ok=False, error=str(exc)))
+            results[index] = TicketCreateResult(ticket=ticket, ok=False, error=str(exc))
         else:
-            results.append(TicketCreateResult(ticket=ticket, ok=True, clickup_task_id=task_id))
-    return CreateTicketsOut(results=results)
+            created_ids[ticket.title] = task_id
+            results[index] = TicketCreateResult(ticket=ticket, ok=True, clickup_task_id=task_id)
+
+    return CreateTicketsOut(results=[r for r in results if r is not None])
+
+
+@router.post("/module-relevance", response_model=ModuleRelevanceOut)
+def post_module_relevance(body: ModuleRelevanceIn) -> ModuleRelevanceOut:
+    """Judge whether a real ticket belongs to a product module, given that
+    module's official documentation as context. Read-only on both trackers."""
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
+    try:
+        return analyze_module_relevance(
+            body.ticket_id,
+            tracker=body.tracker,
+            module_name=body.module_name,
+            module_context=body.module_context,
+            on_step=on_step,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ModuleClaudeNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ClickUpReadError, LinearReadError, ModuleRelevanceError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

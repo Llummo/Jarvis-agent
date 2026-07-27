@@ -94,11 +94,14 @@ TICKET_EXTRACTION_PROMPT = (
     "its flow: what needs to be built and how it should work end to end, written so anyone "
     "picking up the ticket immediately understands it without re-reading the source document; "
     "distinct from and more concrete than the user_story above), "
-    '"acceptance_criteria" (array of strings, in Spanish; each one starts with a short descriptive '
-    'label for that criterion followed by ": " and then Gherkin phrased in Spanish: "Dado que '
-    '<contexto>, cuando <acción>, entonces <resultado esperado>." — for example "Carga de CV: Dado '
-    "que el usuario está en la pantalla 'Agregar persona', cuando adjunte un CV en PDF, entonces el "
-    'sistema debe extraer los datos automáticamente."), '
+    '"acceptance_criteria" (array of objects, in Spanish. Each object has exactly four string '
+    'fields: "name" (a short descriptive title for the criterion, e.g. "Carga y Extracción '
+    'Asistida por CV"), "given" (the starting condition, phrased to follow "Dado que …"), '
+    '"when" (the action or event, phrased to follow "cuando …"), and "then" (the expected '
+    'outcome, phrased to follow "entonces …"). Write each part WITHOUT its leading keyword — '
+    'the harness adds "Dado que", "cuando" and "entonces" when rendering. For example: '
+    '{"name": "Carga de CV", "given": "el usuario está en la pantalla \'Agregar persona\'", '
+    '"when": "adjunte un CV en PDF", "then": "el sistema debe extraer los datos automáticamente"}), '
     '"technical_notes" (string, in Spanish, OPTIONAL — technical details worth calling out if the '
     "document actually specifies them: limits/constraints, a permissions matrix (e.g. "
     '"talent:read, talent:write, recruitment:admin"), state/status models (e.g. "Registro: ACTIVE | '
@@ -110,6 +113,12 @@ TICKET_EXTRACTION_PROMPT = (
     '"frontend" for UI/client-side work, "deployment" for CI/CD, infra, release, or ops work, '
     'and "mundane" for anything general, cross-cutting, or planning-oriented that does not '
     "clearly fit the other three), "
+    '"parent_title" (string — use this to build a two-level hierarchy. When several tickets are '
+    "pieces of one larger feature, emit one parent ticket describing that feature as a whole and "
+    "set every piece's parent_title to the parent ticket's exact title; the parent must appear "
+    "earlier in the array than its children. Leave it as an empty string for a top-level ticket, "
+    "and never nest more than one level deep — a ticket that has a parent_title cannot itself be "
+    "another ticket's parent), "
     '"sprint" (integer, 1 or higher — which 4-week Scrum sprint this ticket is planned for. '
     "Reason about this like a sprint-planning session: work through the backlog in priority "
     "and dependency order, and don't overload a single sprint — a small team can realistically "
@@ -240,6 +249,31 @@ class TicketParseError(RuntimeError):
 
 
 @dataclass
+class AcceptanceCriterion:
+    """One acceptance criterion, kept as its parts rather than one string.
+
+    The trackers render criteria differently — Linear's house format puts
+    the criterion's name on its own line with the Given/When/Then split
+    across three bullets — which is only possible if the parts survive
+    generation instead of being flattened into prose up front. `text` is
+    the fallback for a model response that gave a plain string anyway.
+    """
+
+    name: str = ""
+    given: str = ""
+    when: str = ""
+    then: str = ""
+    text: str = ""
+
+    def inline(self) -> str:
+        """One-line rendering: 'Name: Dado que X, cuando Y, entonces Z.'"""
+        if self.text:
+            return f"{self.name}: {self.text}" if self.name else self.text
+        clause = ", ".join(part for part in (self.given, self.when, self.then) if part)
+        return f"{self.name}: {clause}" if self.name else clause
+
+
+@dataclass
 class ProposedTicket:
     """One LLM-proposed ticket, not yet created anywhere."""
 
@@ -250,7 +284,11 @@ class ProposedTicket:
     ui_route: str = ""
     backend_endpoint: str = ""
     technical_notes: str = ""
-    acceptance_criteria: List[str] = field(default_factory=list)
+    # Title of another ticket in the same batch that this one is a subticket
+    # of; empty for a top-level ticket. Resolved to a real parent id at
+    # creation time, once the parent actually exists in the tracker.
+    parent_title: str = ""
+    acceptance_criteria: List[AcceptanceCriterion] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
     category: str = DEFAULT_CATEGORY
     sprint: int = 1
@@ -315,6 +353,36 @@ def _strip_code_fences(raw: str) -> str:
     return stripped.strip()
 
 
+def _coerce_criterion(item: object) -> Optional[AcceptanceCriterion]:
+    """Accept either the structured {name, given, when, then} object the
+    prompt asks for, or a bare string from a model that ignored it —
+    a criterion is far too valuable to discard over its shape."""
+    if isinstance(item, str):
+        text = item.strip()
+        if not text:
+            return None
+        # "Label: Dado que ..." — keep the label separate when there is one,
+        # so even a legacy string still renders with a proper heading.
+        name, separator, rest = text.partition(":")
+        if separator and rest.strip() and len(name) <= 80 and "," not in name:
+            return AcceptanceCriterion(name=name.strip(), text=rest.strip())
+        return AcceptanceCriterion(text=text)
+
+    if isinstance(item, dict):
+        parts = {
+            key: (item.get(key).strip() if isinstance(item.get(key), str) else "")
+            for key in ("name", "given", "when", "then")
+        }
+        if not any(parts.values()):
+            return None
+        if not (parts["given"] or parts["when"] or parts["then"]):
+            # Only a name came through — treat it as free text so it still shows.
+            return AcceptanceCriterion(text=parts["name"])
+        return AcceptanceCriterion(**parts)
+
+    return None
+
+
 def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[ProposedTicket]:
     """Validate one raw ticket dict leniently.
 
@@ -355,17 +423,27 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
     if not isinstance(technical_notes, str):
         technical_notes = ""
 
-    acceptance_criteria = raw.get("acceptance_criteria")
-    if not isinstance(acceptance_criteria, list):
+    raw_criteria = raw.get("acceptance_criteria")
+    if not isinstance(raw_criteria, list):
         warnings.append(
             f"Ticket #{index} ('{title}'): missing/invalid 'acceptance_criteria', defaulted to []"
         )
-        acceptance_criteria = []
+        acceptance_criteria: List[AcceptanceCriterion] = []
     else:
-        cleaned = [item for item in acceptance_criteria if isinstance(item, str)]
-        if len(cleaned) != len(acceptance_criteria):
-            warnings.append(f"Ticket #{index} ('{title}'): dropped non-string acceptance_criteria entries")
-        acceptance_criteria = cleaned
+        acceptance_criteria = []
+        dropped = 0
+        for item in raw_criteria:
+            criterion = _coerce_criterion(item)
+            if criterion is None:
+                dropped += 1
+            else:
+                acceptance_criteria.append(criterion)
+        if dropped:
+            warnings.append(f"Ticket #{index} ('{title}'): dropped {dropped} unusable acceptance_criteria entries")
+
+    parent_title = raw.get("parent_title")
+    if not isinstance(parent_title, str):
+        parent_title = ""
 
     priority = raw.get("priority")
     if priority not in PRIORITIES:
@@ -394,6 +472,7 @@ def _validate_ticket(raw: dict, index: int, warnings: List[str]) -> Optional[Pro
         ui_route=ui_route.strip(),
         backend_endpoint=backend_endpoint.strip(),
         technical_notes=technical_notes.strip(),
+        parent_title=parent_title.strip(),
         acceptance_criteria=acceptance_criteria,
         priority=priority,
         category=category,
@@ -534,14 +613,26 @@ def apply_category_numbering(
     input tickets are not mutated.
     """
     counters: Dict[str, int] = dict(start_numbers or {})
+    renamed: Dict[str, str] = {}
     numbered = []
     for ticket in tickets:
         category = ticket.category if ticket.category in CATEGORIES else DEFAULT_CATEGORY
         prefix = CATEGORY_PREFIXES[category]
         number = counters.get(category, 1)
         counters[category] = number + 1
-        numbered.append(replace(ticket, title=f"{prefix}-{number:02d} | {ticket.title}"))
-    return numbered
+        new_title = f"{prefix}-{number:02d} | {ticket.title}"
+        renamed[ticket.title] = new_title
+        numbered.append(replace(ticket, title=new_title))
+
+    # parent_title points at another ticket's title, so it has to follow the
+    # rename — otherwise every parent link would dangle the moment tickets
+    # get their category numbers.
+    return [
+        replace(ticket, parent_title=renamed.get(ticket.parent_title, ticket.parent_title))
+        if ticket.parent_title
+        else ticket
+        for ticket in numbered
+    ]
 
 
 def apply_sprint_due_dates(

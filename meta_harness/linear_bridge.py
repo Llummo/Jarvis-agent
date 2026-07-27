@@ -109,9 +109,13 @@ def create_linear_issue(
     assignee_id: Optional[str] = None,
     due_date: Optional[str] = None,
     project_id: Optional[str] = None,
+    parent_id: Optional[str] = None,
     project_path: Optional[Path] = None,
 ) -> str:
-    """Create a Linear issue via the p-harness CLI; return its issue id."""
+    """Create a Linear issue via the p-harness CLI; return its issue id.
+
+    `parent_id` nests the new issue under an existing one as a sub-issue,
+    which is how a generated parent/subticket hierarchy is materialized."""
     if priority is not None and priority not in LINEAR_PRIORITY_WORDS:
         raise ValueError(f"priority must be one of {LINEAR_PRIORITY_WORDS}, got {priority!r}")
 
@@ -124,6 +128,8 @@ def create_linear_issue(
         args += ["--due-date", due_date]
     if project_id:
         args += ["--project-id", project_id]
+    if parent_id:
+        args += ["--parent-id", parent_id]
 
     payload = _run_harness_json(args, project_path=project_path, error_cls=LinearIssueError)
     if not isinstance(payload, dict):
