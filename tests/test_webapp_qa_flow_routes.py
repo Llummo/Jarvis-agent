@@ -157,3 +157,112 @@ def test_post_commit_review_invalid_severity_returns_400(tmp_path):
     app.dependency_overrides.clear()
 
     assert response.status_code == 400
+
+
+def test_post_review_passes_pass_and_fail_status_through(monkeypatch):
+    captured = {}
+
+    def fake_review_and_record(ticket_id, **kw):
+        captured.update(kw)
+        return (
+            _review(), None,
+            RunRecord(run_id="run1", agent="qa_ticket_review", subject_id=ticket_id, started_at="t", ok=True),
+        )
+
+    monkeypatch.setattr("meta_harness.webapp.routes_qa_flow.review_and_record", fake_review_and_record)
+
+    client.post(
+        "/api/qa/reviews",
+        json={"ticket_id": "T1", "project": "sigo-front", "persist": True, "pass_status": "done", "fail_status": "blocked"},
+    )
+
+    assert captured["pass_status"] == "done"
+    assert captured["fail_status"] == "blocked"
+
+
+def test_post_commit_review_moves_status_on_pass(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.update_clickup_task_status",
+        lambda task_id, status, **kw: calls.append((task_id, status)),
+    )
+    test_client = _client_with_store(tmp_path)
+
+    response = test_client.post(
+        "/api/qa/reviews/commit",
+        json={
+            "ticket_id": "T1", "ticket_name": "Fix login bug",
+            "observation": "Check login", "severity": "minor", "project": "sigo-front",
+            "pass_status": "done", "fail_status": "blocked",
+        },
+    )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert calls == [("T1", "done")]
+
+
+def test_post_bulk_review_returns_per_ticket_results(monkeypatch):
+    def fake_bulk(ticket_ids, **kw):
+        return [(tid, _review(), None) for tid in ticket_ids]
+
+    monkeypatch.setattr("meta_harness.webapp.routes_qa_flow.review_tickets_bulk", fake_bulk)
+
+    response = client.post(
+        "/api/qa/reviews/bulk", json={"ticket_ids": ["T1", "T2"], "project": "sigo-front"}
+    )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert [r["ticket_id"] for r in results] == ["T1", "T2"]
+    assert all(r["review"]["severity"] == "major" for r in results)
+
+
+def test_post_bulk_review_reports_per_ticket_errors(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_qa_flow.review_tickets_bulk",
+        lambda ticket_ids, **kw: [("T1", None, "ticket not found")],
+    )
+
+    response = client.post("/api/qa/reviews/bulk", json={"ticket_ids": ["T1"], "project": "sigo-front"})
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["review"] is None
+    assert result["error"] == "ticket not found"
+
+
+def test_post_bulk_commit_persists_each_item_and_isolates_failures(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.update_clickup_task_status",
+        lambda task_id, status, **kw: calls.append((task_id, status)),
+    )
+    test_client = _client_with_store(tmp_path)
+
+    response = test_client.post(
+        "/api/qa/reviews/bulk/commit",
+        json={
+            "items": [
+                {
+                    "ticket_id": "T1", "ticket_name": "Fix login bug", "observation": "Check login",
+                    "severity": "minor", "project": "sigo-front", "pass_status": "done", "fail_status": "blocked",
+                },
+                {
+                    "ticket_id": "T2", "ticket_name": "Fix logout bug", "observation": "Check logout",
+                    "severity": "urgentish", "project": "sigo-front",
+                },
+            ]
+        },
+    )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert results[0]["ticket_id"] == "T1"
+    assert results[0]["finding"]["route"] == "Fix login bug"
+    assert results[0]["error"] is None
+    assert results[1]["ticket_id"] == "T2"
+    assert results[1]["finding"] is None
+    assert results[1]["error"] is not None
+    assert calls == [("T1", "done")]

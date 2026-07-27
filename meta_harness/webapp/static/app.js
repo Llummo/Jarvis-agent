@@ -491,6 +491,32 @@ async function loadPickerSpaces() {
   }
 }
 
+function populateStatusSelect(select, statuses) {
+  const previousValue = select.value;
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "(leave as-is)";
+  select.appendChild(placeholder);
+  for (const st of statuses) {
+    const option = document.createElement("option");
+    option.value = st.status;
+    option.textContent = st.status;
+    select.appendChild(option);
+  }
+  if (statuses.some((st) => st.status === previousValue)) select.value = previousValue;
+}
+
+function populateStatusSelectsForSpace(spaceId) {
+  // ClickUp status names are per-space (lists inherit their space's status
+  // workflow unless overridden), and the space objects already carry a
+  // `statuses` array — no extra fetch needed.
+  const space = clickupSpaces.find((s) => String(s.id) === String(spaceId));
+  const statuses = (space && space.statuses) || [];
+  populateStatusSelect(document.getElementById("qa-status-pass"), statuses);
+  populateStatusSelect(document.getElementById("qa-status-fail"), statuses);
+}
+
 async function onPickerSpaceChange() {
   const spaceSelect = document.getElementById("qa-picker-space");
   const folderSelect = document.getElementById("qa-picker-folder");
@@ -499,11 +525,14 @@ async function onPickerSpaceChange() {
   const space = clickupSpaces.find((s) => String(s.id) === spaceId);
   currentSpaceName = space ? space.name : null;
   renderProjectDropdowns();
+  populateStatusSelectsForSpace(spaceId);
 
   folderSelect.innerHTML = '<option value="">Select a space first</option>';
   folderSelect.disabled = true;
   ticketSelect.innerHTML = '<option value="">Select a folder/list first</option>';
   ticketSelect.disabled = true;
+  document.getElementById("qa-bulk-run-btn").disabled = true;
+  hideBulkResults();
   resetSelectedTicket();
 
   if (!spaceId) return;
@@ -549,6 +578,8 @@ async function onPickerFolderChange() {
   const value = folderSelect.value;
   ticketSelect.innerHTML = '<option value="">Select a folder/list first</option>';
   ticketSelect.disabled = true;
+  document.getElementById("qa-bulk-run-btn").disabled = true;
+  hideBulkResults();
   resetSelectedTicket();
   if (!value) return;
 
@@ -593,6 +624,7 @@ async function onPickerFolderChange() {
       ticketSelect.appendChild(option);
     }
     ticketSelect.disabled = false;
+    document.getElementById("qa-bulk-run-btn").disabled = false;
   } catch (err) {
     showPickerError(err.message);
     ticketSelect.innerHTML = '<option value="">Failed to load</option>';
@@ -732,6 +764,14 @@ function renderReviewResult(runId, review, finding) {
     button.addEventListener("click", async () => {
       button.disabled = true;
       showQaReviewSuccess(null);
+      showQaReviewError(null);
+      const token = newProgressToken();
+      let lastStep = "";
+      setReviewThinking(true, "Persisting…");
+      const stopPolling = pollProgress(token, (message) => {
+        lastStep = message;
+        setReviewThinking(true, message);
+      });
       try {
         const persistedFinding = await fetchJson("/api/qa/reviews/commit", {
           method: "POST",
@@ -742,15 +782,23 @@ function renderReviewResult(runId, review, finding) {
             observation: review.observation,
             severity: review.severity,
             project: document.getElementById("qa-review-project").value,
+            pass_status: document.getElementById("qa-status-pass").value || null,
+            fail_status: document.getElementById("qa-status-fail").value || null,
+            progress_token: token,
           }),
         });
+        await stopPolling();
         renderReviewResult(runId, review, persistedFinding);
-        showQaReviewSuccess(`Finding #${persistedFinding.id} persisted.`);
+        const statusNote = /^(Moved|Finding persisted, but could not move)/.test(lastStep) ? ` ${lastStep}` : "";
+        showQaReviewSuccess(`Finding #${persistedFinding.id} persisted.${statusNote}`);
         refreshKnownProjects();
         loadFindings();
       } catch (err) {
+        await stopPolling();
         button.disabled = false;
         showQaReviewError(err.message);
+      } finally {
+        setReviewThinking(false);
       }
     });
     container.appendChild(button);
@@ -829,9 +877,174 @@ async function onReplayReview() {
   }
 }
 
+// --- Bulk QA sweep: dry-run analyze every ticket in the current list, ------
+// --- then confirm to persist + apply status moves for the ones you keep ---
+
+let bulkReviewResults = []; // [{ ticket_id, ticket_name, review, error }]
+
+// Mirrors qa_flow.review_passed on the backend: a minor result counts as a
+// pass, major/critical as a fail — same threshold, kept in sync by hand
+// since this is only used to preview the proposed status before commit.
+const PASSING_SEVERITIES = ["minor"];
+function reviewPassed(severity) {
+  return PASSING_SEVERITIES.includes(severity);
+}
+
+function showBulkError(message) {
+  const el = document.getElementById("qa-bulk-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function showBulkSuccess(message) {
+  const el = document.getElementById("qa-bulk-success");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function setBulkThinking(visible, message) {
+  const el = document.getElementById("qa-bulk-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
+function clearBulkTable() {
+  bulkReviewResults = [];
+  document.getElementById("qa-bulk-results").hidden = true;
+  document.querySelector("#qa-bulk-table tbody").innerHTML = "";
+}
+
+function hideBulkResults() {
+  clearBulkTable();
+  showBulkError(null);
+  showBulkSuccess(null);
+}
+
+function renderBulkResults() {
+  const tbody = document.querySelector("#qa-bulk-table tbody");
+  tbody.innerHTML = "";
+  const passStatus = document.getElementById("qa-status-pass").value;
+  const failStatus = document.getElementById("qa-status-fail").value;
+  for (const entry of bulkReviewResults) {
+    const row = document.createElement("tr");
+    if (entry.error) {
+      row.innerHTML =
+        `<td>${escapeHtml(entry.ticket_name)}</td>` +
+        `<td class="error-text">Error: ${escapeHtml(entry.error)}</td><td>-</td>`;
+    } else {
+      const passed = reviewPassed(entry.review.severity);
+      const targetStatus = passed ? passStatus : failStatus;
+      row.innerHTML =
+        `<td>${escapeHtml(entry.ticket_name)}</td>` +
+        `<td class="${severityClass(entry.review.severity)}">${escapeHtml(entry.review.severity)} (${passed ? "pass" : "fail"})</td>` +
+        `<td>${targetStatus ? escapeHtml(targetStatus) : "(leave as-is)"}</td>`;
+    }
+    tbody.appendChild(row);
+  }
+  document.getElementById("qa-bulk-results").hidden = false;
+}
+
+async function onRunBulkQa() {
+  if (!clickupTickets.length) return;
+  const project = document.getElementById("qa-review-project").value;
+  if (!project) {
+    showBulkError("Pick a project first.");
+    return;
+  }
+  hideBulkResults();
+  const runBtn = document.getElementById("qa-bulk-run-btn");
+  runBtn.disabled = true;
+  const token = newProgressToken();
+  setBulkThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (message) => setBulkThinking(true, message));
+  try {
+    const body = await fetchJson("/api/qa/reviews/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket_ids: clickupTickets.map((t) => t.id), project, progress_token: token }),
+    });
+    bulkReviewResults = body.results.map((r) => {
+      const ticket = clickupTickets.find((t) => String(t.id) === r.ticket_id);
+      return { ticket_id: r.ticket_id, ticket_name: ticket ? ticket.name : r.ticket_id, review: r.review, error: r.error };
+    });
+    renderBulkResults();
+    const ok = bulkReviewResults.filter((r) => !r.error).length;
+    const failed = bulkReviewResults.length - ok;
+    showBulkSuccess(
+      failed
+        ? `Reviewed ${ok} of ${bulkReviewResults.length} ticket(s) — ${failed} failed to analyze, see table below.`
+        : `Reviewed ${ok} ticket(s) — check the proposed results below, then confirm to save.`,
+    );
+  } catch (err) {
+    showBulkError(err.message);
+  } finally {
+    await stopPolling();
+    setBulkThinking(false);
+    runBtn.disabled = false;
+  }
+}
+
+async function onConfirmBulkQa() {
+  const project = document.getElementById("qa-review-project").value;
+  const passStatus = document.getElementById("qa-status-pass").value || null;
+  const failStatus = document.getElementById("qa-status-fail").value || null;
+  const items = bulkReviewResults
+    .filter((r) => r.review && !r.error)
+    .map((r) => ({
+      ticket_id: r.review.ticket_id,
+      ticket_name: r.review.ticket_name,
+      observation: r.review.observation,
+      severity: r.review.severity,
+      project,
+      pass_status: passStatus,
+      fail_status: failStatus,
+    }));
+  if (!items.length) return;
+  showBulkError(null);
+  showBulkSuccess(null);
+  const confirmBtn = document.getElementById("qa-bulk-confirm-btn");
+  confirmBtn.disabled = true;
+  const token = newProgressToken();
+  setBulkThinking(true, "Starting…");
+  const stopPolling = pollProgress(token, (message) => setBulkThinking(true, message));
+  try {
+    const body = await fetchJson("/api/qa/reviews/bulk/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, progress_token: token }),
+    });
+    const ok = body.results.filter((r) => r.finding).length;
+    const failed = body.results.length - ok;
+    if (failed) {
+      const errorList = body.results.filter((r) => r.error).map((r) => `${r.ticket_id}: ${r.error}`).join("; ");
+      showBulkError(`${failed} finding(s) failed to persist — ${errorList}`);
+    }
+    showBulkSuccess(`Persisted ${ok} of ${body.results.length} finding(s), applying any configured status moves.`);
+    clearBulkTable();
+    refreshKnownProjects();
+    loadFindings();
+  } catch (err) {
+    showBulkError(err.message);
+  } finally {
+    await stopPolling();
+    setBulkThinking(false);
+    confirmBtn.disabled = false;
+  }
+}
+
 function initQaReviewPanel() {
   document.getElementById("qa-review-form").addEventListener("submit", onAnalyzeReview);
   document.getElementById("qa-review-replay-btn").addEventListener("click", onReplayReview);
+  document.getElementById("qa-bulk-run-btn").addEventListener("click", onRunBulkQa);
+  document.getElementById("qa-bulk-confirm-btn").addEventListener("click", onConfirmBulkQa);
   initTicketPicker();
   refreshKnownProjects();
   loadReviewRuns();

@@ -96,6 +96,8 @@ class ReviewRequestIn(BaseModel):
     persist: bool = False
     clickup_list_id: Optional[str] = None
     progress_token: Optional[str] = None
+    pass_status: Optional[str] = None
+    fail_status: Optional[str] = None
 
 
 class ReviewRunOut(BaseModel):
@@ -115,6 +117,8 @@ class ReplayReviewIn(BaseModel):
     persist: bool = False
     clickup_list_id: Optional[str] = None
     progress_token: Optional[str] = None
+    pass_status: Optional[str] = None
+    fail_status: Optional[str] = None
 
 
 class ProgressOut(BaseModel):
@@ -128,3 +132,49 @@ class CommitReviewIn(BaseModel):
     severity: str
     project: str
     clickup_list_id: Optional[str] = None
+    pass_status: Optional[str] = None
+    fail_status: Optional[str] = None
+    progress_token: Optional[str] = None
+
+
+class BulkReviewIn(BaseModel):
+    ticket_ids: list[str]
+    project: str
+    clickup_list_id: Optional[str] = None
+    progress_token: Optional[str] = None
+
+
+class BulkReviewItemOut(BaseModel):
+    ticket_id: str
+    review: Optional[QATicketReviewOut] = None
+    error: Optional[str] = None
+
+
+class BulkReviewOut(BaseModel):
+    results: list[BulkReviewItemOut]
+
+
+class BulkCommitItemIn(BaseModel):
+    ticket_id: str
+    ticket_name: str
+    observation: str
+    severity: str
+    project: str
+    clickup_list_id: Optional[str] = None
+    pass_status: Optional[str] = None
+    fail_status: Optional[str] = None
+
+
+class BulkCommitIn(BaseModel):
+    items: list[BulkCommitItemIn]
+    progress_token: Optional[str] = None
+
+
+class BulkCommitResultOut(BaseModel):
+    ticket_id: str
+    finding: Optional[FindingOut] = None
+    error: Optional[str] = None
+
+
+class BulkCommitOut(BaseModel):
+    results: list[BulkCommitResultOut]
