@@ -378,9 +378,56 @@ function renderProposedTickets() {
   });
 }
 
+async function loadTicketsListOptions() {
+  // Every real ClickUp list across every space/folder, flattened into one
+  // dropdown labeled "space / folder / list" — replaces having to know and
+  // type a raw ClickUp list id by hand.
+  const select = document.getElementById("tickets-list-id");
+  try {
+    const teams = await fetchJson("/api/clickup/teams");
+    const spacesByTeam = await Promise.all(
+      teams.map((team) => fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`)),
+    );
+    const spaces = spacesByTeam.flat();
+    const perSpace = await Promise.all(
+      spaces.map(async (space) => {
+        const [folders, folderlessLists] = await Promise.all([
+          fetchJson(`/api/clickup/folders?space_id=${encodeURIComponent(space.id)}`),
+          fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(space.id)}`),
+        ]);
+        const entries = folderlessLists.map((list) => ({ id: list.id, label: `${space.name} / ${list.name}` }));
+        const listsByFolder = await Promise.all(
+          folders.map((folder) => fetchJson(`/api/clickup/lists?folder_id=${encodeURIComponent(folder.id)}`)),
+        );
+        folders.forEach((folder, i) => {
+          for (const list of listsByFolder[i]) {
+            entries.push({ id: list.id, label: `${space.name} / ${folder.name} / ${list.name}` });
+          }
+        });
+        return entries;
+      }),
+    );
+    const listOptions = perSpace.flat();
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Default (Sprint backlog)";
+    select.appendChild(placeholder);
+    for (const entry of listOptions) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = entry.label;
+      select.appendChild(option);
+    }
+  } catch (err) {
+    showTicketsError(`Could not load ClickUp lists: ${err.message}`);
+  }
+}
+
 function initTicketsTab() {
   document.getElementById("tickets-generate-form").addEventListener("submit", onGenerateTickets);
   document.getElementById("tickets-create-all").addEventListener("click", onCreateAllTickets);
+  loadTicketsListOptions();
 }
 
 // --- Review Ticket (QA Flow) panel ------------------------------------------
@@ -420,6 +467,7 @@ async function loadPickerSpaces() {
       teams.map((team) => fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`)),
     );
     clickupSpaces = spacesByTeam.flat();
+    renderProjectDropdowns();
     spaceSelect.innerHTML = "";
     if (!clickupSpaces.length) {
       spaceSelect.innerHTML = '<option value="">No spaces found</option>';
@@ -450,7 +498,7 @@ async function onPickerSpaceChange() {
   const spaceId = spaceSelect.value;
   const space = clickupSpaces.find((s) => String(s.id) === spaceId);
   currentSpaceName = space ? space.name : null;
-  renderProjectDropdown();
+  renderProjectDropdowns();
 
   folderSelect.innerHTML = '<option value="">Select a space first</option>';
   folderSelect.disabled = true;
@@ -579,26 +627,53 @@ async function refreshKnownProjects() {
   } catch (err) {
     knownProjects = [];
   }
-  renderProjectDropdown();
+  renderProjectDropdowns();
 }
 
-function renderProjectDropdown() {
-  const select = document.getElementById("qa-review-project");
+function projectOptionsUnion() {
+  // Every project name this app actually knows about: previously reported/
+  // reviewed findings, plus every real ClickUp space — a fixed, enumerable
+  // set, which is exactly what makes this a dropdown instead of free text.
   const options = new Set(knownProjects);
-  if (currentSpaceName) options.add(currentSpaceName);
+  for (const space of clickupSpaces) options.add(space.name);
+  return Array.from(options).sort();
+}
+
+function populateProjectSelect(select, { includeAnyOption = false, preferredValue = null } = {}) {
+  const options = projectOptionsUnion();
   const previousValue = select.value;
+  const hadPlaceholder = select.querySelector('option[value=""][disabled]') !== null;
   select.innerHTML = "";
+  if (includeAnyOption) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "any project";
+    select.appendChild(option);
+  } else if (hadPlaceholder || !options.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.disabled = true;
+    option.textContent = "Select a project…";
+    if (!options.includes(previousValue)) option.selected = true;
+    select.appendChild(option);
+  }
   for (const project of options) {
     const option = document.createElement("option");
     option.value = project;
     option.textContent = project;
     select.appendChild(option);
   }
-  if (options.has(previousValue)) {
+  if (options.includes(previousValue)) {
     select.value = previousValue;
-  } else if (currentSpaceName && options.has(currentSpaceName)) {
-    select.value = currentSpaceName;
+  } else if (preferredValue && options.includes(preferredValue)) {
+    select.value = preferredValue;
   }
+}
+
+function renderProjectDropdowns() {
+  populateProjectSelect(document.getElementById("qa-review-project"), { preferredValue: currentSpaceName });
+  populateProjectSelect(document.getElementById("qa-report-project"));
+  populateProjectSelect(document.getElementById("qa-filter-project"), { includeAnyOption: true });
 }
 
 function selectClickupTask(task) {
@@ -608,7 +683,7 @@ function selectClickupTask(task) {
   document.getElementById("qa-review-result").hidden = true;
   showQaReviewError(null);
   showQaReviewSuccess(null);
-  renderProjectDropdown();
+  renderProjectDropdowns();
 }
 
 function showQaReviewError(message) {

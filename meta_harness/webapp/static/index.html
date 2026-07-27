@@ -23,7 +23,9 @@
         <div id="qa-counts" class="counts"></div>
 
         <form id="qa-filters" class="inline-form">
-          <input type="text" name="project" placeholder="project">
+          <select id="qa-filter-project" name="project">
+            <option value="">any project</option>
+          </select>
           <select name="severity">
             <option value="">any severity</option>
             <option value="minor">minor</option>
@@ -51,7 +53,9 @@
 
         <h3>Report a Finding</h3>
         <form id="qa-report-form" class="stacked-form">
-          <input type="text" name="project" placeholder="project" required>
+          <select id="qa-report-project" name="project" required>
+            <option value="" disabled selected>Select a project…</option>
+          </select>
           <input type="text" name="route" placeholder="route or endpoint" required>
           <input type="text" name="observation" placeholder="observation" required>
           <select name="severity" required>
@@ -112,7 +116,9 @@
 
         <form id="tickets-generate-form" class="inline-form">
           <input type="file" id="tickets-file-input" name="file" accept=".pdf,.txt,.md" required>
-          <input type="text" id="tickets-list-id" placeholder="ClickUp list id (optional, defaults to Sprint backlog)">
+          <select id="tickets-list-id">
+            <option value="">Default (Sprint backlog)</option>
+          </select>
           <button type="submit">Analyze</button>
         </form>
 
