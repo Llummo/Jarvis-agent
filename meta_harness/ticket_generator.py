@@ -28,7 +28,7 @@ def _report(on_step: OnStep, message: str) -> None:
 
 CLAUDE_PATH_ENV_VAR = "META_HARNESS_CLAUDE_PATH"
 CLAUDE_TIMEOUT_ENV_VAR = "META_HARNESS_CLAUDE_TIMEOUT_S"
-DEFAULT_CLAUDE_TIMEOUT_S = 180.0
+DEFAULT_CLAUDE_TIMEOUT_S = 300.0
 
 PRIORITIES = ("urgent", "high", "normal", "low")
 DEFAULT_PRIORITY = "normal"
@@ -46,17 +46,18 @@ SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
 TICKET_EXTRACTION_PROMPT = (
     "Extract a JSON array of tickets from the requirements document provided via stdin. "
-    "Decompose the document into small, specific, independently-completable tickets — err on "
-    "the side of MORE, smaller tickets rather than fewer broad ones. A ticket should be one "
-    "concrete unit of work a single person could pick up and finish, not a whole feature or "
-    'section. For example, "build the login page" is too broad on its own — split it into '
-    "separate tickets for the login form UI, client-side validation, the authentication API "
-    "call, and error/failure-state handling. If a requirement bundles several distinct pieces "
-    "of functionality (several CRUD operations, several form fields with different validation "
-    "rules, several pages or views, several endpoints), give each one that stands on its own "
-    "its own ticket. Don't go the other way either — each ticket must still be coherent, "
-    "meaningful work a developer would recognize as a real task, not a single line of code or "
-    "a sub-step of another ticket. "
+    "Decompose the document into specific, well-scoped tickets. Size each ticket so one person "
+    "could complete it in roughly half a day to two days of focused work: if a piece of work "
+    "described would take much longer than that, split it into smaller tickets; if a step "
+    "would only take a few minutes on its own, fold it into the ticket it belongs to instead "
+    'of giving it a separate ticket. For example, "build the login page" is too broad for one '
+    "ticket — split it into the login form UI and the authentication API call — but a single "
+    "form field or one validation rule within that same feature is too small to be its own "
+    "ticket. If a requirement bundles several distinct pieces of functionality (several CRUD "
+    "operations, several pages or views, several independent endpoints), give each one that "
+    "stands on its own its own ticket, sized as above. Let the document's actual scope decide "
+    "the count — a short document should produce few tickets, a larger one naturally produces "
+    "more; do not pad the list to hit any particular number. "
     "Order the array in a logical implementation sequence — foundational or setup work and "
     "anything another ticket depends on comes before the tickets that build on it (e.g. a "
     "backend endpoint before the frontend that calls it, setup/config before the feature that "
