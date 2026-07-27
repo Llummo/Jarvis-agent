@@ -61,41 +61,27 @@
           </select>
           <button type="submit">Report Finding</button>
           <span id="qa-report-error" class="error-text"></span>
+          <span id="qa-report-success" class="success-text"></span>
         </form>
-      </section>
-
-      <section class="panel" id="clickup-panel">
-        <h2>ClickUp Ticket Browser</h2>
-        <div id="clickup-error" class="error-banner" hidden></div>
-        <div class="clickup-columns">
-          <div>
-            <h3>Teams</h3>
-            <ul id="clickup-teams" class="click-list"></ul>
-          </div>
-          <div>
-            <h3>Spaces</h3>
-            <ul id="clickup-spaces" class="click-list"></ul>
-          </div>
-          <div>
-            <h3>Projects (folders)</h3>
-            <ul id="clickup-folders" class="click-list"></ul>
-          </div>
-          <div>
-            <h3>Lists</h3>
-            <ul id="clickup-lists" class="click-list"></ul>
-          </div>
-          <div>
-            <h3>Tasks</h3>
-            <ul id="clickup-tasks" class="click-list"></ul>
-          </div>
-        </div>
       </section>
 
       <section class="panel" id="qa-review-panel">
         <h2>Review Ticket (QA Flow)</h2>
-        <p class="hint">Click a task above to select it, then review it here — dry-run by default, nothing is saved until you persist.</p>
+        <p class="hint">Pick a space, then a folder/list — matching tickets load directly below as soon as you select one. Dry-run by default, nothing is saved until you persist.</p>
 
-        <div id="qa-review-selected" class="hint">No ticket selected — click one in the Tasks column above.</div>
+        <form class="inline-form" id="qa-picker-form">
+          <select id="qa-picker-space"><option value="">Loading spaces…</option></select>
+          <select id="qa-picker-folder" disabled><option value="">Select a space first</option></select>
+          <select id="qa-picker-ticket" disabled><option value="">Select a folder/list first</option></select>
+        </form>
+
+        <div id="qa-picker-thinking" class="thinking-indicator" hidden>
+          <span class="spinner"></span>
+          <span class="thinking-text"></span>
+        </div>
+        <div id="qa-picker-error" class="error-banner" hidden></div>
+
+        <div id="qa-review-selected" class="hint">No ticket selected.</div>
 
         <form id="qa-review-form" class="inline-form">
           <select id="qa-review-project"></select>
@@ -107,6 +93,7 @@
           <span class="thinking-text"></span>
         </div>
         <div id="qa-review-error" class="error-banner" hidden></div>
+        <div id="qa-review-success" class="success-banner" hidden></div>
 
         <div id="qa-review-result" class="ticket-card" hidden></div>
 
@@ -143,6 +130,7 @@
         </div>
         <div id="tickets-error" class="error-banner" hidden></div>
         <div id="tickets-warnings" class="error-banner" hidden></div>
+        <div id="tickets-success" class="success-banner" hidden></div>
 
         <div id="tickets-actions" hidden>
           <button id="tickets-create-all">Add all tickets automatically</button>
