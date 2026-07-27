@@ -156,3 +156,38 @@ def create_clickup_ticket(
     if not task_id:
         raise ClickUpTicketError(f"ClickUp CLI response missing 'id': {payload}")
     return str(task_id)
+
+
+def update_clickup_task_status(
+    task_id: str,
+    status: str,
+    *,
+    project_path: Optional[Path] = None,
+) -> dict:
+    """Move a ClickUp task to a different status via the p-harness CLI.
+
+    `status` must be a status name valid for that task's list (e.g. "done",
+    "in progress") — ClickUp rejects anything else with a 400.
+    """
+    resolved_path = project_path
+    if resolved_path is None:
+        resolved_path = resolve_project_path(load_agent_playbook("clickup"))
+
+    command = [
+        str(_harness_executable(resolved_path)),
+        "clickup",
+        "set-status",
+        "--task-id",
+        task_id,
+        "--status",
+        status,
+    ]
+    completed = subprocess.run(command, cwd=resolved_path, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise ClickUpTicketError(
+            f"ClickUp status update failed ({completed.returncode}): {completed.stderr.strip()}"
+        )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ClickUpTicketError(f"Could not parse ClickUp CLI output: {completed.stdout!r}") from exc

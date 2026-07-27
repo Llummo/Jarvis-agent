@@ -12,6 +12,7 @@ from meta_harness.clickup_bridge import (
     list_clickup_spaces,
     list_clickup_tasks,
     list_clickup_teams,
+    update_clickup_task_status,
 )
 
 
@@ -81,6 +82,43 @@ def test_create_clickup_ticket_raises_when_id_missing(tmp_path, monkeypatch):
 
     with pytest.raises(ClickUpTicketError, match="missing 'id'"):
         create_clickup_ticket("name", "desc", project_path=tmp_path)
+
+
+def test_update_clickup_task_status_calls_set_status(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps({"id": "CU-1", "status": {"status": "done"}}))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    payload = update_clickup_task_status("CU-1", "done", project_path=tmp_path)
+
+    assert payload["status"]["status"] == "done"
+    assert "set-status" in calls[0]
+    assert "--task-id" in calls[0] and "CU-1" in calls[0]
+    assert "--status" in calls[0] and "done" in calls[0]
+
+
+def test_update_clickup_task_status_raises_on_nonzero_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.clickup_bridge.subprocess.run",
+        lambda *a, **k: Result(returncode=1, stderr="Status not found"),
+    )
+
+    with pytest.raises(ClickUpTicketError, match="Status not found"):
+        update_clickup_task_status("CU-1", "not-a-real-status", project_path=tmp_path)
+
+
+def test_update_clickup_task_status_raises_on_invalid_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.clickup_bridge.subprocess.run",
+        lambda *a, **k: Result(stdout="not json"),
+    )
+
+    with pytest.raises(ClickUpTicketError, match="Could not parse"):
+        update_clickup_task_status("CU-1", "done", project_path=tmp_path)
 
 
 def test_create_clickup_ticket_passes_priority(tmp_path, monkeypatch):

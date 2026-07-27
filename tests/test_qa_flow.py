@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from meta_harness.clickup_bridge import ClickUpTicketError
 from meta_harness.qa_findings import QAFindingStore
 from meta_harness.qa_flow import (
     ClaudeNotFoundError,
@@ -12,7 +13,9 @@ from meta_harness.qa_flow import (
     persist_review,
     replay_qa_review,
     review_and_record,
+    review_passed,
     review_qa_ticket,
+    review_tickets_bulk,
 )
 from meta_harness.run_archive import RunArchive
 
@@ -302,3 +305,162 @@ def test_persist_review_does_not_call_claude(tmp_path, monkeypatch):
     review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="minor")
 
     persist_review(review, project="sigo-front", store=store)
+
+
+# ---------------------------------------------------------------------------
+# review_passed / persist_review — automatic ClickUp status move
+# ---------------------------------------------------------------------------
+
+
+def test_review_passed_true_for_minor():
+    assert review_passed("minor") is True
+
+
+def test_review_passed_false_for_major_and_critical():
+    assert review_passed("major") is False
+    assert review_passed("critical") is False
+
+
+def test_persist_review_moves_status_on_pass(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.update_clickup_task_status",
+        lambda task_id, status, **kw: calls.append((task_id, status)),
+    )
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="minor")
+
+    persist_review(review, project="sigo-front", store=store, pass_status="done", fail_status="blocked")
+
+    assert calls == [("T1", "done")]
+
+
+def test_persist_review_moves_status_on_fail(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.update_clickup_task_status",
+        lambda task_id, status, **kw: calls.append((task_id, status)),
+    )
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="critical")
+
+    persist_review(review, project="sigo-front", store=store, pass_status="done", fail_status="blocked")
+
+    assert calls == [("T1", "blocked")]
+
+
+def test_persist_review_skips_status_move_when_no_target_configured(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("must not attempt a status move with no target configured")
+
+    monkeypatch.setattr("meta_harness.qa_flow.update_clickup_task_status", boom)
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="minor")
+
+    persist_review(review, project="sigo-front", store=store)
+
+
+def test_persist_review_still_returns_finding_when_status_move_fails(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise ClickUpTicketError("ClickUp API error 400: bad status")
+
+    monkeypatch.setattr("meta_harness.qa_flow.update_clickup_task_status", boom)
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="minor")
+
+    finding = persist_review(review, project="sigo-front", store=store, pass_status="not-a-real-status")
+
+    assert finding.route == "Fix login bug"  # the finding is saved regardless
+
+
+def test_persist_review_reports_status_move_steps(tmp_path, monkeypatch):
+    monkeypatch.setattr("meta_harness.qa_flow.update_clickup_task_status", lambda *a, **kw: {"id": "T1"})
+    store = QAFindingStore(tmp_path / "f.db")
+    review = QATicketReview(ticket_id="T1", ticket_name="Fix login bug", observation="Check login", severity="minor")
+
+    steps = []
+    persist_review(review, project="sigo-front", store=store, pass_status="done", on_step=steps.append)
+
+    assert any("moving ClickUp ticket" in s for s in steps)
+    assert steps[-1] == 'Moved ClickUp ticket to "done".'
+
+
+def test_review_qa_ticket_moves_status_when_persisting(tmp_path, monkeypatch):
+    _mock_ticket_fetch(monkeypatch)
+    _mock_analysis(monkeypatch, severity="minor")
+    calls = []
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.update_clickup_task_status",
+        lambda task_id, status, **kw: calls.append((task_id, status)),
+    )
+    store = QAFindingStore(tmp_path / "f.db")
+
+    review_qa_ticket("T1", project="sigo-front", persist=True, store=store, pass_status="done", fail_status="blocked")
+
+    assert calls == [("T1", "done")]
+
+
+# ---------------------------------------------------------------------------
+# review_tickets_bulk — dry-run QA sweep across many tickets
+# ---------------------------------------------------------------------------
+
+
+def test_review_tickets_bulk_reviews_every_ticket(monkeypatch):
+    _mock_analysis(monkeypatch, severity="minor")
+
+    def fake_fetch(ticket_id, **kw):
+        return {"id": ticket_id, "name": f"Ticket {ticket_id}", "text_content": "desc"}
+
+    monkeypatch.setattr("meta_harness.qa_flow.get_clickup_task", fake_fetch)
+
+    results = review_tickets_bulk(["T1", "T2", "T3"], project="sigo-front")
+
+    assert [r[0] for r in results] == ["T1", "T2", "T3"]
+    assert all(review is not None and error is None for _, review, error in results)
+    assert results[0][1].ticket_name == "Ticket T1"
+
+
+def test_review_tickets_bulk_never_persists(monkeypatch):
+    _mock_analysis(monkeypatch, severity="critical")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.get_clickup_task",
+        lambda ticket_id, **kw: {"id": ticket_id, "name": "Ticket", "text_content": "desc"},
+    )
+
+    def boom(*a, **kw):
+        raise AssertionError("bulk review must never persist a finding")
+
+    monkeypatch.setattr("meta_harness.qa_flow.report_qa_issue", boom)
+
+    review_tickets_bulk(["T1"], project="sigo-front")
+
+
+def test_review_tickets_bulk_isolates_per_ticket_failures(monkeypatch):
+    _mock_analysis(monkeypatch, severity="minor")
+
+    def fake_fetch(ticket_id, **kw):
+        if ticket_id == "BAD":
+            from meta_harness.clickup_bridge import ClickUpReadError
+            raise ClickUpReadError("ticket not found")
+        return {"id": ticket_id, "name": f"Ticket {ticket_id}", "text_content": "desc"}
+
+    monkeypatch.setattr("meta_harness.qa_flow.get_clickup_task", fake_fetch)
+
+    results = review_tickets_bulk(["T1", "BAD", "T2"], project="sigo-front")
+
+    assert results[0][1] is not None and results[0][2] is None
+    assert results[1][1] is None and "ticket not found" in results[1][2]
+    assert results[2][1] is not None and results[2][2] is None
+
+
+def test_review_tickets_bulk_reports_progress_per_ticket(monkeypatch):
+    _mock_analysis(monkeypatch, severity="minor")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow.get_clickup_task",
+        lambda ticket_id, **kw: {"id": ticket_id, "name": "Ticket", "text_content": "desc"},
+    )
+
+    steps = []
+    review_tickets_bulk(["T1", "T2"], project="sigo-front", on_step=steps.append)
+
+    assert steps[0] == "Reviewing ticket 1/2: T1…"

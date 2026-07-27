@@ -85,6 +85,16 @@
         </div>
         <div id="qa-picker-error" class="error-banner" hidden></div>
 
+        <div class="inline-form">
+          <label>On pass, move ClickUp ticket to:
+            <select id="qa-status-pass"><option value="">(leave as-is)</option></select>
+          </label>
+          <label>On fail, move ClickUp ticket to:
+            <select id="qa-status-fail"><option value="">(leave as-is)</option></select>
+          </label>
+        </div>
+        <p class="hint">Applied whenever a finding is persisted — a minor result counts as "pass", major/critical as "fail".</p>
+
         <div id="qa-review-selected" class="hint">No ticket selected.</div>
 
         <form id="qa-review-form" class="inline-form">
@@ -100,6 +110,27 @@
         <div id="qa-review-success" class="success-banner" hidden></div>
 
         <div id="qa-review-result" class="ticket-card" hidden></div>
+
+        <h3>QA All Tickets in This List</h3>
+        <p class="hint">Dry-run analyzes every ticket currently loaded in the ticket dropdown above, then lets you review and confirm before anything is saved or any status is moved.</p>
+        <button type="button" id="qa-bulk-run-btn" disabled>QA all tickets (dry-run)</button>
+
+        <div id="qa-bulk-thinking" class="thinking-indicator" hidden>
+          <span class="spinner"></span>
+          <span class="thinking-text"></span>
+        </div>
+        <div id="qa-bulk-error" class="error-banner" hidden></div>
+        <div id="qa-bulk-success" class="success-banner" hidden></div>
+
+        <div id="qa-bulk-results" hidden>
+          <table id="qa-bulk-table">
+            <thead>
+              <tr><th>Ticket</th><th>Result</th><th>Proposed status</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <button type="button" id="qa-bulk-confirm-btn">Confirm and apply</button>
+        </div>
 
         <h3>Past Reviews</h3>
         <div class="inline-form">
