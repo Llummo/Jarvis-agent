@@ -1,8 +1,12 @@
 // Vanilla JS, no build step, no framework — tab switching + fetch calls.
 
-let currentSpaceName = null; // last-browsed ClickUp space, used as the default review project
-let selectedTicket = null; // { id, name } — set by clicking a task in the ClickUp browser
+let currentSpaceName = null; // last-picked ClickUp space, used as the default review project
+let selectedTicket = null; // { id, name } — set by picking a ticket in the cascading dropdowns
 let knownProjects = []; // distinct project names seen in existing QA findings, for the dropdown
+
+let clickupSpaces = []; // [{ id, name }] flattened across every team
+let clickupFoldersOrLists = []; // [{ id, name, kind: "folder"|"list" }] for the selected space
+let clickupTickets = []; // tasks currently loaded for the selected folder/list
 
 function initTabs() {
   document.querySelectorAll(".tab-button").forEach((button) => {
@@ -95,8 +99,13 @@ function renderFindings(findings) {
       input.placeholder = "correction note";
       const button = document.createElement("button");
       button.textContent = "Close";
+      const feedback = document.createElement("div");
+      feedback.className = "error-text";
       button.addEventListener("click", async () => {
         if (!input.value) return;
+        feedback.textContent = "";
+        feedback.className = "error-text";
+        button.disabled = true;
         try {
           await fetchJson(`/api/qa/findings/${finding.id}/close`, {
             method: "POST",
@@ -105,10 +114,11 @@ function renderFindings(findings) {
           });
           await loadFindings();
         } catch (err) {
-          alert(err.message);
+          feedback.textContent = err.message;
+          button.disabled = false;
         }
       });
-      closeCell.append(input, button);
+      closeCell.append(input, button, feedback);
     }
 
     row.innerHTML =
@@ -128,12 +138,18 @@ function initQaFilters() {
   });
 }
 
+function showQaReportSuccess(message) {
+  const el = document.getElementById("qa-report-success");
+  el.textContent = message || "";
+}
+
 function initQaReportForm() {
   const form = document.getElementById("qa-report-form");
   const errorEl = document.getElementById("qa-report-error");
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     errorEl.textContent = "";
+    showQaReportSuccess(null);
     const data = Object.fromEntries(new FormData(form));
     try {
       await fetchJson("/api/qa/findings", {
@@ -142,104 +158,12 @@ function initQaReportForm() {
         body: JSON.stringify(data),
       });
       form.reset();
+      showQaReportSuccess("Finding reported.");
       await loadFindings();
     } catch (err) {
       errorEl.textContent = err.message;
     }
   });
-}
-
-function showClickupError(message) {
-  const el = document.getElementById("clickup-error");
-  if (message) {
-    el.textContent = message;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
-  }
-}
-
-function renderList(elementId, items, labelFn, onClick) {
-  const el = document.getElementById(elementId);
-  el.innerHTML = "";
-  for (const item of items) {
-    const li = document.createElement("li");
-    const button = document.createElement("button");
-    button.textContent = labelFn(item);
-    button.addEventListener("click", () => onClick(item));
-    li.appendChild(button);
-    el.appendChild(li);
-  }
-}
-
-async function selectClickupList(list) {
-  try {
-    const tasks = await fetchJson(`/api/clickup/tasks?list_id=${encodeURIComponent(list.id)}`);
-    showClickupError(null);
-    renderList(
-      "clickup-tasks", tasks,
-      (t) => `${t.name} (${t.status ? t.status.status : "-"})`,
-      selectClickupTask,
-    );
-  } catch (err) {
-    showClickupError(err.message);
-  }
-}
-
-async function selectClickupFolder(folder) {
-  document.getElementById("clickup-tasks").innerHTML = "";
-  try {
-    const lists = await fetchJson(`/api/clickup/lists?folder_id=${encodeURIComponent(folder.id)}`);
-    showClickupError(null);
-    renderList("clickup-lists", lists, (l) => l.name, selectClickupList);
-  } catch (err) {
-    showClickupError(err.message);
-  }
-}
-
-async function selectClickupSpace(space) {
-  currentSpaceName = space.name;
-  document.getElementById("clickup-folders").innerHTML = "";
-  document.getElementById("clickup-lists").innerHTML = "";
-  document.getElementById("clickup-tasks").innerHTML = "";
-  try {
-    // ClickUp splits a space's lists into folders (Projects) and
-    // "folderless" lists shown directly — fetch both, since a list like
-    // "Sprint backlog" only shows up once you look inside its folder.
-    const [folders, folderlessLists] = await Promise.all([
-      fetchJson(`/api/clickup/folders?space_id=${encodeURIComponent(space.id)}`),
-      fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(space.id)}`),
-    ]);
-    showClickupError(null);
-    renderList("clickup-folders", folders, (f) => f.name, selectClickupFolder);
-    renderList("clickup-lists", folderlessLists, (l) => l.name, selectClickupList);
-  } catch (err) {
-    showClickupError(err.message);
-  }
-}
-
-async function selectClickupTeam(team) {
-  document.getElementById("clickup-spaces").innerHTML = "";
-  document.getElementById("clickup-folders").innerHTML = "";
-  document.getElementById("clickup-lists").innerHTML = "";
-  document.getElementById("clickup-tasks").innerHTML = "";
-  try {
-    const spaces = await fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`);
-    showClickupError(null);
-    renderList("clickup-spaces", spaces, (s) => s.name, selectClickupSpace);
-  } catch (err) {
-    showClickupError(err.message);
-  }
-}
-
-async function initClickupBrowser() {
-  try {
-    const teams = await fetchJson("/api/clickup/teams");
-    showClickupError(null);
-    renderList("clickup-teams", teams, (t) => t.name, selectClickupTeam);
-  } catch (err) {
-    showClickupError(err.message);
-  }
 }
 
 // --- Generate Tickets tab -------------------------------------------------
@@ -248,6 +172,16 @@ let proposedTickets = []; // [{ ticket, status: "pending"|"creating"|"created"|"
 
 function showTicketsError(message) {
   const el = document.getElementById("tickets-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function showTicketsSuccess(message) {
+  const el = document.getElementById("tickets-success");
   if (message) {
     el.textContent = message;
     el.hidden = false;
@@ -277,6 +211,7 @@ async function onGenerateTickets(event) {
   const file = document.getElementById("tickets-file-input").files[0];
   if (!file) return;
   showTicketsError(null);
+  showTicketsSuccess(null);
   renderTicketWarnings([]);
   const formData = new FormData();
   formData.append("file", file);
@@ -294,6 +229,7 @@ async function onGenerateTickets(event) {
     renderTicketWarnings(body.warnings);
     document.getElementById("tickets-actions").hidden = proposedTickets.length === 0;
     renderProposedTickets();
+    showTicketsSuccess(`Analyzed document — ${proposedTickets.length} ticket(s) proposed for review below.`);
   } catch (err) {
     showTicketsError(err.message);
   } finally {
@@ -334,6 +270,7 @@ async function createOneTicket(index) {
 async function onCreateAllTickets() {
   const pending = proposedTickets.filter((e) => e.status !== "created");
   if (!pending.length) return;
+  showTicketsSuccess(null);
   pending.forEach((e) => (e.status = "creating"));
   renderProposedTickets();
   const createAllButton = document.getElementById("tickets-create-all");
@@ -347,6 +284,13 @@ async function onCreateAllTickets() {
       body: JSON.stringify({ tickets: pending.map((e) => e.ticket), list_id: listId }),
     });
     pending.forEach((entry, i) => applyTicketResult(entry, body.results[i]));
+    const created = pending.filter((e) => e.status === "created").length;
+    const failed = pending.length - created;
+    showTicketsSuccess(
+      failed
+        ? `Created ${created} of ${pending.length} ticket(s) — ${failed} failed, see details below.`
+        : `Created ${created} ticket(s) in ClickUp.`,
+    );
   } catch (err) {
     showTicketsError(err.message);
     pending.forEach((e) => (e.status = "pending"));
@@ -401,6 +345,192 @@ function initTicketsTab() {
 
 // --- Review Ticket (QA Flow) panel ------------------------------------------
 
+function showPickerError(message) {
+  const el = document.getElementById("qa-picker-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function setPickerThinking(visible, message) {
+  const el = document.getElementById("qa-picker-thinking");
+  el.hidden = !visible;
+  if (visible) el.querySelector(".thinking-text").textContent = message;
+}
+
+function resetSelectedTicket() {
+  selectedTicket = null;
+  document.getElementById("qa-review-selected").textContent = "No ticket selected.";
+  document.getElementById("qa-review-analyze-btn").disabled = true;
+  document.getElementById("qa-review-result").hidden = true;
+  showQaReviewError(null);
+  showQaReviewSuccess(null);
+}
+
+async function loadPickerSpaces() {
+  const spaceSelect = document.getElementById("qa-picker-space");
+  showPickerError(null);
+  setPickerThinking(true, "Loading ClickUp spaces…");
+  try {
+    const teams = await fetchJson("/api/clickup/teams");
+    const spacesByTeam = await Promise.all(
+      teams.map((team) => fetchJson(`/api/clickup/spaces?team_id=${encodeURIComponent(team.id)}`)),
+    );
+    clickupSpaces = spacesByTeam.flat();
+    spaceSelect.innerHTML = "";
+    if (!clickupSpaces.length) {
+      spaceSelect.innerHTML = '<option value="">No spaces found</option>';
+      return;
+    }
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a space…";
+    spaceSelect.appendChild(placeholder);
+    for (const space of clickupSpaces) {
+      const option = document.createElement("option");
+      option.value = space.id;
+      option.textContent = space.name;
+      spaceSelect.appendChild(option);
+    }
+  } catch (err) {
+    showPickerError(err.message);
+    spaceSelect.innerHTML = '<option value="">Failed to load spaces</option>';
+  } finally {
+    setPickerThinking(false);
+  }
+}
+
+async function onPickerSpaceChange() {
+  const spaceSelect = document.getElementById("qa-picker-space");
+  const folderSelect = document.getElementById("qa-picker-folder");
+  const ticketSelect = document.getElementById("qa-picker-ticket");
+  const spaceId = spaceSelect.value;
+  const space = clickupSpaces.find((s) => String(s.id) === spaceId);
+  currentSpaceName = space ? space.name : null;
+  renderProjectDropdown();
+
+  folderSelect.innerHTML = '<option value="">Select a space first</option>';
+  folderSelect.disabled = true;
+  ticketSelect.innerHTML = '<option value="">Select a folder/list first</option>';
+  ticketSelect.disabled = true;
+  resetSelectedTicket();
+
+  if (!spaceId) return;
+
+  showPickerError(null);
+  setPickerThinking(true, "Loading folders and lists…");
+  try {
+    const [folders, folderlessLists] = await Promise.all([
+      fetchJson(`/api/clickup/folders?space_id=${encodeURIComponent(spaceId)}`),
+      fetchJson(`/api/clickup/lists?space_id=${encodeURIComponent(spaceId)}`),
+    ]);
+    clickupFoldersOrLists = [
+      ...folders.map((f) => ({ id: f.id, name: f.name, kind: "folder" })),
+      ...folderlessLists.map((l) => ({ id: l.id, name: l.name, kind: "list" })),
+    ];
+    folderSelect.innerHTML = "";
+    if (!clickupFoldersOrLists.length) {
+      folderSelect.innerHTML = '<option value="">No folders or lists found</option>';
+      return;
+    }
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a folder or list…";
+    folderSelect.appendChild(placeholder);
+    for (const entry of clickupFoldersOrLists) {
+      const option = document.createElement("option");
+      option.value = `${entry.kind}:${entry.id}`;
+      option.textContent = entry.kind === "folder" ? `${entry.name} (folder)` : entry.name;
+      folderSelect.appendChild(option);
+    }
+    folderSelect.disabled = false;
+  } catch (err) {
+    showPickerError(err.message);
+    folderSelect.innerHTML = '<option value="">Failed to load</option>';
+  } finally {
+    setPickerThinking(false);
+  }
+}
+
+async function onPickerFolderChange() {
+  const folderSelect = document.getElementById("qa-picker-folder");
+  const ticketSelect = document.getElementById("qa-picker-ticket");
+  const value = folderSelect.value;
+  ticketSelect.innerHTML = '<option value="">Select a folder/list first</option>';
+  ticketSelect.disabled = true;
+  resetSelectedTicket();
+  if (!value) return;
+
+  const [kind, id] = value.split(":");
+  showPickerError(null);
+  setPickerThinking(true, "Loading tickets…");
+  try {
+    // A folderless list is already a single list; a folder (ClickUp "Project")
+    // can contain several lists, so fetch and merge tasks across all of them —
+    // this is what lets the user go straight from folder to ticket without an
+    // extra "pick a list" step in the common single-list case.
+    const lists = kind === "list" ? [{ id, name: null }] : await fetchJson(`/api/clickup/lists?folder_id=${encodeURIComponent(id)}`);
+    if (!lists.length) {
+      ticketSelect.innerHTML = '<option value="">No lists found in this folder</option>';
+      return;
+    }
+    const tasksByList = await Promise.all(
+      lists.map((list) => fetchJson(`/api/clickup/tasks?list_id=${encodeURIComponent(list.id)}`)),
+    );
+    clickupTickets = [];
+    tasksByList.forEach((tasks, i) => {
+      for (const task of tasks) {
+        clickupTickets.push({ ...task, __listName: lists[i].name });
+      }
+    });
+    ticketSelect.innerHTML = "";
+    if (!clickupTickets.length) {
+      ticketSelect.innerHTML = '<option value="">No tickets found</option>';
+      return;
+    }
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a ticket…";
+    ticketSelect.appendChild(placeholder);
+    const multipleLists = lists.length > 1;
+    for (const task of clickupTickets) {
+      const option = document.createElement("option");
+      option.value = task.id;
+      const status = task.status ? task.status.status : "-";
+      const prefix = multipleLists && task.__listName ? `[${task.__listName}] ` : "";
+      option.textContent = `${prefix}${task.name} (${status})`;
+      ticketSelect.appendChild(option);
+    }
+    ticketSelect.disabled = false;
+  } catch (err) {
+    showPickerError(err.message);
+    ticketSelect.innerHTML = '<option value="">Failed to load</option>';
+  } finally {
+    setPickerThinking(false);
+  }
+}
+
+function onPickerTicketChange() {
+  const ticketSelect = document.getElementById("qa-picker-ticket");
+  const taskId = ticketSelect.value;
+  if (!taskId) {
+    resetSelectedTicket();
+    return;
+  }
+  const task = clickupTickets.find((t) => String(t.id) === taskId);
+  if (task) selectClickupTask(task);
+}
+
+function initTicketPicker() {
+  document.getElementById("qa-picker-space").addEventListener("change", onPickerSpaceChange);
+  document.getElementById("qa-picker-folder").addEventListener("change", onPickerFolderChange);
+  document.getElementById("qa-picker-ticket").addEventListener("change", onPickerTicketChange);
+  loadPickerSpaces();
+}
+
 async function refreshKnownProjects() {
   try {
     const data = await fetchJson("/api/qa/findings");
@@ -437,11 +567,22 @@ function selectClickupTask(task) {
   document.getElementById("qa-review-analyze-btn").disabled = false;
   document.getElementById("qa-review-result").hidden = true;
   showQaReviewError(null);
+  showQaReviewSuccess(null);
   renderProjectDropdown();
 }
 
 function showQaReviewError(message) {
   const el = document.getElementById("qa-review-error");
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function showQaReviewSuccess(message) {
+  const el = document.getElementById("qa-review-success");
   if (message) {
     el.textContent = message;
     el.hidden = false;
@@ -475,6 +616,7 @@ function renderReviewResult(runId, review, finding) {
     button.textContent = "Persist this finding";
     button.addEventListener("click", async () => {
       button.disabled = true;
+      showQaReviewSuccess(null);
       try {
         const persistedFinding = await fetchJson("/api/qa/reviews/commit", {
           method: "POST",
@@ -488,6 +630,7 @@ function renderReviewResult(runId, review, finding) {
           }),
         });
         renderReviewResult(runId, review, persistedFinding);
+        showQaReviewSuccess(`Finding #${persistedFinding.id} persisted.`);
         refreshKnownProjects();
         loadFindings();
       } catch (err) {
@@ -503,6 +646,7 @@ async function onAnalyzeReview(event) {
   event.preventDefault();
   if (!selectedTicket) return;
   showQaReviewError(null);
+  showQaReviewSuccess(null);
   const project = document.getElementById("qa-review-project").value;
   if (!project) {
     showQaReviewError("Pick a project first.");
@@ -516,6 +660,7 @@ async function onAnalyzeReview(event) {
       body: JSON.stringify({ ticket_id: selectedTicket.id, project, persist: false }),
     });
     renderReviewResult(result.run_id, result.review, result.finding);
+    showQaReviewSuccess("Analysis complete — review the result below.");
     await loadReviewRuns();
   } catch (err) {
     showQaReviewError(err.message);
@@ -545,6 +690,7 @@ async function onReplayReview() {
   const runId = select.value;
   if (!runId) return;
   showQaReviewError(null);
+  showQaReviewSuccess(null);
   setReviewThinking(true, "Replaying — re-fetching and re-analyzing the same ticket…");
   try {
     const result = await fetchJson(`/api/qa/reviews/${encodeURIComponent(runId)}/replay`, {
@@ -553,6 +699,7 @@ async function onReplayReview() {
       body: JSON.stringify({ persist: false }),
     });
     renderReviewResult(result.run_id, result.review, result.finding);
+    showQaReviewSuccess("Replay complete — review the result below.");
     await loadReviewRuns();
   } catch (err) {
     showQaReviewError(err.message);
@@ -564,6 +711,7 @@ async function onReplayReview() {
 function initQaReviewPanel() {
   document.getElementById("qa-review-form").addEventListener("submit", onAnalyzeReview);
   document.getElementById("qa-review-replay-btn").addEventListener("click", onReplayReview);
+  initTicketPicker();
   refreshKnownProjects();
   loadReviewRuns();
 }
@@ -573,7 +721,6 @@ document.addEventListener("DOMContentLoaded", () => {
   initQaFilters();
   initQaReportForm();
   loadFindings();
-  initClickupBrowser();
   initTicketsTab();
   initQaReviewPanel();
 });
