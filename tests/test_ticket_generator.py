@@ -10,6 +10,7 @@ from meta_harness.ticket_generator import (
     TicketGenerationError,
     TicketParseError,
     apply_category_numbering,
+    apply_sprint_due_dates,
     extract_document_text,
     generate_tickets_from_file,
     generate_tickets_from_text,
@@ -92,6 +93,7 @@ def _valid_ticket(**overrides):
         "acceptance_criteria": ["Given a valid email and password, when the user submits the form, then they are logged in."],
         "priority": "high",
         "category": "backend",
+        "sprint": 2,
     }
     ticket.update(overrides)
     return ticket
@@ -107,7 +109,45 @@ def test_parse_proposed_tickets_happy_path():
     assert tickets[0].user_story == "As a user, I want to log in, so I can access my account."
     assert tickets[0].priority == "high"
     assert tickets[0].category == "backend"
+    assert tickets[0].sprint == 2
     assert warnings == []
+
+
+def test_parse_proposed_tickets_missing_sprint_defaults_to_1():
+    raw = json.dumps([{**_valid_ticket(), "sprint": None}])
+
+    tickets, warnings = parse_proposed_tickets(raw)
+
+    assert tickets[0].sprint == 1
+    assert any("sprint" in w for w in warnings)
+
+
+def test_parse_proposed_tickets_zero_sprint_defaults_to_1():
+    raw = json.dumps([{**_valid_ticket(), "sprint": 0}])
+
+    tickets, warnings = parse_proposed_tickets(raw)
+
+    assert tickets[0].sprint == 1
+    assert any("sprint" in w for w in warnings)
+
+
+def test_parse_proposed_tickets_bool_sprint_defaults_to_1():
+    # bool is a subclass of int in Python -- must not silently pass as a sprint number.
+    raw = json.dumps([{**_valid_ticket(), "sprint": True}])
+
+    tickets, warnings = parse_proposed_tickets(raw)
+
+    assert tickets[0].sprint == 1
+    assert any("sprint" in w for w in warnings)
+
+
+def test_parse_proposed_tickets_string_sprint_defaults_to_1():
+    raw = json.dumps([{**_valid_ticket(), "sprint": "2"}])
+
+    tickets, warnings = parse_proposed_tickets(raw)
+
+    assert tickets[0].sprint == 1
+    assert any("sprint" in w for w in warnings)
 
 
 def test_parse_proposed_tickets_missing_user_story_keeps_ticket_with_warning():
@@ -234,6 +274,17 @@ def test_prompt_requires_sized_decomposition_not_unbounded_fragmentation():
     assert "do not pad the list to hit any particular number" in TICKET_EXTRACTION_PROMPT
 
 
+def test_prompt_caps_total_count_for_large_documents():
+    assert "50-80 range" in TICKET_EXTRACTION_PROMPT
+    assert "rather than letting the total run unbounded" in TICKET_EXTRACTION_PROMPT
+
+
+def test_prompt_requires_scrum_sprint_reasoning():
+    assert '"sprint"' in TICKET_EXTRACTION_PROMPT
+    assert "4-week" in TICKET_EXTRACTION_PROMPT
+    assert "never be scheduled in an earlier sprint than a ticket it depends on" in TICKET_EXTRACTION_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # generate_tickets_from_text — subprocess invocation
 # ---------------------------------------------------------------------------
@@ -255,7 +306,42 @@ def test_generate_tickets_from_text_pipes_document_via_stdin(monkeypatch):
     assert tickets[0].title == "Build login page"
     assert captured["input"] == "Build a login page."
     assert captured["command"][0] == "/usr/bin/claude"
-    assert "-p" in captured["command"]
+
+
+def test_generate_tickets_from_text_includes_deadline_in_prompt_when_given(monkeypatch):
+    from datetime import date
+
+    captured = {}
+
+    def fake_run(command, input, capture_output, text, timeout):
+        captured["prompt"] = command[2]
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_text(
+        "Build a login page.", timeout_s=5,
+        project_start=date(2026, 7, 27), project_end=date(2026, 8, 24),
+    )
+
+    assert "2026-08-24" in captured["prompt"]
+    assert "2026-07-27" in captured["prompt"]
+
+
+def test_generate_tickets_from_text_omits_deadline_note_when_not_given(monkeypatch):
+    captured = {}
+
+    def fake_run(command, input, capture_output, text, timeout):
+        captured["prompt"] = command[2]
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_text("Build a login page.", timeout_s=5)
+
+    assert "must be complete by" not in captured["prompt"]
 
 
 def test_generate_tickets_from_text_raises_when_claude_not_found(monkeypatch):
@@ -461,3 +547,135 @@ def test_apply_category_numbering_preserves_other_fields():
     assert numbered[0].acceptance_criteria == ["a"]
     assert numbered[0].priority == "urgent"
     assert numbered[0].category == "backend"
+
+
+# ---------------------------------------------------------------------------
+# apply_sprint_due_dates
+# ---------------------------------------------------------------------------
+
+
+def test_apply_sprint_due_dates_sprint_1_is_4_weeks_out():
+    from datetime import date
+
+    start = date(2026, 1, 1)
+    tickets = [ProposedTicket(title="t1", description="d", sprint=1)]
+
+    dated = apply_sprint_due_dates(tickets, sprint_start=start)
+
+    assert dated[0].due_date == "2026-01-29"  # start + 28 days
+
+
+def test_apply_sprint_due_dates_sprint_2_is_8_weeks_out():
+    from datetime import date
+
+    start = date(2026, 1, 1)
+    tickets = [ProposedTicket(title="t1", description="d", sprint=2)]
+
+    dated = apply_sprint_due_dates(tickets, sprint_start=start)
+
+    assert dated[0].due_date == "2026-02-26"  # start + 56 days
+
+
+def test_apply_sprint_due_dates_defaults_to_today(monkeypatch):
+    from datetime import date, timedelta
+
+    fake_today = date(2026, 3, 1)
+
+    class FakeDate(date):
+        @classmethod
+        def today(cls):
+            return fake_today
+
+    monkeypatch.setattr("meta_harness.ticket_generator.date", FakeDate)
+    tickets = [ProposedTicket(title="t1", description="d", sprint=1)]
+
+    dated = apply_sprint_due_dates(tickets)
+
+    assert dated[0].due_date == (fake_today + timedelta(days=28)).isoformat()
+
+
+def test_apply_sprint_due_dates_does_not_mutate_input():
+    tickets = [ProposedTicket(title="t1", description="d", sprint=1)]
+
+    apply_sprint_due_dates(tickets, sprint_start=date_for_test())
+
+    assert tickets[0].due_date is None
+
+
+def date_for_test():
+    from datetime import date
+
+    return date(2026, 1, 1)
+
+
+def test_apply_sprint_due_dates_preserves_other_fields():
+    tickets = [ProposedTicket(title="t1", description="d", priority="urgent", category="backend", sprint=1)]
+
+    dated = apply_sprint_due_dates(tickets, sprint_start=date_for_test())
+
+    assert dated[0].title == "t1"
+    assert dated[0].priority == "urgent"
+    assert dated[0].category == "backend"
+
+
+# ---------------------------------------------------------------------------
+# apply_sprint_due_dates — project_end compresses sprints into the real window
+# ---------------------------------------------------------------------------
+
+
+def test_apply_sprint_due_dates_with_project_end_pins_highest_sprint_to_deadline():
+    from datetime import date
+
+    start = date(2026, 7, 27)
+    end = date(2026, 8, 24)  # 28 days out
+    tickets = [ProposedTicket(title="t1", description="d", sprint=6)]
+
+    dated = apply_sprint_due_dates(tickets, sprint_start=start, project_end=end)
+
+    assert dated[0].due_date == "2026-08-24"
+
+
+def test_apply_sprint_due_dates_with_project_end_spaces_sprints_proportionally():
+    from datetime import date
+
+    start = date(2026, 1, 1)
+    end = date(2026, 1, 29)  # 28 days out
+    tickets = [
+        ProposedTicket(title="t1", description="d", sprint=1),
+        ProposedTicket(title="t2", description="d", sprint=2),
+        ProposedTicket(title="t3", description="d", sprint=4),
+    ]
+
+    dated = apply_sprint_due_dates(tickets, sprint_start=start, project_end=end)
+
+    assert dated[0].due_date == "2026-01-08"  # 1/4 of 28 days
+    assert dated[1].due_date == "2026-01-15"  # 2/4 of 28 days
+    assert dated[2].due_date == "2026-01-29"  # 4/4 -- exactly project_end
+
+
+def test_apply_sprint_due_dates_with_project_end_never_exceeds_deadline_even_with_many_sprints():
+    from datetime import date
+
+    start = date(2026, 7, 27)
+    end = date(2026, 8, 24)
+    # a large backlog that would normally span 6 sprints (24 weeks) under
+    # the fixed-sprint-length default -- must all land within the 28-day window
+    tickets = [ProposedTicket(title=f"t{i}", description="d", sprint=i) for i in range(1, 7)]
+
+    dated = apply_sprint_due_dates(tickets, sprint_start=start, project_end=end)
+
+    for ticket in dated:
+        assert date.fromisoformat(ticket.due_date) <= end
+    assert dated[-1].due_date == end.isoformat()
+
+
+def test_apply_sprint_due_dates_ignores_project_end_if_not_after_start():
+    from datetime import date
+
+    start = date(2026, 7, 27)
+    tickets = [ProposedTicket(title="t1", description="d", sprint=1)]
+
+    dated = apply_sprint_due_dates(tickets, sprint_start=start, project_end=start)
+
+    # falls back to the fixed 4-week sprint length instead of a zero-width window
+    assert dated[0].due_date == "2026-08-24"

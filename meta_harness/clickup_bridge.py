@@ -118,6 +118,8 @@ def create_clickup_ticket(
     *,
     list_id: Optional[str] = None,
     priority: Optional[str] = None,
+    assignees: Optional[Sequence[int]] = None,
+    due_date_ms: Optional[int] = None,
     project_path: Optional[Path] = None,
 ) -> str:
     """Create a ClickUp task via the p-harness CLI; return its task id."""
@@ -141,6 +143,10 @@ def create_clickup_ticket(
         command += ["--list-id", list_id]
     if priority is not None:
         command += ["--priority", priority]
+    if assignees:
+        command += ["--assignees", ",".join(str(a) for a in assignees)]
+    if due_date_ms is not None:
+        command += ["--due-date", str(due_date_ms)]
 
     completed = subprocess.run(command, cwd=resolved_path, capture_output=True, text=True)
     if completed.returncode != 0:

@@ -54,6 +54,50 @@ def test_create_clickup_ticket_omits_list_id_when_not_given(tmp_path, monkeypatc
     assert "--list-id" not in calls[0]
 
 
+def test_create_clickup_ticket_passes_assignees(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps({"id": "CU-1"}))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    create_clickup_ticket("name", "desc", assignees=[123, 456], project_path=tmp_path)
+
+    assert "--assignees" in calls[0]
+    assert "123,456" in calls[0]
+
+
+def test_create_clickup_ticket_omits_assignees_when_not_given(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps({"id": "CU-1"}))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    create_clickup_ticket("name", "desc", project_path=tmp_path)
+
+    assert "--assignees" not in calls[0]
+
+
+def test_create_clickup_ticket_passes_due_date(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, cwd, capture_output, text):
+        calls.append(list(command))
+        return Result(stdout=json.dumps({"id": "CU-1"}))
+
+    monkeypatch.setattr("meta_harness.clickup_bridge.subprocess.run", fake_run)
+
+    create_clickup_ticket("name", "desc", due_date_ms=1735689600000, project_path=tmp_path)
+
+    assert "--due-date" in calls[0]
+    assert "1735689600000" in calls[0]
+
+
 def test_create_clickup_ticket_raises_on_nonzero_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "meta_harness.clickup_bridge.subprocess.run",
