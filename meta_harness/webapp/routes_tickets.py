@@ -48,15 +48,28 @@ def post_generate_tickets(
     start_frontend: int = Form(1),
     start_deployment: int = Form(1),
     team_emails_text: Optional[str] = Form(None),
+    project_start: Optional[str] = Form(None),
+    project_end: Optional[str] = Form(None),
     progress_token: Optional[str] = Form(None),
 ) -> GenerateTicketsOut:
+    try:
+        parsed_start = date.fromisoformat(project_start) if project_start else None
+        parsed_end = date.fromisoformat(project_end) if project_end else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {exc}") from exc
+    if parsed_start and parsed_end and parsed_end <= parsed_start:
+        raise HTTPException(status_code=400, detail="Project end date must be after the start date.")
+
     content = file.file.read()
     on_step = None
     if progress_token:
         progress.start(progress_token)
         on_step = lambda message: progress.push(progress_token, message)  # noqa: E731
     try:
-        tickets, warnings = generate_tickets_from_file(file.filename or "document", content, on_step=on_step)
+        tickets, warnings = generate_tickets_from_file(
+            file.filename or "document", content, on_step=on_step,
+            project_start=parsed_start, project_end=parsed_end,
+        )
     except TicketExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ClaudeNotFoundError as exc:
@@ -78,7 +91,7 @@ def post_generate_tickets(
 
     if on_step:
         on_step("Assigning sprint due dates…")
-    tickets = apply_sprint_due_dates(tickets)
+    tickets = apply_sprint_due_dates(tickets, sprint_start=parsed_start, project_end=parsed_end)
 
     if team_emails_text and team_emails_text.strip():
         if on_step:

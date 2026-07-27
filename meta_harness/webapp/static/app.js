@@ -280,6 +280,10 @@ async function onGenerateTickets(event) {
   formData.append("start_deployment", document.getElementById("start-deployment").value || "1");
   const teamEmailsText = document.getElementById("tickets-team-emails").value.trim();
   if (teamEmailsText) formData.append("team_emails_text", teamEmailsText);
+  const projectStart = document.getElementById("tickets-project-start").value;
+  const projectEnd = document.getElementById("tickets-project-end").value;
+  if (projectStart) formData.append("project_start", projectStart);
+  if (projectEnd) formData.append("project_end", projectEnd);
   const token = newProgressToken();
   formData.append("progress_token", token);
 

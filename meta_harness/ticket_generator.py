@@ -97,6 +97,24 @@ TICKET_EXTRACTION_PROMPT = (
 )
 
 
+def _build_extraction_prompt(project_start: Optional[date], project_end: Optional[date]) -> str:
+    """The base prompt, plus a real deadline note when the caller gave one
+    — without it, sprint numbers are just a relative sequence with no
+    connection to an actual target date."""
+    if not (project_start and project_end):
+        return TICKET_EXTRACTION_PROMPT
+    weeks = max(1, round((project_end - project_start).days / 7))
+    return (
+        TICKET_EXTRACTION_PROMPT
+        + f"\n\nThe whole project must be complete by {project_end.isoformat()}, starting from "
+        f"{project_start.isoformat()} — about {weeks} week(s) total, not the usual open-ended "
+        "assumption. Size the sprint numbers you assign to realistically fit within that window "
+        "(fewer, tighter sprints if the window is short) instead of assuming unlimited time; the "
+        "harness maps your highest sprint number to the final deadline and spaces the rest evenly "
+        "before it, so an unrealistically high sprint count just compresses everything further."
+    )
+
+
 class TicketExtractionError(RuntimeError):
     """Raised when document text extraction fails (bad/unsupported file, corrupt PDF)."""
 
@@ -305,6 +323,8 @@ def generate_tickets_from_text(
     timeout_s: Optional[float] = None,
     max_attempts: int = MAX_GENERATION_ATTEMPTS,
     on_step: OnStep = None,
+    project_start: Optional[date] = None,
+    project_end: Optional[date] = None,
 ) -> Tuple[List[ProposedTicket], List[str]]:
     """Run `claude -p <prompt>` with the document piped via stdin; parse the result.
 
@@ -321,12 +341,13 @@ def generate_tickets_from_text(
         timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
     )
 
-    prompt = TICKET_EXTRACTION_PROMPT
+    base_prompt = _build_extraction_prompt(project_start, project_end)
+    prompt = base_prompt
     last_error: Optional[str] = None
     for attempt in range(1, max_attempts + 1):
         if last_error is not None:
             prompt = (
-                f"{TICKET_EXTRACTION_PROMPT}\n\nYour previous response was invalid: {last_error} "
+                f"{base_prompt}\n\nYour previous response was invalid: {last_error} "
                 "Fix this and output ONLY the corrected JSON array."
             )
             _report(
@@ -350,12 +371,20 @@ def generate_tickets_from_text(
 
 
 def generate_tickets_from_file(
-    filename: str, content: bytes, *, timeout_s: Optional[float] = None, on_step: OnStep = None
+    filename: str,
+    content: bytes,
+    *,
+    timeout_s: Optional[float] = None,
+    on_step: OnStep = None,
+    project_start: Optional[date] = None,
+    project_end: Optional[date] = None,
 ) -> Tuple[List[ProposedTicket], List[str]]:
     """End-to-end: extract text from an uploaded file, then generate tickets."""
     _report(on_step, f'Extracting text from "{filename}"…')
     text = extract_document_text(filename, content)
-    return generate_tickets_from_text(text, timeout_s=timeout_s, on_step=on_step)
+    return generate_tickets_from_text(
+        text, timeout_s=timeout_s, on_step=on_step, project_start=project_start, project_end=project_end
+    )
 
 
 def apply_category_numbering(
@@ -382,14 +411,37 @@ def apply_category_numbering(
 
 
 def apply_sprint_due_dates(
-    tickets: List[ProposedTicket], *, sprint_start: Optional[date] = None
+    tickets: List[ProposedTicket],
+    *,
+    sprint_start: Optional[date] = None,
+    project_end: Optional[date] = None,
 ) -> List[ProposedTicket]:
     """Convert each ticket's LLM-assigned `sprint` number into a concrete
-    due date: a ticket is due at the end of its assigned 4-week sprint,
-    counted from sprint_start (today by default). Returns a new list —
-    the input tickets are not mutated.
+    due date.
+
+    With no project_end, a ticket is due at the end of its assigned fixed
+    4-week sprint, counted from sprint_start (today by default) — sprints
+    march forward indefinitely, which is fine when there's no real
+    deadline. With a project_end, the whole backlog is instead compressed
+    to fit: the highest sprint number present is pinned to project_end
+    exactly, and every other sprint is spaced proportionally between
+    sprint_start and project_end — so the plan is always honest about a
+    real target date instead of assuming unlimited time in fixed chunks.
+    Returns a new list — the input tickets are not mutated.
     """
     start = sprint_start if sprint_start is not None else date.today()
+
+    if project_end is not None and project_end > start and tickets:
+        total_days = (project_end - start).days
+        max_sprint = max(ticket.sprint if ticket.sprint >= 1 else 1 for ticket in tickets)
+        dated = []
+        for ticket in tickets:
+            sprint = ticket.sprint if ticket.sprint >= 1 else 1
+            offset_days = round(total_days * sprint / max_sprint)
+            due = start + timedelta(days=offset_days)
+            dated.append(replace(ticket, due_date=due.isoformat()))
+        return dated
+
     dated = []
     for ticket in tickets:
         sprint = ticket.sprint if ticket.sprint >= 1 else 1

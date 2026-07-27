@@ -377,3 +377,63 @@ def test_generate_tickets_without_team_emails_leaves_tickets_unassigned(monkeypa
 
     assert response.status_code == 200
     assert response.json()["tickets"][0]["assignee_user_id"] is None
+
+
+def test_generate_tickets_with_project_dates_compresses_due_dates(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_file",
+        lambda filename, content, **kw: (
+            [ProposedTicket(title="t1", description="d", acceptance_criteria=[], category="mundane", sprint=6)],
+            [],
+        ),
+    )
+
+    response = client.post(
+        "/api/tickets/generate",
+        files={"file": ("spec.txt", b"some text", "text/plain")},
+        data={"project_start": "2026-07-27", "project_end": "2026-08-24"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tickets"][0]["due_date"] == "2026-08-24"
+
+
+def test_generate_tickets_passes_project_dates_to_generator(monkeypatch):
+    captured = {}
+
+    def fake_generate(filename, content, *, on_step=None, project_start=None, project_end=None, **kw):
+        captured["project_start"] = project_start
+        captured["project_end"] = project_end
+        return ([ProposedTicket(title="t1", description="d", acceptance_criteria=[])], [])
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_file", fake_generate)
+
+    client.post(
+        "/api/tickets/generate",
+        files={"file": ("spec.txt", b"some text", "text/plain")},
+        data={"project_start": "2026-07-27", "project_end": "2026-08-24"},
+    )
+
+    from datetime import date
+    assert captured["project_start"] == date(2026, 7, 27)
+    assert captured["project_end"] == date(2026, 8, 24)
+
+
+def test_generate_tickets_rejects_end_date_before_start_date():
+    response = client.post(
+        "/api/tickets/generate",
+        files={"file": ("spec.txt", b"some text", "text/plain")},
+        data={"project_start": "2026-08-24", "project_end": "2026-07-27"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_generate_tickets_rejects_invalid_date_format():
+    response = client.post(
+        "/api/tickets/generate",
+        files={"file": ("spec.txt", b"some text", "text/plain")},
+        data={"project_end": "not-a-date"},
+    )
+
+    assert response.status_code == 400
