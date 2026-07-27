@@ -274,6 +274,11 @@ def test_prompt_requires_sized_decomposition_not_unbounded_fragmentation():
     assert "do not pad the list to hit any particular number" in TICKET_EXTRACTION_PROMPT
 
 
+def test_prompt_caps_total_count_for_large_documents():
+    assert "50-80 range" in TICKET_EXTRACTION_PROMPT
+    assert "rather than letting the total run unbounded" in TICKET_EXTRACTION_PROMPT
+
+
 def test_prompt_requires_scrum_sprint_reasoning():
     assert '"sprint"' in TICKET_EXTRACTION_PROMPT
     assert "4-week" in TICKET_EXTRACTION_PROMPT

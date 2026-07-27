@@ -29,7 +29,7 @@ def _report(on_step: OnStep, message: str) -> None:
 
 CLAUDE_PATH_ENV_VAR = "META_HARNESS_CLAUDE_PATH"
 CLAUDE_TIMEOUT_ENV_VAR = "META_HARNESS_CLAUDE_TIMEOUT_S"
-DEFAULT_CLAUDE_TIMEOUT_S = 300.0
+DEFAULT_CLAUDE_TIMEOUT_S = 600.0
 
 PRIORITIES = ("urgent", "high", "normal", "low")
 DEFAULT_PRIORITY = "normal"
@@ -60,7 +60,11 @@ TICKET_EXTRACTION_PROMPT = (
     "operations, several pages or views, several independent endpoints), give each one that "
     "stands on its own its own ticket, sized as above. Let the document's actual scope decide "
     "the count — a short document should produce few tickets, a larger one naturally produces "
-    "more; do not pad the list to hit any particular number. "
+    "more; do not pad the list to hit any particular number. But even for a large, "
+    "multi-feature document, keep the total count roughly in the 50-80 range — if strict "
+    "half-day-to-two-day sizing would push noticeably past that, favor slightly broader (but "
+    "still coherent and specific) ticket scopes instead of fragmenting further, rather than "
+    "letting the total run unbounded. "
     "Order the array in a logical implementation sequence — foundational or setup work and "
     "anything another ticket depends on comes before the tickets that build on it (e.g. a "
     "backend endpoint before the frontend that calls it, setup/config before the feature that "
