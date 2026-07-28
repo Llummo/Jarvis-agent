@@ -74,6 +74,121 @@ REVERTIBLE = [
 ]
 
 
+def _ticket(title, category="backend", parent=""):
+    """A ProposedTicketOut-shaped ticket. Kept faithful to the real schema so
+    the UI is exercised against the payload it will really receive."""
+    return {
+        "title": title,
+        "description": "Registro transversal de personas.",
+        "user_story": "Como reclutador,\nquiero registrar personas,\npara centralizar el pool.",
+        "epic": "GESTION DE POOL DE TALENTO",
+        "ui_route": "/erp/talent/people",
+        "backend_endpoint": "POST /api/v1/talent/people",
+        "technical_notes": "Permisos:\n```\ntalent:read   Lectura\n```",
+        "parent_title": parent,
+        "visual_resources": [],
+        "acceptance_criteria": [
+            {"name": "Alta", "given": "el formulario es valido", "when": "se confirme",
+             "then": "la persona queda registrada", "text": ""}
+        ],
+        "priority": "high",
+        "category": category,
+        "sprint": 1,
+        "due_date": "2026-08-24",
+        "assignee_clickup_id": 1,
+        "assignee_linear_id": None,
+        "assignee_email": "ana@x.com",
+        "assignee_name": "Ana",
+    }
+
+
+GENERATED = {
+    "tickets": [_ticket("Endpoint de personas"), _ticket("Formulario de alta", "frontend", "Endpoint de personas")],
+    "warnings": [],
+}
+
+FINDING = dict(FINDINGS["findings"][0])
+
+REVIEW_RESULT = {
+    "run_id": "run-1",
+    "review": {
+        "ticket_id": "task-1", "ticket_name": "TAB-01 | Endpoint de personas",
+        "observation": "Verificar validacion de campos obligatorios.", "severity": "major",
+        "route": "/erp/talent/people", "status_code": 200, "http_error": None, "screenshot_path": None,
+    },
+    "finding": None,
+    "report_markdown": "# QA Review\n",
+}
+
+MODULE_RESULT = {
+    "ticket_id": "task-1", "ticket_name": "TAB-01 | Endpoint de personas",
+    "module_name": "Personas", "verdict": "related", "confidence": 0.88,
+    "rationale": "Modifica la ficha de personas descrita en la documentacion.",
+    "matched_aspects": ["Ficha de persona"], "module_gaps": [],
+}
+
+REFORMATTED = {
+    "ticket_id": "task-1", "tracker": "clickup",
+    "original_title": "endpoint personas", "original_description": "hay que hacer el endpoint",
+    "ticket": _ticket("TAB-01 | Endpoint de personas"),
+    "formatted_title": "TAB-01 | Endpoint de personas",
+    "formatted_description": "USER STORY: GESTION DE POOL DE TALENTO\nTitulo: TAB-01 | Endpoint de personas",
+}
+
+
+def _post_route(path: str):
+    """Canned response for a POST path, or None if it isn't stubbed."""
+    base = path.split("?", 1)[0]
+    if base.startswith("/api/qa/findings/") and base.endswith("/close"):
+        return {**FINDING, "status": "closed", "correction_note": "corregido"}
+    table = {
+        "/api/tickets/generate": GENERATED,
+        "/api/tickets/from-idea": GENERATED,
+        "/api/tickets/create": {
+            "results": [
+                {"ticket": t, "ok": True, "clickup_task_id": f"new-{i}", "error": None}
+                for i, t in enumerate(GENERATED["tickets"], start=1)
+            ]
+        },
+        "/api/linear/issues": {
+            "results": [
+                {"ticket": t, "ok": True, "linear_issue_id": f"new-{i}", "error": None}
+                for i, t in enumerate(GENERATED["tickets"], start=1)
+            ]
+        },
+        "/api/qa/reviews": REVIEW_RESULT,
+        "/api/qa/reviews/commit": FINDING,
+        "/api/qa/reviews/bulk": {
+            "results": [{"ticket_id": "task-1", "review": REVIEW_RESULT["review"], "error": None}],
+            "readme_markdown": "# QA-README\n",
+        },
+        "/api/qa/reviews/bulk/commit": {"results": [{"ticket_id": "task-1", "finding": FINDING, "error": None}]},
+        "/api/qa/findings": FINDING,
+        "/api/qa/project-config": {"projects": {"gru-po": "https://app.example.com"}},
+        "/api/tickets/module-relevance": MODULE_RESULT,
+        "/api/tickets/module-relevance/bulk": {
+            "module_name": "Personas",
+            "summary": {"analyzed": 2, "related": 1, "partially_related": 0, "unrelated": 1, "failed": 0},
+            "aligned": [MODULE_RESULT],
+            "results": [
+                {"ticket_id": "task-1", "relevance": MODULE_RESULT, "error": None},
+                {"ticket_id": "task-2", "relevance": {**MODULE_RESULT, "ticket_id": "task-2",
+                 "ticket_name": "TAF-02 | Formulario de alta", "verdict": "unrelated",
+                 "confidence": 0.91, "matched_aspects": []}, "error": None},
+            ],
+            "report_markdown": "# Modulo: Personas\n",
+        },
+        "/api/tickets/reformat": REFORMATTED,
+        "/api/tickets/reformat/apply": {"ok": True, "ticket_id": "task-1", "title": "TAB-01 | Endpoint de personas"},
+        "/api/tickets/reformat/revert": {"ok": True, "ticket_id": "task-1", "title": "Titulo viejo"},
+        "/api/tickets/verify-team": {
+            "verified": [{"email": "ana@x.com", "username": "Ana", "clickup_id": 1, "linear_id": None}],
+            "not_found": [],
+        },
+    }
+    return table.get(base)
+
+
 def _route(path: str) -> Optional[Any]:
     """Canned response for an API path, or None if it isn't stubbed."""
     base = path.split("?", 1)[0]
@@ -102,16 +217,36 @@ class _Handler(SimpleHTTPRequestHandler):
     def log_message(self, *args):  # keep pytest output readable
         pass
 
-    def do_GET(self):
-        payload = _route(self.path)
-        if payload is None:
-            return super().do_GET()
+    def _json(self, payload):
         body = json.dumps(payload).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        # Escape hatch so the error/retry path is still reachable now that the
+        # happy path is stubbed.
+        if b"FORCE_ERROR" in body:
+            self.send_error(502, "forced failure")
+            return
+        payload = _post_route(self.path)
+        if payload is None:
+            self.send_error(404)
+            return
+        self._json(payload)
+
+    def do_GET(self):
+        # Progress polling: any token returns a finished-looking log.
+        if self.path.startswith("/api/progress/"):
+            return self._json({"steps": ["Working…", "Done."]})
+        payload = _route(self.path)
+        if payload is None:
+            return super().do_GET()
+        self._json(payload)
 
 
 class StubAPIServer:

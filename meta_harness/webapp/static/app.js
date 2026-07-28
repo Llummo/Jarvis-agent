@@ -1540,10 +1540,13 @@ function createTrackerPanel(tracker) {
   // --- Reformat an existing ticket ------------------------------------------
 
   function clearReformat() {
+    // Deliberately does NOT clear the success banner: apply and revert both
+    // report their outcome and then clear the preview, so wiping it here
+    // swallowed the only confirmation the user ever got. Callers that want a
+    // clean slate clear it themselves before they start.
     state.reformat = null;
     el("reformat-result").hidden = true;
     banner("reformat-error", null);
-    banner("reformat-success", null);
   }
 
   function renderReformat(result) {
