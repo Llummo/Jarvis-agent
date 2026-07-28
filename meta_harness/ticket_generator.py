@@ -294,9 +294,15 @@ def _build_extraction_prompt(
 # both takes too long and risks being killed mid-flight. Past this much text
 # the document is split into sections that are generated independently.
 # ~4 chars/token, so this is roughly a 10k-token section.
-CHUNK_TARGET_CHARS = 40_000
+CHUNK_TARGET_CHARS = 20_000
 # Total tickets to aim for across the whole document, shared out per section.
 TOTAL_TICKET_BUDGET = (50, 80)
+# The binding constraint is OUTPUT, not input: a section asked for ~25 fully
+# structured tickets came back with its JSON truncated mid-field. Each ticket
+# is several hundred tokens once it carries a user story, description and
+# structured criteria, so the per-section ask is capped well below the point
+# where responses start getting cut off.
+MAX_TICKETS_PER_CHUNK = 16
 # How many sections to generate at once. The wall-clock win comes from this;
 # kept small so a big document doesn't spawn an unbounded number of CLI
 # processes at once.
@@ -367,8 +373,10 @@ def split_document(
         sections.append("\n\n".join(current))
 
     count = len(sections)
-    per_low = max(1, round(total_low / count))
-    per_high = max(per_low + 1, round(total_high / count))
+    # Hard-cap the per-section ask regardless of how the total divides up:
+    # exceeding it is what gets a response truncated mid-JSON.
+    per_high = min(MAX_TICKETS_PER_CHUNK, max(2, round(total_high / count)))
+    per_low = max(1, min(round(total_low / count), per_high - 1))
     return [
         DocumentChunk(index=i, text=section, ticket_budget=(per_low, per_high))
         for i, section in enumerate(sections, start=1)
@@ -634,7 +642,16 @@ def parse_proposed_tickets(raw_output: str) -> Tuple[List[ProposedTicket], List[
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise TicketParseError(f"Claude did not return valid JSON: {raw_output[:500]!r}") from exc
+        # Show the END of the response as well as the start, plus its length.
+        # A response cut off by a dropped connection looks perfectly fine in
+        # its first 500 characters — only the tail reveals it stops mid-token,
+        # and quoting just the head sends you chasing the wrong cause.
+        head = raw_output[:200]
+        tail = raw_output[-200:] if len(raw_output) > 400 else ""
+        detail = f"{len(raw_output)} chars, starts {head!r}"
+        if tail:
+            detail += f", ends {tail!r}"
+        raise TicketParseError(f"Claude did not return valid JSON ({detail})") from exc
 
     if not isinstance(payload, list):
         raise TicketParseError(f"Expected a JSON array of tickets, got: {type(payload).__name__}")
@@ -668,7 +685,11 @@ def _run_claude(claude_path: str, prompt: str, document_text: str, timeout_s: fl
         raise TicketGenerationError(f"Claude CLI timed out after {timeout_s}s analyzing the document") from exc
 
     if completed.returncode != 0:
-        raise TicketGenerationError(f"Claude CLI failed ({completed.returncode}): {completed.stderr.strip()}")
+        # The CLI sometimes exits non-zero with nothing on stderr, which makes
+        # a failure impossible to diagnose from the message alone — fall back
+        # to whatever it managed to write to stdout.
+        detail = completed.stderr.strip() or completed.stdout.strip()[:300] or "(no output)"
+        raise TicketGenerationError(f"Claude CLI failed ({completed.returncode}): {detail}")
 
     return completed.stdout
 
@@ -728,27 +749,38 @@ def _generate_for_chunk(
     project_end: Optional[date],
     on_step: OnStep,
 ) -> Tuple[List[ProposedTicket], List[str]]:
-    """One model call for one section, with the retry-with-repair loop."""
+    """One model call for one section, with the retry-with-repair loop.
+
+    Retries cover two different failures. A bad *response* is repaired by
+    feeding the validation error back into the next prompt. A failed
+    *invocation* (the CLI exiting non-zero, which happens under load) has
+    nothing to repair, so it is simply retried — previously it killed the
+    whole section on the first stumble with no second chance.
+    """
     base_prompt = _build_extraction_prompt(project_start, project_end, chunk=chunk, chunk_total=chunk_total)
     label = "" if chunk_total == 1 else f"Section {chunk.index}/{chunk_total}: "
     prompt = base_prompt
     last_error: Optional[str] = None
     for attempt in range(1, max_attempts + 1):
         if last_error is not None:
-            prompt = (
-                f"{base_prompt}\n\nYour previous response was invalid: {last_error} "
-                "Fix this and output ONLY the corrected JSON array."
-            )
-            _report(
-                on_step,
-                f"{label}Claude's response didn't pass validation ({last_error}) — "
-                f"asking it to fix and retrying (attempt {attempt}/{max_attempts})…",
-            )
-        raw_output = _run_claude(claude_path, prompt, chunk.text, timeout_s)
+            _report(on_step, f"{label}{last_error} — retrying (attempt {attempt}/{max_attempts})…")
+        try:
+            raw_output = _run_claude(claude_path, prompt, chunk.text, timeout_s)
+        except TicketGenerationError as exc:
+            # Nothing to repair in the prompt — the call itself didn't run.
+            last_error = str(exc)
+            prompt = base_prompt
+            if attempt == max_attempts:
+                raise
+            continue
         try:
             return parse_proposed_tickets(raw_output)
         except TicketParseError as exc:
-            last_error = str(exc)
+            last_error = f"Claude's response didn't pass validation ({exc})"
+            prompt = (
+                f"{base_prompt}\n\nYour previous response was invalid: {exc} "
+                "Fix this and output ONLY the corrected JSON array."
+            )
             if attempt == max_attempts:
                 raise
     raise AssertionError("unreachable")  # loop always returns or raises by the final attempt

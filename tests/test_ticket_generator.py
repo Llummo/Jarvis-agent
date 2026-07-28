@@ -198,6 +198,19 @@ def test_parse_proposed_tickets_not_json_raises():
         parse_proposed_tickets("not json at all")
 
 
+def test_parse_error_shows_the_tail_so_truncation_is_visible():
+    # A response cut off by a dropped connection looks fine at the start; the
+    # end is the only place that shows it stopped mid-token.
+    truncated = '[{"title": "' + "x" * 900 + '", "description": "cortado a mit'
+
+    with pytest.raises(TicketParseError) as excinfo:
+        parse_proposed_tickets(truncated)
+
+    message = str(excinfo.value)
+    assert "cortado a mit" in message, "the tail must be reported"
+    assert f"{len(truncated)} chars" in message, "the length must be reported"
+
+
 def test_parse_proposed_tickets_object_not_array_raises():
     with pytest.raises(TicketParseError, match="Expected a JSON array"):
         parse_proposed_tickets(json.dumps({"tickets": [_valid_ticket()]}))
@@ -964,3 +977,55 @@ def test_small_document_still_takes_the_single_call_path(monkeypatch):
 
     assert len(prompts) == 1
     assert "SECTION" not in prompts[0]
+
+
+def test_a_failed_cli_invocation_is_retried_not_fatal(monkeypatch):
+    # A non-zero exit has nothing to repair in the prompt, but it is often
+    # transient under load -- it must not kill the section on first stumble.
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        if len(calls) == 1:
+            return Result(returncode=1, stdout="", stderr="")
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    tickets, _warnings = generate_tickets_from_text("documento corto", timeout_s=5)
+
+    assert len(calls) == 2
+    assert len(tickets) == 1
+
+
+def test_a_retried_cli_failure_does_not_corrupt_the_prompt(monkeypatch):
+    # There is no bad response to quote back, so the retry must send the
+    # original prompt rather than a "your previous response was invalid" one.
+    prompts = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        prompts.append(command[2])
+        if len(prompts) == 1:
+            return Result(returncode=1, stderr="boom")
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_text("documento corto", timeout_s=5)
+
+    assert "previous response was invalid" not in prompts[1]
+    assert prompts[0] == prompts[1]
+
+
+def test_cli_failure_message_falls_back_to_stdout(monkeypatch):
+    # An exit code with empty stderr is undiagnosable; surface stdout instead.
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.ticket_generator.subprocess.run",
+        lambda *a, **k: Result(returncode=1, stdout="usage limit reached", stderr=""),
+    )
+
+    with pytest.raises(TicketGenerationError, match="usage limit reached"):
+        generate_tickets_from_text("documento corto", timeout_s=5, max_attempts=1)
