@@ -131,10 +131,17 @@ _PROMPT_TAIL = (
     '{"name": "Carga de CV", "given": "el usuario está en la pantalla \'Agregar persona\'", '
     '"when": "adjunte un CV en PDF", "then": "el sistema debe extraer los datos automáticamente"}), '
     '"technical_notes" (string, in Spanish, OPTIONAL — technical details worth calling out if the '
-    "document actually specifies them: limits/constraints, a permissions matrix (e.g. "
-    '"talent:read, talent:write, recruitment:admin"), state/status models (e.g. "Registro: ACTIVE | '
-    'ARCHIVED"), integration notes, etc. Empty string "" if the document gives no such detail — do '
-    "not invent technical notes that aren't grounded in the document), "
+    "document actually specifies them: limits/constraints, a permissions matrix, state/status "
+    "models, integration notes, etc. Empty string \"\" if the document gives no such detail — do "
+    "not invent technical notes that aren't grounded in the document. "
+    "FORMATTING: anything that is literally code or machine output — SQL queries, JSON or request "
+    "payloads, function or method signatures, CLI commands, error logs and stack traces, "
+    "configuration snippets, permission matrices and state/status enumerations — must be wrapped "
+    "in a fenced block using triple backticks on their own lines, with a language hint where it is "
+    "obvious (```sql, ```json, ```bash). Everything else stays as ordinary prose; do NOT fence "
+    "plain sentences, route paths or endpoint names. Example:\\n"
+    "Matriz de permisos:\\n```\\ntalent:read   Lectura del directorio\\ntalent:write  "
+    "Creacion y edicion\\n```), "
     '"priority" (one of: "urgent", "high", "normal", "low"), '
     '"category" (one of: "backend", "frontend", "deployment", "mundane" — classify by the '
     'primary type of work: "backend" for server/API/database/business-logic work, '

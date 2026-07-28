@@ -96,6 +96,25 @@ function downloadTextFile(filename, content, mimeType = "text/markdown") {
   URL.revokeObjectURL(url);
 }
 
+// Renders ``` fenced blocks as real code blocks and everything else as
+// escaped text. Without this a ticket carrying a SQL snippet or a JSON
+// payload shows raw backticks in the preview, which is worse than the prose
+// it replaced. Deliberately handles only fences — this is not a markdown
+// renderer and must not start interpreting anything else.
+function renderWithCodeBlocks(text) {
+  if (!text) return "";
+  const parts = String(text).split("```");
+  return parts
+    .map((part, index) => {
+      if (index % 2 === 0) return escapeHtml(part);
+      // Odd segments sit between fences. A leading language hint (```json)
+      // is a label, not content.
+      const body = part.replace(/^[a-zA-Z0-9_-]*\n/, "");
+      return `<pre class="code-block">${escapeHtml(body.replace(/\n$/, ""))}</pre>`;
+    })
+    .join("");
+}
+
 function severityClass(severity) {
   if (severity === "critical") return "severity-critical";
   if (severity === "major") return "severity-major";
@@ -350,7 +369,7 @@ function ticketBodyHtml(ticket) {
   }
   parts.push(
     `<div class="ticket-section"><div class="ticket-section-label">Description</div>` +
-      `<p>${escapeHtml(ticket.description)}</p></div>`,
+      `<p>${renderWithCodeBlocks(ticket.description)}</p></div>`,
   );
   if (ticket.acceptance_criteria && ticket.acceptance_criteria.length) {
     const items = ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(criterionText(c))}</li>`).join("");
@@ -361,7 +380,7 @@ function ticketBodyHtml(ticket) {
   if (ticket.technical_notes) {
     parts.push(
       `<div class="ticket-section"><div class="ticket-section-label">Technical notes</div>` +
-        `<p>${escapeHtml(ticket.technical_notes)}</p></div>`,
+        `<div>${renderWithCodeBlocks(ticket.technical_notes)}</div></div>`,
     );
   }
   return parts.join("");

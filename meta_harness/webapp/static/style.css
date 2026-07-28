@@ -778,3 +778,22 @@ details.advanced[open] > summary { margin-bottom: 0.875rem; }
   .chat-msg { max-width: 92%; }
   .chat-compose { flex-direction: column; align-items: stretch; }
 }
+
+/* ---------- Fenced code inside ticket bodies ---------------------------- */
+
+.code-block {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.625rem 0.75rem;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ink);
+}
+
+.chat-msg-ticket .code-block,
+.ticket-card .code-block { background: var(--bg); }
