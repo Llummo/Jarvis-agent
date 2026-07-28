@@ -11,8 +11,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -29,7 +32,12 @@ def _report(on_step: OnStep, message: str) -> None:
 
 CLAUDE_PATH_ENV_VAR = "META_HARNESS_CLAUDE_PATH"
 CLAUDE_TIMEOUT_ENV_VAR = "META_HARNESS_CLAUDE_TIMEOUT_S"
-DEFAULT_CLAUDE_TIMEOUT_S = 600.0
+# Generation is output-bound: a large requirements document produces 50-80
+# fully-structured tickets, which is tens of thousands of tokens to emit.
+# A real 24k-token statement blew past the previous 600s ceiling, so this is
+# sized for the worst realistic document rather than the typical one.
+# Override per-environment with META_HARNESS_CLAUDE_TIMEOUT_S.
+DEFAULT_CLAUDE_TIMEOUT_S = 1800.0
 
 PRIORITIES = ("urgent", "high", "normal", "low")
 DEFAULT_PRIORITY = "normal"
@@ -47,7 +55,7 @@ SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
 SPRINT_LENGTH_DAYS = 28  # Scrum: fixed 4-week sprints
 
-TICKET_EXTRACTION_PROMPT = (
+_PROMPT_HEAD = (
     "Extract a JSON array of tickets from the requirements document provided via stdin. "
     "Decompose the document into specific, well-scoped tickets. Size each ticket so one person "
     "could complete it in roughly half a day to two days of focused work: if a piece of work "
@@ -58,13 +66,33 @@ TICKET_EXTRACTION_PROMPT = (
     "form field or one validation rule within that same feature is too small to be its own "
     "ticket. If a requirement bundles several distinct pieces of functionality (several CRUD "
     "operations, several pages or views, several independent endpoints), give each one that "
-    "stands on its own its own ticket, sized as above. Let the document's actual scope decide "
+    "stands on its own its own ticket, sized as above. "
+)
+
+# How many tickets to aim for. Swapped out per section when a large document
+# is split, so each call is asked for its own share rather than the whole
+# document's 50-80 (which would multiply the total by the number of sections).
+_COUNT_GUIDANCE_WHOLE = (
+    "Let the document's actual scope decide "
     "the count — a short document should produce few tickets, a larger one naturally produces "
     "more; do not pad the list to hit any particular number. But even for a large, "
     "multi-feature document, keep the total count roughly in the 50-80 range — if strict "
     "half-day-to-two-day sizing would push noticeably past that, favor slightly broader (but "
     "still coherent and specific) ticket scopes instead of fragmenting further, rather than "
     "letting the total run unbounded. "
+)
+
+
+def _count_guidance_for_chunk(low: int, high: int) -> str:
+    return (
+        "Let this section's actual scope decide the count; do not pad the list to hit any "
+        f"particular number. Aim for roughly {low}-{high} tickets for this section — if strict "
+        "half-day-to-two-day sizing would push noticeably past that, favor slightly broader (but "
+        "still coherent and specific) ticket scopes instead of fragmenting further. "
+    )
+
+
+_PROMPT_TAIL = (
     "Order the array in a logical implementation sequence — foundational or setup work and "
     "anything another ticket depends on comes before the tickets that build on it (e.g. a "
     "backend endpoint before the frontend that calls it, setup/config before the feature that "
@@ -127,6 +155,8 @@ TICKET_EXTRACTION_PROMPT = (
     "never be scheduled in an earlier sprint than a ticket it depends on). "
     "Output ONLY the JSON array — no prose, no markdown code fences, no explanation."
 )
+
+TICKET_EXTRACTION_PROMPT = _PROMPT_HEAD + _COUNT_GUIDANCE_WHOLE + _PROMPT_TAIL
 
 
 # The shared "what a ticket looks like" contract, reused verbatim by the
@@ -214,15 +244,43 @@ def generate_tickets_from_idea(
     raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
 
 
-def _build_extraction_prompt(project_start: Optional[date], project_end: Optional[date]) -> str:
+def _build_extraction_prompt(
+    project_start: Optional[date],
+    project_end: Optional[date],
+    *,
+    chunk: Optional["DocumentChunk"] = None,
+    chunk_total: int = 1,
+) -> str:
     """The base prompt, plus a real deadline note when the caller gave one
     — without it, sprint numbers are just a relative sequence with no
-    connection to an actual target date."""
+    connection to an actual target date.
+
+    When the document was split, the count guidance is swapped for this
+    section's own share and the model is told where the section sits in the
+    document, so it can still reason about ordering it cannot see.
+    """
+    if chunk is None or chunk_total <= 1:
+        prompt = TICKET_EXTRACTION_PROMPT
+    else:
+        low, high = chunk.ticket_budget
+        prompt = _PROMPT_HEAD + _count_guidance_for_chunk(low, high) + _PROMPT_TAIL
+        prompt += (
+            f"\n\nIMPORTANT: you are being given SECTION {chunk.index} OF {chunk_total} of a larger "
+            "requirements document, not the whole thing. Produce tickets only for the work "
+            "described in this section — another pass covers the other sections, so do not "
+            "restate or duplicate work that clearly belongs to a different part of the project. "
+        )
+        if chunk.index > 1:
+            prompt += (
+                "Earlier sections have already been processed, so assume the groundwork they "
+                "describe exists; bias the sprint numbers you assign to later sprints accordingly. "
+            )
+
     if not (project_start and project_end):
-        return TICKET_EXTRACTION_PROMPT
+        return prompt
     weeks = max(1, round((project_end - project_start).days / 7))
     return (
-        TICKET_EXTRACTION_PROMPT
+        prompt
         + f"\n\nThe whole project must be complete by {project_end.isoformat()}, starting from "
         f"{project_start.isoformat()} — about {weeks} week(s) total, not the usual open-ended "
         "assumption. Size the sprint numbers you assign to realistically fit within that window "
@@ -230,6 +288,99 @@ def _build_extraction_prompt(project_start: Optional[date], project_end: Optiona
         "harness maps your highest sprint number to the final deadline and spaces the rest evenly "
         "before it, so an unrealistically high sprint count just compresses everything further."
     )
+
+
+# Generation is output-bound, and one call covering a whole large document
+# both takes too long and risks being killed mid-flight. Past this much text
+# the document is split into sections that are generated independently.
+# ~4 chars/token, so this is roughly a 10k-token section.
+CHUNK_TARGET_CHARS = 20_000
+# Total tickets to aim for across the whole document, shared out per section.
+TOTAL_TICKET_BUDGET = (50, 80)
+# The binding constraint is OUTPUT, not input: a section asked for ~25 fully
+# structured tickets came back with its JSON truncated mid-field. Each ticket
+# is several hundred tokens once it carries a user story, description and
+# structured criteria, so the per-section ask is capped well below the point
+# where responses start getting cut off.
+MAX_TICKETS_PER_CHUNK = 16
+# How many sections to generate at once. The wall-clock win comes from this;
+# kept small so a big document doesn't spawn an unbounded number of CLI
+# processes at once.
+DEFAULT_CHUNK_WORKERS = 3
+
+
+@dataclass
+class DocumentChunk:
+    """One section of a split document, with the share of the total ticket
+    budget it is responsible for."""
+
+    index: int  # 1-based, in document order
+    text: str
+    ticket_budget: Tuple[int, int]
+
+
+# Boundaries to break on, coarsest first. Extracted PDF text often has long
+# stretches with no blank lines at all, so falling back through finer
+# separators is what keeps a section anywhere near the target size.
+_SPLIT_PATTERNS = (r"\n\s*\n", r"\n", r"(?<=[.!?])\s+")
+
+
+def _atoms(text: str, target: int, depth: int = 0) -> List[str]:
+    """Break text into pieces no larger than `target`, preferring the
+    coarsest boundary that works and only hard-slicing as a last resort."""
+    if len(text) <= target:
+        return [text]
+    if depth >= len(_SPLIT_PATTERNS):
+        return [text[i : i + target] for i in range(0, len(text), target)]
+
+    parts = [p for p in re.split(_SPLIT_PATTERNS[depth], text) if p.strip()]
+    if len(parts) <= 1:
+        return _atoms(text, target, depth + 1)
+
+    pieces: List[str] = []
+    for part in parts:
+        pieces.extend(_atoms(part, target, depth + 1) if len(part) > target else [part])
+    return pieces
+
+
+def split_document(
+    text: str, *, target_chars: int = CHUNK_TARGET_CHARS, budget: Tuple[int, int] = TOTAL_TICKET_BUDGET
+) -> List[DocumentChunk]:
+    """Split a document into sections of at most roughly `target_chars`.
+
+    Returns a single chunk for anything that already fits, so small
+    documents keep taking the original one-call path unchanged. Splits
+    prefer paragraph boundaries so a requirement is not cut in half, but
+    fall back to lines and then sentences — a single 60k-character block
+    with no blank lines still has to be broken up, or chunking would not
+    have bounded anything.
+    """
+    stripped = text.strip()
+    total_low, total_high = budget
+    if len(stripped) <= target_chars:
+        return [DocumentChunk(index=1, text=stripped, ticket_budget=(total_low, total_high))]
+
+    sections: List[str] = []
+    current: List[str] = []
+    size = 0
+    for paragraph in _atoms(stripped, target_chars):
+        if current and size + len(paragraph) > target_chars:
+            sections.append("\n\n".join(current))
+            current, size = [], 0
+        current.append(paragraph)
+        size += len(paragraph) + 2
+    if current:
+        sections.append("\n\n".join(current))
+
+    count = len(sections)
+    # Hard-cap the per-section ask regardless of how the total divides up:
+    # exceeding it is what gets a response truncated mid-JSON.
+    per_high = min(MAX_TICKETS_PER_CHUNK, max(2, round(total_high / count)))
+    per_low = max(1, min(round(total_low / count), per_high - 1))
+    return [
+        DocumentChunk(index=i, text=section, ticket_budget=(per_low, per_high))
+        for i, section in enumerate(sections, start=1)
+    ]
 
 
 class TicketExtractionError(RuntimeError):
@@ -491,7 +642,16 @@ def parse_proposed_tickets(raw_output: str) -> Tuple[List[ProposedTicket], List[
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise TicketParseError(f"Claude did not return valid JSON: {raw_output[:500]!r}") from exc
+        # Show the END of the response as well as the start, plus its length.
+        # A response cut off by a dropped connection looks perfectly fine in
+        # its first 500 characters — only the tail reveals it stops mid-token,
+        # and quoting just the head sends you chasing the wrong cause.
+        head = raw_output[:200]
+        tail = raw_output[-200:] if len(raw_output) > 400 else ""
+        detail = f"{len(raw_output)} chars, starts {head!r}"
+        if tail:
+            detail += f", ends {tail!r}"
+        raise TicketParseError(f"Claude did not return valid JSON ({detail})") from exc
 
     if not isinstance(payload, list):
         raise TicketParseError(f"Expected a JSON array of tickets, got: {type(payload).__name__}")
@@ -525,7 +685,11 @@ def _run_claude(claude_path: str, prompt: str, document_text: str, timeout_s: fl
         raise TicketGenerationError(f"Claude CLI timed out after {timeout_s}s analyzing the document") from exc
 
     if completed.returncode != 0:
-        raise TicketGenerationError(f"Claude CLI failed ({completed.returncode}): {completed.stderr.strip()}")
+        # The CLI sometimes exits non-zero with nothing on stderr, which makes
+        # a failure impossible to diagnose from the message alone — fall back
+        # to whatever it managed to write to stdout.
+        detail = completed.stderr.strip() or completed.stdout.strip()[:300] or "(no output)"
+        raise TicketGenerationError(f"Claude CLI failed ({completed.returncode}): {detail}")
 
     return completed.stdout
 
@@ -538,8 +702,13 @@ def generate_tickets_from_text(
     on_step: OnStep = None,
     project_start: Optional[date] = None,
     project_end: Optional[date] = None,
+    workers: Optional[int] = None,
 ) -> Tuple[List[ProposedTicket], List[str]]:
     """Run `claude -p <prompt>` with the document piped via stdin; parse the result.
+
+    A document past CHUNK_TARGET_CHARS is split into sections that are
+    generated concurrently and merged — one call covering a whole large
+    document is output-bound to the point of hitting the timeout.
 
     This is the harness around the model call: if Claude's output fails
     JSON/shape validation, the specific parse error is fed back into a
@@ -554,33 +723,145 @@ def generate_tickets_from_text(
         timeout_s if timeout_s is not None else float(os.getenv(CLAUDE_TIMEOUT_ENV_VAR, DEFAULT_CLAUDE_TIMEOUT_S))
     )
 
-    base_prompt = _build_extraction_prompt(project_start, project_end)
+    chunks = split_document(document_text)
+    if len(chunks) == 1:
+        _report(on_step, "Sending document to Claude for ticket extraction — this can take a minute…")
+        tickets, warnings = _generate_for_chunk(
+            chunks[0], 1, claude_path, resolved_timeout, max_attempts,
+            project_start, project_end, on_step,
+        )
+        _report(on_step, f"Extracted {len(tickets)} ticket(s) from the document.")
+        return tickets, warnings
+
+    return _generate_chunked(
+        chunks, claude_path, resolved_timeout, max_attempts,
+        project_start, project_end, on_step, workers,
+    )
+
+
+def _generate_for_chunk(
+    chunk: DocumentChunk,
+    chunk_total: int,
+    claude_path: str,
+    timeout_s: float,
+    max_attempts: int,
+    project_start: Optional[date],
+    project_end: Optional[date],
+    on_step: OnStep,
+) -> Tuple[List[ProposedTicket], List[str]]:
+    """One model call for one section, with the retry-with-repair loop.
+
+    Retries cover two different failures. A bad *response* is repaired by
+    feeding the validation error back into the next prompt. A failed
+    *invocation* (the CLI exiting non-zero, which happens under load) has
+    nothing to repair, so it is simply retried — previously it killed the
+    whole section on the first stumble with no second chance.
+    """
+    base_prompt = _build_extraction_prompt(project_start, project_end, chunk=chunk, chunk_total=chunk_total)
+    label = "" if chunk_total == 1 else f"Section {chunk.index}/{chunk_total}: "
     prompt = base_prompt
     last_error: Optional[str] = None
     for attempt in range(1, max_attempts + 1):
         if last_error is not None:
-            prompt = (
-                f"{base_prompt}\n\nYour previous response was invalid: {last_error} "
-                "Fix this and output ONLY the corrected JSON array."
-            )
-            _report(
-                on_step,
-                f"Claude's response didn't pass validation ({last_error}) — "
-                f"asking it to fix and retrying (attempt {attempt}/{max_attempts})…",
-            )
-        else:
-            _report(on_step, "Sending document to Claude for ticket extraction — this can take a minute…")
-        raw_output = _run_claude(claude_path, prompt, document_text, resolved_timeout)
+            _report(on_step, f"{label}{last_error} — retrying (attempt {attempt}/{max_attempts})…")
         try:
-            tickets, warnings = parse_proposed_tickets(raw_output)
-        except TicketParseError as exc:
+            raw_output = _run_claude(claude_path, prompt, chunk.text, timeout_s)
+        except TicketGenerationError as exc:
+            # Nothing to repair in the prompt — the call itself didn't run.
             last_error = str(exc)
+            prompt = base_prompt
             if attempt == max_attempts:
                 raise
             continue
-        _report(on_step, f"Extracted {len(tickets)} ticket(s) from the document.")
-        return tickets, warnings
+        try:
+            return parse_proposed_tickets(raw_output)
+        except TicketParseError as exc:
+            last_error = f"Claude's response didn't pass validation ({exc})"
+            prompt = (
+                f"{base_prompt}\n\nYour previous response was invalid: {exc} "
+                "Fix this and output ONLY the corrected JSON array."
+            )
+            if attempt == max_attempts:
+                raise
     raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
+
+
+def _generate_chunked(
+    chunks: List[DocumentChunk],
+    claude_path: str,
+    timeout_s: float,
+    max_attempts: int,
+    project_start: Optional[date],
+    project_end: Optional[date],
+    on_step: OnStep,
+    workers: Optional[int],
+) -> Tuple[List[ProposedTicket], List[str]]:
+    """Generate every section, several at a time, and merge the results.
+
+    Sections run concurrently because each is an independent subprocess and
+    the whole cost is waiting on output — this is where the wall-clock win
+    comes from. One section failing costs only that section's tickets, the
+    same per-item isolation used by the bulk QA and module sweeps; the run
+    only fails outright if every section failed.
+    """
+    total = len(chunks)
+    pool_size = max(1, min(workers or DEFAULT_CHUNK_WORKERS, total))
+    _report(
+        on_step,
+        f"Document is large — split into {total} sections, analyzing {pool_size} at a time. "
+        "Each section is a separate request, so this is far quicker than one giant call.",
+    )
+
+    lock = threading.Lock()
+    done = 0
+
+    def run(chunk: DocumentChunk):
+        nonlocal done
+        try:
+            tickets, warnings = _generate_for_chunk(
+                chunk, total, claude_path, timeout_s, max_attempts,
+                project_start, project_end, on_step,
+            )
+            error = None
+        except (TicketGenerationError, TicketParseError) as exc:
+            tickets, warnings, error = [], [], str(exc)
+        with lock:
+            done += 1
+            if error:
+                _report(on_step, f"Section {chunk.index}/{total} failed ({error}) — continuing without it.")
+            else:
+                _report(on_step, f"Section {chunk.index}/{total} done — {len(tickets)} ticket(s). [{done}/{total}]")
+        return chunk.index, tickets, warnings, error
+
+    with ThreadPoolExecutor(max_workers=pool_size) as pool:
+        results = list(pool.map(run, chunks))
+
+    results.sort(key=lambda r: r[0])  # keep document order regardless of finish order
+    merged: List[ProposedTicket] = []
+    warnings: List[str] = []
+    seen_titles: set = set()
+    failures = 0
+    for index, tickets, chunk_warnings, error in results:
+        if error:
+            failures += 1
+            warnings.append(f"Section {index} of the document could not be analyzed: {error}")
+            continue
+        warnings.extend(chunk_warnings)
+        for ticket in tickets:
+            # Sections are cut on paragraph boundaries, so the same feature can
+            # be described either side of a cut; keep the first occurrence.
+            key = ticket.title.strip().lower()
+            if key in seen_titles:
+                continue
+            seen_titles.add(key)
+            merged.append(ticket)
+
+    if failures == total:
+        raise TicketParseError(
+            f"All {total} sections of the document failed to produce tickets — see the warnings for details."
+        )
+    _report(on_step, f"Extracted {len(merged)} ticket(s) from {total - failures}/{total} sections.")
+    return merged, warnings
 
 
 def generate_tickets_from_file(
@@ -591,12 +872,14 @@ def generate_tickets_from_file(
     on_step: OnStep = None,
     project_start: Optional[date] = None,
     project_end: Optional[date] = None,
+    workers: Optional[int] = None,
 ) -> Tuple[List[ProposedTicket], List[str]]:
     """End-to-end: extract text from an uploaded file, then generate tickets."""
     _report(on_step, f'Extracting text from "{filename}"…')
     text = extract_document_text(filename, content)
     return generate_tickets_from_text(
-        text, timeout_s=timeout_s, on_step=on_step, project_start=project_start, project_end=project_end
+        text, timeout_s=timeout_s, on_step=on_step, project_start=project_start,
+        project_end=project_end, workers=workers,
     )
 
 

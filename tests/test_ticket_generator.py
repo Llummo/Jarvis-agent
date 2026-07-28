@@ -4,6 +4,7 @@ import pytest
 
 from meta_harness.ticket_generator import (
     IDEA_TICKET_PROMPT,
+    MAX_GENERATION_ATTEMPTS,
     TICKET_EXTRACTION_PROMPT,
     ClaudeNotFoundError,
     ProposedTicket,
@@ -17,6 +18,7 @@ from meta_harness.ticket_generator import (
     generate_tickets_from_idea,
     generate_tickets_from_text,
     parse_proposed_tickets,
+    split_document,
 )
 
 MINIMAL_TEST_PDF = b"""%PDF-1.4
@@ -194,6 +196,19 @@ def test_parse_proposed_tickets_strips_code_fences():
 def test_parse_proposed_tickets_not_json_raises():
     with pytest.raises(TicketParseError, match="did not return valid JSON"):
         parse_proposed_tickets("not json at all")
+
+
+def test_parse_error_shows_the_tail_so_truncation_is_visible():
+    # A response cut off by a dropped connection looks fine at the start; the
+    # end is the only place that shows it stopped mid-token.
+    truncated = '[{"title": "' + "x" * 900 + '", "description": "cortado a mit'
+
+    with pytest.raises(TicketParseError) as excinfo:
+        parse_proposed_tickets(truncated)
+
+    message = str(excinfo.value)
+    assert "cortado a mit" in message, "the tail must be reported"
+    assert f"{len(truncated)} chars" in message, "the length must be reported"
 
 
 def test_parse_proposed_tickets_object_not_array_raises():
@@ -799,3 +814,218 @@ def test_generate_tickets_from_idea_retries_on_bad_json(monkeypatch):
 
     assert len(calls) == 2
     assert len(tickets) == 1
+
+
+# ---------------------------------------------------------------------------
+# split_document / chunked generation — a large document is generated as
+# several concurrent calls instead of one that blows past the timeout.
+# ---------------------------------------------------------------------------
+
+
+def test_split_document_keeps_a_small_document_whole():
+    chunks = split_document("un parrafo corto")
+
+    assert len(chunks) == 1
+    assert chunks[0].index == 1
+    assert chunks[0].ticket_budget == (50, 80)  # the whole-document budget
+
+
+def test_split_document_splits_a_large_document_on_paragraphs():
+    paragraph = "x" * 5_000
+    doc = "\n\n".join([paragraph] * 20)  # 100k chars
+
+    chunks = split_document(doc, target_chars=20_000)
+
+    assert len(chunks) > 1
+    assert [c.index for c in chunks] == list(range(1, len(chunks) + 1))
+    # no paragraph was cut in half
+    for chunk in chunks:
+        for part in chunk.text.split("\n\n"):
+            assert part == paragraph
+
+
+def test_split_document_shares_the_ticket_budget_across_sections():
+    doc = "\n\n".join(["y" * 5_000] * 20)
+
+    chunks = split_document(doc, target_chars=20_000, budget=(50, 80))
+
+    assert len(chunks) > 1
+    # each section asks for its share, not the whole document's 50-80
+    for chunk in chunks:
+        low, high = chunk.ticket_budget
+        assert low == max(1, round(50 / len(chunks)))
+        assert high == max(low + 1, round(80 / len(chunks)))
+        assert high < 80
+
+
+def test_split_document_breaks_down_an_oversized_block():
+    # Extracted PDF text often has a long stretch with no blank lines. Leaving
+    # it whole would defeat the point of chunking, so it must be broken up.
+    huge = ". ".join(["frase de relleno numero %d" % i for i in range(3000)])
+    doc = "small\n\n" + huge + "\n\nalso small"
+
+    chunks = split_document(doc, target_chars=20_000)
+
+    assert len(huge) > 60_000
+    for chunk in chunks:
+        assert len(chunk.text) <= 22_000, "no section may blow past the target"
+
+
+def test_split_document_hard_slices_text_with_no_boundaries_at_all():
+    doc = "z" * 100_000  # no paragraphs, no lines, no sentences
+
+    chunks = split_document(doc, target_chars=20_000)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk.text) <= 22_000
+
+
+def _chunked_claude(monkeypatch, per_call_titles, calls=None):
+    """Return a distinct ticket batch per invocation, keyed by call order."""
+    counter = {"n": 0}
+    lock_free = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        n = counter["n"]
+        counter["n"] += 1
+        lock_free.append(command[2])
+        titles = per_call_titles[min(n, len(per_call_titles) - 1)]
+        payload = [_valid_ticket(title=t) for t in titles]
+        return Result(stdout=json.dumps(payload))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+    if calls is not None:
+        calls.append(lock_free)
+    return lock_free
+
+
+def _big_doc(target_chars=20_000):
+    return "\n\n".join(["w" * 5_000] * 12)
+
+
+def test_chunked_generation_merges_every_section(monkeypatch):
+    monkeypatch.setattr("meta_harness.ticket_generator.CHUNK_TARGET_CHARS", 20_000)
+    _chunked_claude(monkeypatch, [["A1", "A2"], ["B1"], ["C1", "C2"]])
+
+    tickets, warnings = generate_tickets_from_text(_big_doc(), timeout_s=5, workers=1)
+
+    assert len(tickets) >= 3
+    assert warnings == []
+
+
+def test_chunked_generation_dedupes_titles_repeated_across_sections(monkeypatch):
+    monkeypatch.setattr("meta_harness.ticket_generator.CHUNK_TARGET_CHARS", 20_000)
+    # every section proposes the same ticket -- a feature described either
+    # side of a section boundary must not become two tickets
+    _chunked_claude(monkeypatch, [["Duplicado"]])
+
+    tickets, _warnings = generate_tickets_from_text(_big_doc(), timeout_s=5, workers=1)
+
+    assert [t.title for t in tickets] == ["Duplicado"]
+
+
+def test_chunked_generation_survives_one_failing_section(monkeypatch):
+    monkeypatch.setattr("meta_harness.ticket_generator.CHUNK_TARGET_CHARS", 20_000)
+    counter = {"n": 0}
+
+    def fake_run(command, input, capture_output, text, timeout):
+        counter["n"] += 1
+        # the very first call returns junk on all its attempts, later ones work
+        if counter["n"] <= MAX_GENERATION_ATTEMPTS:
+            return Result(stdout="not json")
+        return Result(stdout=json.dumps([_valid_ticket(title=f"OK{counter['n']}")]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    tickets, warnings = generate_tickets_from_text(_big_doc(), timeout_s=5, workers=1)
+
+    assert tickets, "surviving sections must still produce tickets"
+    assert any("could not be analyzed" in w for w in warnings)
+
+
+def test_chunked_generation_raises_only_when_every_section_fails(monkeypatch):
+    monkeypatch.setattr("meta_harness.ticket_generator.CHUNK_TARGET_CHARS", 20_000)
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.ticket_generator.subprocess.run",
+        lambda *a, **k: Result(stdout="never valid"),
+    )
+
+    with pytest.raises(TicketParseError, match="All .* sections"):
+        generate_tickets_from_text(_big_doc(), timeout_s=5, workers=1)
+
+
+def test_chunked_generation_tells_each_call_which_section_it_is(monkeypatch):
+    monkeypatch.setattr("meta_harness.ticket_generator.CHUNK_TARGET_CHARS", 20_000)
+    prompts = _chunked_claude(monkeypatch, [["A"]])
+
+    generate_tickets_from_text(_big_doc(), timeout_s=5, workers=1)
+
+    assert any("SECTION 1 OF" in p for p in prompts)
+    assert any("SECTION 2 OF" in p for p in prompts)
+    # later sections are told the groundwork already exists
+    assert any("Earlier sections have already been processed" in p for p in prompts)
+
+
+def test_small_document_still_takes_the_single_call_path(monkeypatch):
+    prompts = _chunked_claude(monkeypatch, [["Solo"]])
+
+    generate_tickets_from_text("documento corto", timeout_s=5)
+
+    assert len(prompts) == 1
+    assert "SECTION" not in prompts[0]
+
+
+def test_a_failed_cli_invocation_is_retried_not_fatal(monkeypatch):
+    # A non-zero exit has nothing to repair in the prompt, but it is often
+    # transient under load -- it must not kill the section on first stumble.
+    calls = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        calls.append(command)
+        if len(calls) == 1:
+            return Result(returncode=1, stdout="", stderr="")
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    tickets, _warnings = generate_tickets_from_text("documento corto", timeout_s=5)
+
+    assert len(calls) == 2
+    assert len(tickets) == 1
+
+
+def test_a_retried_cli_failure_does_not_corrupt_the_prompt(monkeypatch):
+    # There is no bad response to quote back, so the retry must send the
+    # original prompt rather than a "your previous response was invalid" one.
+    prompts = []
+
+    def fake_run(command, input, capture_output, text, timeout):
+        prompts.append(command[2])
+        if len(prompts) == 1:
+            return Result(returncode=1, stderr="boom")
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_text("documento corto", timeout_s=5)
+
+    assert "previous response was invalid" not in prompts[1]
+    assert prompts[0] == prompts[1]
+
+
+def test_cli_failure_message_falls_back_to_stdout(monkeypatch):
+    # An exit code with empty stderr is undiagnosable; surface stdout instead.
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(
+        "meta_harness.ticket_generator.subprocess.run",
+        lambda *a, **k: Result(returncode=1, stdout="usage limit reached", stderr=""),
+    )
+
+    with pytest.raises(TicketGenerationError, match="usage limit reached"):
+        generate_tickets_from_text("documento corto", timeout_s=5, max_attempts=1)
