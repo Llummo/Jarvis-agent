@@ -1,6 +1,6 @@
-# Hermes Agent Meta-Harness
+# Jarvis-agent
 
-`hermes-agent-metaharness` is the standalone outer-loop Meta-Harness repo for Hermes.
+`Jarvis-agent` is the standalone outer-loop Meta-Harness repo for Hermes.
 
 It treats `hermes-agent` as the execution backend for benchmark harness candidates and focuses on:
 
@@ -23,7 +23,7 @@ The paper’s core argument is that LLM system quality depends not only on model
 Hermes uses the same high-level idea, but adapts it to a research-safe benchmark workflow:
 
 - `hermes-agent` owns the inner runtime: candidate protocol, benchmark integration, loop hooks, and archive writing.
-- `hermes-agent-metaharness` owns the outer loop: candidate evaluation, archive analysis, baseline reuse, frontier tracking, and search.
+- `Jarvis-agent` owns the outer loop: candidate evaluation, archive analysis, baseline reuse, frontier tracking, and search.
 - The current target is verifiable coding benchmarks such as TBLite and TB2, not general production chat behavior.
 - Candidate search is intentionally conservative today: this repo generates deterministic wrapper candidates around a seed candidate instead of rewriting Hermes core.
 
@@ -38,7 +38,7 @@ In other words, the project applies Meta-Harness to Hermes by optimizing how Her
 - optional loop hooks
 - per-task archive writing
 
-`hermes-agent-metaharness` owns the outer loop:
+`Jarvis-agent` owns the outer loop:
 
 - candidate evaluation and comparison
 - archive analysis
@@ -66,8 +66,8 @@ The current release provides:
 ## Quick Start
 
 ```bash
-git clone https://github.com/howdymary/hermes-agent-metaharness.git
-cd hermes-agent-metaharness
+git clone https://github.com/Llummo/Jarvis-agent.git
+cd Jarvis-agent
 pip install -e ".[dev]"
 ```
 
