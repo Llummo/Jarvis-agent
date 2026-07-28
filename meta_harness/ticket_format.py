@@ -81,9 +81,7 @@ def format_clickup_description(ticket) -> str:
     if existing:
         lines.extend(existing)
     else:
-        lines.append(
-            "- No se proporcionaron recursos visuales; agregar capturas, diagramas o enlaces de referencia si están disponibles."
-        )
+        lines.append("- No se encontraron referencias visuales.")
     lines += ["", "✅ CRITERIOS DE ACEPTACIÓN"]
     for index, criterion in enumerate(ticket.acceptance_criteria, start=1):
         lines.append(f"📌 Criterio {index}: {criterion_text(criterion)}")
@@ -132,14 +130,12 @@ def format_linear_description(ticket) -> str:
         # Carried over from the original ticket — never replaced by the
         # placeholder, or reformatting would destroy its screenshots.
         lines.extend(existing)
+        lines += ["", "- En general sería ideal agregar cualquier imagen de referencia."]
     else:
-        lines += [
-            "* Mockup / UI Route: [Link a Figma]",
-            "* Diagrama / Adjuntos: [Adjuntar diagramas o capturas de referencia]",
-        ]
+        # Empty template brackets read as unfinished work. State the fact
+        # instead: there is nothing to show.
+        lines.append("- No se encontraron referencias visuales.")
     lines += [
-        "",
-        "- En general sería ideal agregar cualquier imagen de referencia.",
         "",
         "✅ CRITERIOS DE ACEPTACIÓN",
         "",

@@ -21,6 +21,7 @@ from typing import Callable, Optional
 
 from meta_harness.clickup_bridge import get_clickup_task, update_clickup_task
 from meta_harness.linear_bridge import get_linear_issue, update_linear_issue
+from meta_harness.reformat_history import ReformatHistoryStore
 from meta_harness.ticket_format import (
     extract_visual_resources,
     format_clickup_description,
@@ -178,6 +179,7 @@ def apply_reformatted_ticket(
     title: Optional[str] = None,
     description: Optional[str] = None,
     project_path: Optional[Path] = None,
+    history: Optional[ReformatHistoryStore] = None,
     on_step: OnStep = None,
 ) -> dict:
     """Write an approved rewrite back to the tracker.
@@ -191,6 +193,20 @@ def apply_reformatted_ticket(
         raise ValueError("Provide a title and/or a description to update")
 
     label = "Linear issue" if tracker == "linear" else "ClickUp task"
+
+    # Save what is about to be overwritten BEFORE writing. This is someone
+    # else's text; the change has to be undoable.
+    history = history if history is not None else ReformatHistoryStore()
+    try:
+        previous_title, previous_description = _fetch(ticket_id, tracker, project_path)
+        history.remember(
+            ticket_id, tracker,
+            title=previous_title, description=previous_description, new_title=title or previous_title,
+        )
+        _report(on_step, "Saved the current version so this can be undone…")
+    except Exception as exc:  # noqa: BLE001 - never block the update over history
+        _report(on_step, f"Could not save an undo point ({exc}) — continuing.")
+
     _report(on_step, f"Updating the {label}…")
     if tracker == "linear":
         updated = update_linear_issue(
@@ -201,4 +217,48 @@ def apply_reformatted_ticket(
             ticket_id, name=title, description=description, project_path=project_path
         )
     _report(on_step, f"{label.capitalize()} updated.")
+    return updated
+
+
+class NoPreviousVersionError(LookupError):
+    """No saved pre-reformat version exists for this ticket."""
+
+
+def revert_ticket(
+    ticket_id: str,
+    *,
+    tracker: str = "clickup",
+    project_path: Optional[Path] = None,
+    history: Optional[ReformatHistoryStore] = None,
+    on_step: OnStep = None,
+) -> dict:
+    """Restore a ticket to the version it had before it was reformatted.
+
+    Writes back the exact title and description that were saved at apply
+    time — not a regenerated approximation — then drops the saved version
+    so the UI stops offering an undo that has already happened.
+    """
+    if tracker not in TRACKERS:
+        raise ValueError(f"Invalid tracker '{tracker}'; must be one of {TRACKERS}")
+
+    history = history if history is not None else ReformatHistoryStore()
+    previous = history.get(ticket_id, tracker)
+    if previous is None:
+        raise NoPreviousVersionError(
+            f"No saved version for {ticket_id} — it has not been reformatted, or it was already reverted."
+        )
+
+    label = "Linear issue" if tracker == "linear" else "ClickUp task"
+    _report(on_step, f"Restoring the {label} to its previous version…")
+    if tracker == "linear":
+        updated = update_linear_issue(
+            ticket_id, title=previous["title"], description=previous["description"], project_path=project_path
+        )
+    else:
+        updated = update_clickup_task(
+            ticket_id, name=previous["title"], description=previous["description"], project_path=project_path
+        )
+
+    history.forget(ticket_id, tracker)
+    _report(on_step, f"Restored to the version saved at {previous.get('saved_at', 'an earlier time')}.")
     return updated

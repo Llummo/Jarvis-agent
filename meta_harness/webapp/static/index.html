@@ -3,15 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Meta-Harness</title>
+  <title>METRICA | JARVIS-AGENT</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header>
     <div class="header-inner">
       <div class="brand">
-        <h1>Meta-Harness</h1>
-        <span class="brand-sub">Ticket generation &amp; QA review</span>
+        <svg class="brand-mark" viewBox="0 0 48 48" role="img" aria-label="Metrica">
+          <rect width="48" height="48" rx="11" fill="#FC6A62"/>
+          <rect x="12" y="12" width="5" height="24" rx="1.6" fill="#fff"/>
+          <rect x="21.5" y="18" width="5" height="18" rx="1.6" fill="#fff"/>
+          <rect x="31" y="12" width="5" height="24" rx="1.6" fill="#fff"/>
+        </svg>
+        <div class="brand-text">
+          <h1><span class="brand-org">METRICA</span><span class="brand-sep">|</span><span class="brand-product">JARVIS-AGENT</span></h1>
+          <span class="brand-sub">Ticket generation &amp; QA review</span>
+        </div>
       </div>
       <nav class="tabs">
         <button class="tab-button active" data-tab="clickup">ClickUp</button>
@@ -110,15 +118,23 @@
 
             <!-- Mode B: chat -->
             <div id="clickup-mode-chat" hidden>
-              <div class="chat-log" id="clickup-chat-log">
-                <div class="chat-empty">Describe what you need — for example “necesito una pantalla para exportar candidatos a Excel”. You'll get back a fully formatted ticket you can review and add.</div>
-              </div>
+              <div class="chat-log" id="clickup-chat-log" role="log" aria-live="polite" aria-label="Conversation"></div>
+
+              <div class="chat-suggestions" id="clickup-chat-suggestions"></div>
+
               <form id="clickup-chat-form" class="chat-compose">
                 <div class="field">
-                  <label for="clickup-chat-input">Your idea</label>
-                  <textarea id="clickup-chat-input" rows="4" placeholder="Describe the feature or change you want…"></textarea>
+                  <label for="clickup-chat-input">Describe what you need</label>
+                  <textarea id="clickup-chat-input" rows="3" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <span class="field-note">
+                    <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
+                    the more concrete you are, the better the ticket
+                  </span>
                 </div>
-                <button type="submit" class="btn-primary">Send</button>
+                <div class="chat-actions">
+                  <button type="submit" id="clickup-chat-send" class="btn-primary" disabled>Send</button>
+                  <button type="button" id="clickup-chat-cancel" hidden>Cancel</button>
+                </div>
               </form>
               <div class="btn-row">
                 <button type="button" id="clickup-chat-reset">Start over</button>
@@ -304,6 +320,17 @@
             </div>
             <div id="clickup-reformat-error" class="error-banner" hidden></div>
             <div id="clickup-reformat-success" class="success-banner" hidden></div>
+
+            <div id="clickup-revert-panel" class="undo-bar" hidden>
+              <div>
+                <strong>Reformatted tickets you can undo</strong>
+                <span class="field-note" id="clickup-revert-note"></span>
+              </div>
+              <div class="inline-controls">
+                <select id="clickup-revert-select"></select>
+                <button type="button" id="clickup-revert-btn">Revert to previous version</button>
+              </div>
+            </div>
 
             <div id="clickup-reformat-result" hidden>
               <h3>Proposed rewrite</h3>
@@ -564,15 +591,23 @@
 
             <!-- Mode B: chat -->
             <div id="linear-mode-chat" hidden>
-              <div class="chat-log" id="linear-chat-log">
-                <div class="chat-empty">Describe what you need — for example “necesito una pantalla para exportar candidatos a Excel”. You'll get back a fully formatted issue you can review and add.</div>
-              </div>
+              <div class="chat-log" id="linear-chat-log" role="log" aria-live="polite" aria-label="Conversation"></div>
+
+              <div class="chat-suggestions" id="linear-chat-suggestions"></div>
+
               <form id="linear-chat-form" class="chat-compose">
                 <div class="field">
-                  <label for="linear-chat-input">Your idea</label>
-                  <textarea id="linear-chat-input" rows="4" placeholder="Describe the feature or change you want…"></textarea>
+                  <label for="linear-chat-input">Describe what you need</label>
+                  <textarea id="linear-chat-input" rows="3" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <span class="field-note">
+                    <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
+                    the more concrete you are, the better the issue
+                  </span>
                 </div>
-                <button type="submit" class="btn-primary">Send</button>
+                <div class="chat-actions">
+                  <button type="submit" id="linear-chat-send" class="btn-primary" disabled>Send</button>
+                  <button type="button" id="linear-chat-cancel" hidden>Cancel</button>
+                </div>
               </form>
               <div class="btn-row">
                 <button type="button" id="linear-chat-reset">Start over</button>
@@ -758,6 +793,17 @@
             </div>
             <div id="linear-reformat-error" class="error-banner" hidden></div>
             <div id="linear-reformat-success" class="success-banner" hidden></div>
+
+            <div id="linear-revert-panel" class="undo-bar" hidden>
+              <div>
+                <strong>Reformatted issues you can undo</strong>
+                <span class="field-note" id="linear-revert-note"></span>
+              </div>
+              <div class="inline-controls">
+                <select id="linear-revert-select"></select>
+                <button type="button" id="linear-revert-btn">Revert to previous version</button>
+              </div>
+            </div>
 
             <div id="linear-reformat-result" hidden>
               <h3>Proposed rewrite</h3>
