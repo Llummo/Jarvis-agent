@@ -11,6 +11,8 @@ Pure text composition — no I/O, no tracker calls.
 
 from __future__ import annotations
 
+import re
+
 
 def criterion_text(criterion) -> str:
     """One-line Gherkin rendering — ClickUp keeps criteria compact, unlike
@@ -41,13 +43,15 @@ def format_clickup_description(ticket) -> str:
         lines.append(ticket.user_story)
         lines.append("")
     lines.append(ticket.description)
-    lines += [
-        "",
-        "🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)",
-        "- No se proporcionaron recursos visuales; agregar capturas, diagramas o enlaces de referencia si están disponibles.",
-        "",
-        "✅ CRITERIOS DE ACEPTACIÓN",
-    ]
+    lines += ["", "🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)"]
+    existing = getattr(ticket, "visual_resources", None) or []
+    if existing:
+        lines.extend(existing)
+    else:
+        lines.append(
+            "- No se proporcionaron recursos visuales; agregar capturas, diagramas o enlaces de referencia si están disponibles."
+        )
+    lines += ["", "✅ CRITERIOS DE ACEPTACIÓN"]
     for index, criterion in enumerate(ticket.acceptance_criteria, start=1):
         lines.append(f"📌 Criterio {index}: {criterion_text(criterion)}")
     lines.append("📌 Criterio X: [Espacio para criterios adicionales]")
@@ -89,10 +93,18 @@ def format_linear_description(ticket) -> str:
             lines += [story_line, ""]
     lines += [ticket.description, ""]
 
+    lines.append("🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)")
+    existing = getattr(ticket, "visual_resources", None) or []
+    if existing:
+        # Carried over from the original ticket — never replaced by the
+        # placeholder, or reformatting would destroy its screenshots.
+        lines.extend(existing)
+    else:
+        lines += [
+            "* Mockup / UI Route: [Link a Figma]",
+            "* Diagrama / Adjuntos: [Adjuntar diagramas o capturas de referencia]",
+        ]
     lines += [
-        "🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)",
-        "* Mockup / UI Route: [Link a Figma]",
-        "* Diagrama / Adjuntos: [Adjuntar diagramas o capturas de referencia]",
         "",
         "- En general sería ideal agregar cualquier imagen de referencia.",
         "",
@@ -127,3 +139,36 @@ def format_linear_description(ticket) -> str:
         lines.append("* (sin notas adicionales)")
 
     return "\n".join(lines)
+
+
+# Images in existing tickets come as markdown with long signed URLs, or
+# occasionally as raw <img> tags. Both are matched so reformatting can carry
+# them across verbatim instead of silently dropping them.
+_IMAGE_MARKDOWN = re.compile(r"!\[[^\]]*\]\([^)\s]+(?:\s+\"[^\"]*\")?\)")
+_IMAGE_HTML = re.compile(r"<img\s[^>]*?src=[\"'][^\"']+[\"'][^>]*>", re.IGNORECASE)
+# A bare attachment/upload link that isn't in image syntax but still points at
+# a file worth keeping.
+# The (?<!!) guard matters: without it this also matches the inner half of a
+# markdown image, reporting every image twice.
+_ATTACHMENT_LINK = re.compile(
+    r"(?<!!)\[[^\]]+\]\((https?://[^)\s]*(?:uploads|attachments|files)[^)\s]*)\)", re.IGNORECASE
+)
+
+
+def extract_visual_resources(description: str) -> list:
+    """Pull every image and attachment reference out of a ticket body.
+
+    Deliberately done in code, not by the model: these are long signed URLs
+    that have to survive byte-for-byte, and asking an LLM to copy them back
+    verbatim is exactly how an image gets quietly corrupted or dropped.
+    Order is preserved and duplicates are removed.
+    """
+    if not description:
+        return []
+    found: list = []
+    for pattern in (_IMAGE_MARKDOWN, _IMAGE_HTML, _ATTACHMENT_LINK):
+        for match in pattern.finditer(description):
+            item = match.group(0).strip()
+            if item not in found:
+                found.append(item)
+    return found

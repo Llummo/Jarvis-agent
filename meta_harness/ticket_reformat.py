@@ -15,13 +15,17 @@ and fills in what the ticket implies, and must not invent new scope.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
 from meta_harness.clickup_bridge import get_clickup_task, update_clickup_task
 from meta_harness.linear_bridge import get_linear_issue, update_linear_issue
-from meta_harness.ticket_format import format_clickup_description, format_linear_description
+from meta_harness.ticket_format import (
+    extract_visual_resources,
+    format_clickup_description,
+    format_linear_description,
+)
 from meta_harness.ticket_generator import (
     _TICKET_FIELDS_SPEC,
     CLAUDE_TIMEOUT_ENV_VAR,
@@ -147,6 +151,13 @@ def reformat_ticket(
             continue
 
         ticket = tickets[0]
+        # Images and attachments are carried across verbatim rather than
+        # regenerated: reformatting a ticket must never cost it its
+        # screenshots.
+        carried = extract_visual_resources(original_description)
+        if carried:
+            ticket = replace(ticket, visual_resources=carried)
+            _report(on_step, f"Carrying over {len(carried)} image/attachment reference(s) from the original.")
         _report(on_step, "Reformatted — review the proposal before applying it.")
         return ReformattedTicket(
             ticket_id=ticket_id,
