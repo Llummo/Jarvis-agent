@@ -83,6 +83,15 @@ _COUNT_GUIDANCE_WHOLE = (
 )
 
 
+def _count_guidance_for_document(low: int, high: int) -> str:
+    return (
+        "Let the document's actual scope decide the count; do not pad the list to hit any "
+        f"particular number. For a document of this size aim for roughly {low}-{high} tickets — "
+        "if strict half-day-to-two-day sizing would push noticeably past that, favor slightly "
+        "broader (but still coherent and specific) ticket scopes instead of fragmenting further. "
+    )
+
+
 def _count_guidance_for_chunk(low: int, high: int) -> str:
     return (
         "Let this section's actual scope decide the count; do not pad the list to hit any "
@@ -266,8 +275,11 @@ def _build_extraction_prompt(
     section's own share and the model is told where the section sits in the
     document, so it can still reason about ordering it cannot see.
     """
-    if chunk is None or chunk_total <= 1:
+    if chunk is None:
         prompt = TICKET_EXTRACTION_PROMPT
+    elif chunk_total <= 1:
+        low, high = chunk.ticket_budget
+        prompt = _PROMPT_HEAD + _count_guidance_for_document(low, high) + _PROMPT_TAIL
     else:
         low, high = chunk.ticket_budget
         prompt = _PROMPT_HEAD + _count_guidance_for_chunk(low, high) + _PROMPT_TAIL
@@ -310,6 +322,24 @@ TOTAL_TICKET_BUDGET = (50, 80)
 # structured criteria, so the per-section ask is capped well below the point
 # where responses start getting cut off.
 MAX_TICKETS_PER_CHUNK = 16
+# Roughly how much source text one right-sized ticket comes from. Calibrated
+# so a full-size document lands in TOTAL_TICKET_BUDGET overall, while a short
+# proposal gets a handful of tickets instead of being fragmented into 80.
+CHARS_PER_TICKET = 1_200
+
+
+def ticket_budget_for(chars: int) -> Tuple[int, int]:
+    """How many tickets to ask for from `chars` of source text.
+
+    Asking a fixed 50-80 of every call was the bug behind both the slowness
+    and the dropped responses: a 11k-character proposal was being asked for
+    the same output as a 95k-character specification. The ask now scales with
+    the content and is hard-capped at the volume that reliably comes back
+    whole.
+    """
+    high = max(4, min(MAX_TICKETS_PER_CHUNK, round(chars / CHARS_PER_TICKET)))
+    low = max(2, min(round(high * 0.6), high - 1))
+    return low, high
 # How many sections to generate at once. The wall-clock win comes from this;
 # kept small so a big document doesn't spawn an unbounded number of CLI
 # processes at once.
@@ -363,9 +393,10 @@ def split_document(
     have bounded anything.
     """
     stripped = text.strip()
-    total_low, total_high = budget
     if len(stripped) <= target_chars:
-        return [DocumentChunk(index=1, text=stripped, ticket_budget=(total_low, total_high))]
+        # One section still gets a size-derived ask: an unsplit document is
+        # not automatically a big one.
+        return [DocumentChunk(index=1, text=stripped, ticket_budget=ticket_budget_for(len(stripped)))]
 
     sections: List[str] = []
     current: List[str] = []
@@ -379,13 +410,10 @@ def split_document(
     if current:
         sections.append("\n\n".join(current))
 
-    count = len(sections)
-    # Hard-cap the per-section ask regardless of how the total divides up:
-    # exceeding it is what gets a response truncated mid-JSON.
-    per_high = min(MAX_TICKETS_PER_CHUNK, max(2, round(total_high / count)))
-    per_low = max(1, min(round(total_low / count), per_high - 1))
+    # Each section is budgeted from its own length, so a short trailing
+    # section does not get the same ask as a full one.
     return [
-        DocumentChunk(index=i, text=section, ticket_budget=(per_low, per_high))
+        DocumentChunk(index=i, text=section, ticket_budget=ticket_budget_for(len(section)))
         for i, section in enumerate(sections, start=1)
     ]
 

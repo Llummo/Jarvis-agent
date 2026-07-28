@@ -827,7 +827,8 @@ def test_split_document_keeps_a_small_document_whole():
 
     assert len(chunks) == 1
     assert chunks[0].index == 1
-    assert chunks[0].ticket_budget == (50, 80)  # the whole-document budget
+    # Budget scales with content: a one-line document is not a 50-80 job.
+    assert chunks[0].ticket_budget[1] <= 6
 
 
 def test_split_document_splits_a_large_document_on_paragraphs():
@@ -850,12 +851,13 @@ def test_split_document_shares_the_ticket_budget_across_sections():
     chunks = split_document(doc, target_chars=20_000, budget=(50, 80))
 
     assert len(chunks) > 1
-    # each section asks for its share, not the whole document's 50-80
+    # each section asks only for what its own length warrants, never the
+    # whole document's 50-80
+    from meta_harness.ticket_generator import MAX_TICKETS_PER_CHUNK
     for chunk in chunks:
         low, high = chunk.ticket_budget
-        assert low == max(1, round(50 / len(chunks)))
-        assert high == max(low + 1, round(80 / len(chunks)))
-        assert high < 80
+        assert low < high
+        assert high <= MAX_TICKETS_PER_CHUNK
 
 
 def test_split_document_breaks_down_an_oversized_block():
@@ -1029,3 +1031,68 @@ def test_cli_failure_message_falls_back_to_stdout(monkeypatch):
 
     with pytest.raises(TicketGenerationError, match="usage limit reached"):
         generate_tickets_from_text("documento corto", timeout_s=5, max_attempts=1)
+
+
+# ---------------------------------------------------------------------------
+# ticket_budget_for — the ask has to scale with the content.
+# Asking a fixed 50-80 of every call made a small document as slow and as
+# fragile as a huge one, and fragmented it into dozens of tiny tickets.
+# ---------------------------------------------------------------------------
+
+
+def test_a_small_document_is_not_asked_for_dozens_of_tickets():
+    from meta_harness.ticket_generator import ticket_budget_for
+
+    low, high = ticket_budget_for(11_000)  # a ~3k-token proposal
+
+    assert high <= 12, "a short proposal must not be asked for a full document's worth"
+    assert low < high
+
+
+def test_a_tiny_document_still_asks_for_a_few():
+    from meta_harness.ticket_generator import ticket_budget_for
+
+    low, high = ticket_budget_for(500)
+
+    assert low >= 2 and high >= 4, "even a one-pager should yield something"
+
+
+def test_no_single_call_exceeds_the_safe_output_volume():
+    from meta_harness.ticket_generator import MAX_TICKETS_PER_CHUNK, ticket_budget_for
+
+    # Exceeding this is what got responses truncated mid-JSON.
+    for chars in (50_000, 200_000, 1_000_000):
+        assert ticket_budget_for(chars)[1] <= MAX_TICKETS_PER_CHUNK
+
+
+def test_an_unsplit_document_gets_a_size_derived_budget():
+    # The single-call path used to inherit the whole 50-80 regardless of size.
+    chunks = split_document("x" * 11_000)
+
+    assert len(chunks) == 1
+    assert chunks[0].ticket_budget[1] <= 12
+
+
+def test_a_full_size_document_still_totals_the_intended_range():
+    doc = "\n\n".join(["y" * 4_000] * 24)  # ~96k chars
+
+    chunks = split_document(doc)
+    total = sum(c.ticket_budget[1] for c in chunks)
+
+    assert 40 <= total <= 90, f"a full spec should still land near the intended range, got {total}"
+
+
+def test_the_single_call_prompt_states_the_size_derived_target(monkeypatch):
+    captured = {}
+
+    def fake_run(command, input, capture_output, text, timeout):
+        captured["prompt"] = command[2]
+        return Result(stdout=json.dumps([_valid_ticket()]))
+
+    monkeypatch.setattr("meta_harness.ticket_generator.shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("meta_harness.ticket_generator.subprocess.run", fake_run)
+
+    generate_tickets_from_text("x" * 11_000, timeout_s=5)
+
+    assert "50-80" not in captured["prompt"], "a small document must not be asked for 50-80"
+    assert "for a document of this size" in captured["prompt"].lower()
