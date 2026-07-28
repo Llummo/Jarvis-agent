@@ -14,6 +14,39 @@ from __future__ import annotations
 import re
 
 
+CODE_FENCE = "```"
+
+
+def bulleted_preserving_code(text: str) -> list:
+    """Bullet each line of a notes block, leaving fenced code untouched.
+
+    Technical notes read best as bullets, but a ``` block must survive
+    exactly as written — prefixing its lines with "* " (or dropping the
+    blank lines inside it) turns a readable SQL snippet or JSON payload
+    into nonsense, and breaks the fence so it renders as literal
+    backticks.
+    """
+    rendered: list = []
+    in_code = False
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith(CODE_FENCE):
+            in_code = not in_code
+            rendered.append(stripped)
+            continue
+        if in_code:
+            rendered.append(raw_line)  # verbatim, blank lines and indentation included
+            continue
+        if not stripped:
+            continue
+        rendered.append(stripped if stripped.startswith(("*", "-")) else f"* {stripped}")
+
+    # An unbalanced fence would swallow the rest of the description.
+    if in_code:
+        rendered.append(CODE_FENCE)
+    return rendered
+
+
 def criterion_text(criterion) -> str:
     """One-line Gherkin rendering — ClickUp keeps criteria compact, unlike
     Linear's bulleted house format (see routes_linear._format_description)."""
@@ -48,9 +81,7 @@ def format_clickup_description(ticket) -> str:
     if existing:
         lines.extend(existing)
     else:
-        lines.append(
-            "- No se proporcionaron recursos visuales; agregar capturas, diagramas o enlaces de referencia si están disponibles."
-        )
+        lines.append("- No se encontraron referencias visuales.")
     lines += ["", "✅ CRITERIOS DE ACEPTACIÓN"]
     for index, criterion in enumerate(ticket.acceptance_criteria, start=1):
         lines.append(f"📌 Criterio {index}: {criterion_text(criterion)}")
@@ -99,14 +130,12 @@ def format_linear_description(ticket) -> str:
         # Carried over from the original ticket — never replaced by the
         # placeholder, or reformatting would destroy its screenshots.
         lines.extend(existing)
+        lines += ["", "- En general sería ideal agregar cualquier imagen de referencia."]
     else:
-        lines += [
-            "* Mockup / UI Route: [Link a Figma]",
-            "* Diagrama / Adjuntos: [Adjuntar diagramas o capturas de referencia]",
-        ]
+        # Empty template brackets read as unfinished work. State the fact
+        # instead: there is nothing to show.
+        lines.append("- No se encontraron referencias visuales.")
     lines += [
-        "",
-        "- En general sería ideal agregar cualquier imagen de referencia.",
         "",
         "✅ CRITERIOS DE ACEPTACIÓN",
         "",
@@ -133,8 +162,7 @@ def format_linear_description(ticket) -> str:
         "🛠️ NOTAS TÉCNICAS Y ADICIONALES (opcional)",
     ]
     if ticket.technical_notes:
-        for note in [n.strip() for n in ticket.technical_notes.splitlines() if n.strip()]:
-            lines.append(note if note.startswith("*") else f"* {note}")
+        lines.extend(bulleted_preserving_code(ticket.technical_notes))
     else:
         lines.append("* (sin notas adicionales)")
 

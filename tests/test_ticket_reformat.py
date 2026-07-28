@@ -290,14 +290,17 @@ def test_reformat_carries_the_original_images_across(monkeypatch):
     assert IMG_B in result.formatted_description
 
 
-def test_reformat_keeps_the_placeholder_when_there_were_no_images(monkeypatch):
+def test_no_images_states_the_fact_instead_of_showing_placeholders(monkeypatch):
+    # Empty template brackets read as unfinished work; say there is nothing.
     _mock_linear(monkeypatch, description="un ticket sin imagenes")
     _mock_claude(monkeypatch)
 
     result = reformat_ticket("I1", tracker="linear", timeout_s=5)
 
     assert result.ticket.visual_resources == []
-    assert "[Link a Figma]" in result.formatted_description
+    assert "- No se encontraron referencias visuales." in result.formatted_description
+    assert "[Link a Figma]" not in result.formatted_description
+    assert "[Adjuntar diagramas" not in result.formatted_description
 
 
 def test_carried_images_replace_the_placeholder_not_append_to_it(monkeypatch):

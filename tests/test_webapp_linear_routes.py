@@ -275,9 +275,10 @@ def test_linear_description_follows_the_house_format_exactly(monkeypatch):
     assert "quiero registrar personas," in body
     assert "para centralizar el pool." in body
     assert "🖼️ RECURSOS VISUALES Y REFERENCIAS (OPCIONAL)" in body
-    assert "* Mockup / UI Route:" in body
-    assert "* Diagrama / Adjuntos:" in body
-    assert "- En general sería ideal agregar cualquier imagen de referencia." in body
+    # No images on this ticket, so the section states that plainly rather
+    # than showing empty template brackets.
+    assert "- No se encontraron referencias visuales." in body
+    assert "[Link a Figma]" not in body
     assert "✅ CRITERIOS DE ACEPTACIÓN" in body
     assert "📌 Criterio 1: Carga de CV" in body
     assert "* Dado que el usuario está en la pantalla," in body

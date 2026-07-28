@@ -96,6 +96,25 @@ function downloadTextFile(filename, content, mimeType = "text/markdown") {
   URL.revokeObjectURL(url);
 }
 
+// Renders ``` fenced blocks as real code blocks and everything else as
+// escaped text. Without this a ticket carrying a SQL snippet or a JSON
+// payload shows raw backticks in the preview, which is worse than the prose
+// it replaced. Deliberately handles only fences — this is not a markdown
+// renderer and must not start interpreting anything else.
+function renderWithCodeBlocks(text) {
+  if (!text) return "";
+  const parts = String(text).split("```");
+  return parts
+    .map((part, index) => {
+      if (index % 2 === 0) return escapeHtml(part);
+      // Odd segments sit between fences. A leading language hint (```json)
+      // is a label, not content.
+      const body = part.replace(/^[a-zA-Z0-9_-]*\n/, "");
+      return `<pre class="code-block">${escapeHtml(body.replace(/\n$/, ""))}</pre>`;
+    })
+    .join("");
+}
+
 function severityClass(severity) {
   if (severity === "critical") return "severity-critical";
   if (severity === "major") return "severity-major";
@@ -350,7 +369,7 @@ function ticketBodyHtml(ticket) {
   }
   parts.push(
     `<div class="ticket-section"><div class="ticket-section-label">Description</div>` +
-      `<p>${escapeHtml(ticket.description)}</p></div>`,
+      `<p>${renderWithCodeBlocks(ticket.description)}</p></div>`,
   );
   if (ticket.acceptance_criteria && ticket.acceptance_criteria.length) {
     const items = ticket.acceptance_criteria.map((c) => `<li>${escapeHtml(criterionText(c))}</li>`).join("");
@@ -361,7 +380,7 @@ function ticketBodyHtml(ticket) {
   if (ticket.technical_notes) {
     parts.push(
       `<div class="ticket-section"><div class="ticket-section-label">Technical notes</div>` +
-        `<p>${escapeHtml(ticket.technical_notes)}</p></div>`,
+        `<div>${renderWithCodeBlocks(ticket.technical_notes)}</div></div>`,
     );
   }
   return parts.join("");
@@ -424,6 +443,9 @@ function createTrackerPanel(tracker) {
     proposed: [], // [{ ticket, status, createdId, error }]
     members: [], // [{ email, username, clickup_id, linear_id, selected }]
     chatHistory: [],
+    chatPending: false,
+    chatLastSent: "",
+    chatAbort: null,
     bulkResults: [],
     bulkReadme: "",
     moduleReport: "",
@@ -658,25 +680,101 @@ function createTrackerPanel(tracker) {
 
   // --- chat mode ------------------------------------------------------------
 
+  // Ready-made openers. Nielsen #6, recognition rather than recall: a blank
+  // box makes the user invent both the idea and its phrasing; concrete
+  // examples show what a good request looks like and are one click to use.
+  const CHAT_SUGGESTIONS = [
+    "Necesito una pantalla para exportar candidatos a Excel, con filtros por estado",
+    "Agregar validación de email y teléfono en el formulario de alta de persona",
+    "Endpoint para archivar una persona y quitarla del listado activo",
+    "Importar personas masivamente desde un CSV, máximo 100 por lote",
+  ];
+
+  function renderChatSuggestions() {
+    const node = el("chat-suggestions");
+    // Progressive disclosure: only useful before a conversation exists.
+    if (state.chatHistory.length || state.chatPending) {
+      node.hidden = true;
+      return;
+    }
+    node.hidden = false;
+    node.innerHTML = `<div class="chat-suggestions-label">Try one of these</div>`;
+    for (const text of CHAT_SUGGESTIONS) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chat-suggestion";
+      chip.textContent = text;
+      chip.addEventListener("click", () => {
+        const input = el("chat-input");
+        input.value = text;
+        input.focus();
+        syncChatSendState();
+      });
+      node.appendChild(chip);
+    }
+  }
+
+  // Nielsen #5, error prevention: an empty message can't be sent, and the
+  // control says so rather than failing after the click.
+  function syncChatSendState() {
+    const input = el("chat-input");
+    el("chat-send").disabled = state.chatPending || !input.value.trim();
+    el("chat-cancel").hidden = !state.chatPending;
+    input.disabled = state.chatPending;
+    // Auto-grow so a long description isn't typed through a keyhole. Never
+    // below the resting height, which reserves the space the send button
+    // sits in.
+    input.style.height = "auto";
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 44), 256)}px`;
+  }
+
+  function chatTimestamp() {
+    return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
   // The conversation holds plain text turns AND drafted-ticket turns. A
   // ticket turn renders as a wide bubble with its own Add/Discard buttons, so
   // the user never has to hunt for the result somewhere further down the page.
   function renderChat() {
     const log = el("chat-log");
-    if (!state.chatHistory.length) {
+    renderChatSuggestions();
+    if (!state.chatHistory.length && !state.chatPending) {
       log.innerHTML =
-        `<div class="chat-empty">Describe what you need — for example “necesito una pantalla para exportar ` +
-        `candidatos a Excel”. You'll get back a fully formatted ${tracker.noun} you can review and add.</div>`;
+        `<div class="chat-empty">` +
+        `<strong>Describe a feature and get a formatted ${tracker.noun} back.</strong>` +
+        `<span>Say what the user needs to do and where. You'll review the draft before anything is created.</span>` +
+        `</div>`;
       return;
     }
 
     log.innerHTML = "";
     state.chatHistory.forEach((turn, turnIndex) => {
       if (turn.kind !== "tickets") {
+        const wrap = document.createElement("div");
+        wrap.className = `chat-row chat-row-${turn.role === "assistant" ? "bot" : "user"}`;
         const bubble = document.createElement("div");
-        bubble.className = `chat-msg chat-msg-${turn.role === "assistant" ? "bot" : "user"}`;
+        bubble.className =
+          `chat-msg chat-msg-${turn.role === "assistant" ? "bot" : "user"}` +
+          (turn.error ? " chat-msg-error" : "");
         bubble.textContent = turn.content;
-        log.appendChild(bubble);
+        wrap.appendChild(bubble);
+
+        const meta = document.createElement("div");
+        meta.className = "chat-meta";
+        meta.textContent = turn.at || "";
+        wrap.appendChild(meta);
+
+        // Nielsen #9: recovering from an error should be one click, next to
+        // the thing that failed, not a banner elsewhere on the page.
+        if (turn.error && turn.retry) {
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "chat-retry";
+          retry.textContent = "↻ Try again";
+          retry.addEventListener("click", () => sendChatMessage(turn.retry));
+          wrap.appendChild(retry);
+        }
+        log.appendChild(wrap);
         return;
       }
 
@@ -743,6 +841,16 @@ function createTrackerPanel(tracker) {
       log.appendChild(bubble);
     });
 
+    if (state.chatPending) {
+      const pending = document.createElement("div");
+      pending.className = "chat-row chat-row-bot";
+      pending.innerHTML =
+        `<div class="chat-msg chat-msg-bot chat-msg-pending">` +
+        `<span class="typing"><i></i><i></i><i></i></span> Drafting your ${tracker.noun}…` +
+        `</div>`;
+      log.appendChild(pending);
+    }
+
     log.scrollTop = log.scrollHeight;
   }
 
@@ -767,59 +875,97 @@ function createTrackerPanel(tracker) {
 
   async function onChatSubmit(event) {
     event.preventDefault();
-    const input = el("chat-input");
-    const idea = input.value.trim();
-    if (!idea) return;
+    sendChatMessage(el("chat-input").value.trim());
+  }
+
+  async function sendChatMessage(idea) {
+    if (!idea || state.chatPending) return;
     banner("generate-error", null);
     banner("generate-success", null);
     banner("generate-warnings", null);
 
     // Only the plain-text turns are conversation context for the model; a
-    // drafted-ticket turn is replayed as the summary line it produced.
+    // drafted-ticket turn is replayed as the summary line it produced. A
+    // failed turn is dropped so a retry doesn't inherit the error.
     const history = state.chatHistory
-      .filter((turn) => turn.kind !== "tickets" || turn.summary)
+      .filter((turn) => !turn.error && (turn.kind !== "tickets" || turn.summary))
       .map((turn) => ({ role: turn.role, content: turn.kind === "tickets" ? turn.summary : turn.content }));
-    state.chatHistory.push({ role: "user", content: idea });
-    renderChat();
-    input.value = "";
 
-    const submit = event.target.querySelector('button[type="submit"]');
-    submit.disabled = true;
+    // Drop a previous failure once it's being retried.
+    state.chatHistory = state.chatHistory.filter((turn) => !turn.error);
+    state.chatHistory.push({ role: "user", content: idea, at: chatTimestamp() });
+    state.chatLastSent = idea;
+    state.chatPending = true;
+    el("chat-input").value = "";
+    syncChatSendState();
+    renderChat();
+
+    // Nielsen #3, user control and freedom: a long generation must be
+    // abandonable without reloading the page.
+    const controller = new AbortController();
+    state.chatAbort = controller;
+
     const token = newProgressToken();
-    thinking("generate", true, "Starting…");
     const stop = pollProgress(token, (steps) => {
       thinking("generate", true, steps[steps.length - 1]);
       phaseLog("generate", steps);
     });
+    thinking("generate", true, "Starting…");
     try {
       const body = await fetchJson("/api/tickets/from-idea", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ idea, history, ...startNumbers(), progress_token: token }),
+        signal: controller.signal,
       });
       state.chatHistory.push({
         role: "assistant",
         kind: "tickets",
         entries: body.tickets.map((ticket) => ({ ticket, status: "pending" })),
-        // Replayed as this model's own prior turn when the user refines.
         summary: body.tickets.map((t) => `- ${t.title}: ${t.description}`).join("\n"),
+        at: chatTimestamp(),
       });
-      renderChat();
       banner("generate-warnings", body.warnings && body.warnings.length ? `Note: ${body.warnings.join("; ")}` : null);
     } catch (err) {
-      state.chatHistory.push({ role: "assistant", content: `Sorry — ${err.message}` });
-      renderChat();
-      banner("generate-error", err.message);
+      const cancelled = err.name === "AbortError";
+      state.chatHistory.push({
+        role: "assistant",
+        content: cancelled ? "Cancelled." : `Sorry — ${err.message}`,
+        error: !cancelled,
+        retry: cancelled ? null : idea,
+        at: chatTimestamp(),
+      });
     } finally {
       await stop();
-      submit.disabled = false;
+      state.chatPending = false;
+      state.chatAbort = null;
       thinking("generate", false);
+      syncChatSendState();
+      renderChat();
+      el("chat-input").focus();
+    }
+  }
+
+  function onChatCancel() {
+    if (state.chatAbort) state.chatAbort.abort();
+  }
+
+  // Nielsen #4, consistency and standards: every chat app sends on Enter and
+  // makes a newline with Shift+Enter. Doing otherwise costs a mouse trip on
+  // every single message.
+  function onChatKeydown(event) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendChatMessage(el("chat-input").value.trim());
     }
   }
 
   function onChatReset() {
+    if (state.chatAbort) state.chatAbort.abort();
     state.chatHistory = [];
+    state.chatPending = false;
     state.proposed = [];
+    syncChatSendState();
     renderChat();
     renderProposed();
     banner("generate-success", null);
@@ -1394,10 +1540,13 @@ function createTrackerPanel(tracker) {
   // --- Reformat an existing ticket ------------------------------------------
 
   function clearReformat() {
+    // Deliberately does NOT clear the success banner: apply and revert both
+    // report their outcome and then clear the preview, so wiping it here
+    // swallowed the only confirmation the user ever got. Callers that want a
+    // clean slate clear it themselves before they start.
     state.reformat = null;
     el("reformat-result").hidden = true;
     banner("reformat-error", null);
-    banner("reformat-success", null);
   }
 
   function renderReformat(result) {
@@ -1406,6 +1555,58 @@ function createTrackerPanel(tracker) {
     el("reformat-new-title").textContent = result.formatted_title;
     el("reformat-new-body").textContent = result.formatted_description;
     el("reformat-result").hidden = false;
+  }
+
+  async function loadRevertible() {
+    try {
+      const entries = await fetchJson(`/api/tickets/reformat/revertible?tracker=${tracker.key}`);
+      const panel = el("revert-panel");
+      panel.hidden = entries.length === 0;
+      if (!entries.length) return;
+      fillSelect(
+        el("revert-select"),
+        entries.map((e) => ({ value: e.ticket_id, label: `${e.new_title || e.title} — saved ${e.saved_at.slice(0, 16).replace("T", " ")}` })),
+        `Select a ${tracker.noun}…`,
+      );
+      el("revert-note").textContent =
+        `${entries.length} ${tracker.noun}(s) can be restored to the exact text they had before reformatting.`;
+    } catch (err) {
+      el("revert-panel").hidden = true;
+    }
+  }
+
+  async function onRevert() {
+    const ticketId = el("revert-select").value;
+    if (!ticketId) {
+      banner("reformat-error", `Pick a ${tracker.noun} to revert.`);
+      return;
+    }
+    banner("reformat-error", null);
+    banner("reformat-success", null);
+    const button = el("revert-btn");
+    button.disabled = true;
+    const token = newProgressToken();
+    thinking("reformat", true, "Restoring…");
+    const stop = pollProgress(token, (steps) => {
+      thinking("reformat", true, steps[steps.length - 1]);
+      phaseLog("reformat", steps);
+    });
+    try {
+      await fetchJson("/api/tickets/reformat/revert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket_id: ticketId, tracker: tracker.key, progress_token: token }),
+      });
+      banner("reformat-success", `Restored the ${tracker.noun} to its previous version.`);
+      clearReformat();
+      await Promise.all([loadRevertible(), loadTickets()]);
+    } catch (err) {
+      banner("reformat-error", err.message);
+    } finally {
+      await stop();
+      thinking("reformat", false);
+      button.disabled = false;
+    }
   }
 
   async function onReformat() {
@@ -1466,9 +1667,9 @@ function createTrackerPanel(tracker) {
           progress_token: token,
         }),
       });
-      banner("reformat-success", `Updated “${state.reformat.formatted_title}” in ${tracker.label}.`);
+      banner("reformat-success", `Updated “${state.reformat.formatted_title}” in ${tracker.label}. You can undo this below.`);
       clearReformat();
-      await loadTickets();
+      await Promise.all([loadRevertible(), loadTickets()]);
     } catch (err) {
       banner("reformat-error", err.message);
       button.disabled = false;
@@ -1845,6 +2046,9 @@ function createTrackerPanel(tracker) {
 
     el("generate-form").addEventListener("submit", onGenerateFromDocument);
     el("chat-form").addEventListener("submit", onChatSubmit);
+    el("chat-input").addEventListener("keydown", onChatKeydown);
+    el("chat-input").addEventListener("input", syncChatSendState);
+    el("chat-cancel").addEventListener("click", onChatCancel);
     el("chat-reset").addEventListener("click", onChatReset);
     el("create-all").addEventListener("click", onCreateAll);
     el("clear-tickets").addEventListener("click", onClearTickets);
@@ -1870,6 +2074,7 @@ function createTrackerPanel(tracker) {
     el("reformat-btn").addEventListener("click", onReformat);
     el("reformat-apply-btn").addEventListener("click", onApplyReformat);
     el("reformat-discard-btn").addEventListener("click", clearReformat);
+    el("revert-btn").addEventListener("click", onRevert);
     el("module-check-btn").addEventListener("click", onCheckModule);
     el("module-check-all-btn").addEventListener("click", onCheckAllModule);
     el("module-report-btn").addEventListener("click", () => {
@@ -1877,13 +2082,46 @@ function createTrackerPanel(tracker) {
     });
 
     renderChat();
+    syncChatSendState();
     renderTeamMembers();
     loadScopes();
     loadFindings();
     loadReviewRuns();
+    loadRevertible();
   }
 
   return { init };
+}
+
+// --- Sub-tabs + theme -------------------------------------------------------
+
+function initSubTabs() {
+  document.querySelectorAll(".subtab").forEach((button) => {
+    button.addEventListener("click", () => {
+      const { tracker, sub } = button.dataset;
+      document.querySelectorAll(`.subtab[data-tracker="${tracker}"]`).forEach((b) => {
+        const on = b === button;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", String(on));
+      });
+      for (const panel of document.querySelectorAll(`[id^="${tracker}-sub-"]`)) {
+        panel.hidden = panel.id !== `${tracker}-sub-${sub}`;
+      }
+    });
+  });
+}
+
+function initThemeToggle() {
+  const root = document.documentElement;
+  document.getElementById("theme-toggle").addEventListener("click", () => {
+    const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try {
+      localStorage.setItem("mh-theme", next);
+    } catch (err) {
+      // Private browsing can refuse storage; the theme still applies for now.
+    }
+  });
 }
 
 // --- Tabs + boot ------------------------------------------------------------
@@ -1902,6 +2140,8 @@ function initTabs() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
+  initSubTabs();
+  initThemeToggle();
   await loadProjectConfig();
   for (const tracker of Object.values(TRACKERS)) {
     createTrackerPanel(tracker).init();

@@ -31,7 +31,13 @@ from meta_harness.team_assignment import (
     verify_team_emails,
 )
 from meta_harness.ticket_format import format_clickup_description
-from meta_harness.ticket_reformat import apply_reformatted_ticket, reformat_ticket
+from meta_harness.reformat_history import ReformatHistoryStore
+from meta_harness.ticket_reformat import (
+    NoPreviousVersionError,
+    apply_reformatted_ticket,
+    reformat_ticket,
+    revert_ticket,
+)
 from meta_harness.ticket_generator import (
     ClaudeNotFoundError,
     TicketExtractionError,
@@ -59,6 +65,8 @@ from meta_harness.webapp.schemas import (
     ApplyReformatOut,
     ReformatTicketIn,
     ReformatTicketOut,
+    RevertibleTicketOut,
+    RevertTicketIn,
     ProposedTicketIn,
     TeamMemberOut,
     TicketCreateResult,
@@ -386,6 +394,32 @@ def post_apply_reformat(body: ApplyReformatIn) -> ApplyReformatOut:
             description=body.description,
             on_step=on_step,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ClickUpTicketError, LinearIssueError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ApplyReformatOut(
+        ok=True, ticket_id=body.ticket_id, title=updated.get("title") or updated.get("name")
+    )
+
+
+@router.get("/reformat/revertible", response_model=list[RevertibleTicketOut])
+def get_revertible(tracker: Optional[str] = None) -> list[RevertibleTicketOut]:
+    """Tickets whose pre-reformat version is still saved, newest first."""
+    return [RevertibleTicketOut(**entry) for entry in ReformatHistoryStore().list_for(tracker)]
+
+
+@router.post("/reformat/revert", response_model=ApplyReformatOut)
+def post_revert_reformat(body: RevertTicketIn) -> ApplyReformatOut:
+    """Restore a ticket to the exact version saved before it was reformatted."""
+    on_step = None
+    if body.progress_token:
+        progress.start(body.progress_token)
+        on_step = lambda message: progress.push(body.progress_token, message)  # noqa: E731
+    try:
+        updated = revert_ticket(body.ticket_id, tracker=body.tracker, on_step=on_step)
+    except NoPreviousVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ClickUpTicketError, LinearIssueError) as exc:

@@ -392,3 +392,17 @@ class ApplyReformatOut(BaseModel):
     ok: bool
     ticket_id: str
     title: Optional[str] = None
+
+
+class RevertTicketIn(BaseModel):
+    ticket_id: str
+    tracker: str = "clickup"
+    progress_token: Optional[str] = None
+
+
+class RevertibleTicketOut(BaseModel):
+    ticket_id: str
+    tracker: str
+    title: str
+    new_title: str = ""
+    saved_at: str
