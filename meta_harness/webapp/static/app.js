@@ -2090,6 +2090,37 @@ function createTrackerPanel(tracker) {
   return { init };
 }
 
+// --- Sub-tabs + theme -------------------------------------------------------
+
+function initSubTabs() {
+  document.querySelectorAll(".subtab").forEach((button) => {
+    button.addEventListener("click", () => {
+      const { tracker, sub } = button.dataset;
+      document.querySelectorAll(`.subtab[data-tracker="${tracker}"]`).forEach((b) => {
+        const on = b === button;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", String(on));
+      });
+      for (const panel of document.querySelectorAll(`[id^="${tracker}-sub-"]`)) {
+        panel.hidden = panel.id !== `${tracker}-sub-${sub}`;
+      }
+    });
+  });
+}
+
+function initThemeToggle() {
+  const root = document.documentElement;
+  document.getElementById("theme-toggle").addEventListener("click", () => {
+    const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try {
+      localStorage.setItem("mh-theme", next);
+    } catch (err) {
+      // Private browsing can refuse storage; the theme still applies for now.
+    }
+  });
+}
+
 // --- Tabs + boot ------------------------------------------------------------
 
 function initTabs() {
@@ -2106,6 +2137,8 @@ function initTabs() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
+  initSubTabs();
+  initThemeToggle();
   await loadProjectConfig();
   for (const tracker of Object.values(TRACKERS)) {
     createTrackerPanel(tracker).init();

@@ -820,43 +820,61 @@ details.advanced[open] > summary { margin-bottom: 0.875rem; }
 
 /* ---------- Dark mode --------------------------------------------------- */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14161a;
-    --surface: #1c1f25;
-    --surface-sunken: #23272e;
-    --border: #2f343c;
-    --border-strong: #3d434d;
-    --ink: #e8eaed;
-    --ink-muted: #a3abb8;
-    --ink-faint: #7a828f;
-    --accent: #7b93f5;
-    --accent-hover: #93a7f8;
-    --accent-soft: #232941;
-    --success: #58c98a;
-    --success-soft: #1b2f24;
-    --warning: #e0a850;
-    --warning-soft: #322718;
-    --danger: #f08b89;
-    --danger-soft: #35201f;
-  }
+/* ---------- Dark theme -------------------------------------------------- */
+/* Driven by the data-theme attribute, not a media query: an explicit user
+   choice has to be able to override the operating system. A small script in
+   <head> resolves "system" to a concrete value before first paint. */
 
-  .btn-primary, .btn-success, .chat-msg-user, .step-number { color: #14161a; }
-
-  .priority-urgent, .severity-critical { border-color: #55302f; }
-  .priority-high, .severity-major { border-color: #4a3a1e; }
-  .priority-normal, .severity-minor { border-color: #333c5c; }
-  .category-backend { background: #262247; color: #a99bf5; border-color: #3a3266; }
-  .category-frontend { background: #17332e; color: #6ecfb6; border-color: #234b43; }
-  .error-banner { border-color: #55302f; }
-  .success-banner { border-color: #29452f; }
-  .warning-banner { border-color: #4a3a1e; }
-  .thinking-indicator, .selected-callout { border-color: #333c5c; }
-  .spinner { border-color: #333c5c; border-top-color: var(--accent); }
-  .verdict-related { border-color: #29452f; }
-  .verdict-partially_related { border-color: #4a3a1e; }
-  .verdict-unrelated { border-color: #55302f; }
+:root[data-theme="dark"] {
+  --bg: #14161a;
+  --surface: #1c1f25;
+  --surface-sunken: #23272e;
+  --border: #2f343c;
+  --border-strong: #3d434d;
+  --ink: #e8eaed;
+  --ink-muted: #a3abb8;
+  --ink-faint: #7a828f;
+  --brand: #ff8078;
+  --brand-soft: #2b1d1c;
+  --accent: #8fa9e8;
+  --accent-hover: #a6bcf0;
+  --accent-soft: #1e2536;
+  --success: #58c98a;
+  --success-soft: #1b2f24;
+  --warning: #e0a850;
+  --warning-soft: #322718;
+  --danger: #f08b89;
+  --danger-soft: #35201f;
 }
+
+:root[data-theme="dark"] .btn-primary,
+:root[data-theme="dark"] .btn-success,
+:root[data-theme="dark"] .chat-msg-user,
+:root[data-theme="dark"] .chat-icon-btn:not(:disabled) { color: #14161a; }
+
+:root[data-theme="dark"] .priority-urgent,
+:root[data-theme="dark"] .severity-critical,
+:root[data-theme="dark"] .verdict-unrelated,
+:root[data-theme="dark"] .error-banner { border-color: #55302f; }
+
+:root[data-theme="dark"] .priority-high,
+:root[data-theme="dark"] .severity-major,
+:root[data-theme="dark"] .verdict-partially_related,
+:root[data-theme="dark"] .warning-banner { border-color: #4a3a1e; }
+
+:root[data-theme="dark"] .priority-normal,
+:root[data-theme="dark"] .severity-minor,
+:root[data-theme="dark"] .thinking-indicator,
+:root[data-theme="dark"] .selected-callout { border-color: #333c5c; }
+
+:root[data-theme="dark"] .success-banner,
+:root[data-theme="dark"] .verdict-related { border-color: #29452f; }
+
+:root[data-theme="dark"] .category-backend { background: #262247; color: #a99bf5; border-color: #3a3266; }
+:root[data-theme="dark"] .category-frontend { background: #17332e; color: #6ecfb6; border-color: #234b43; }
+:root[data-theme="dark"] .spinner { border-color: #333c5c; border-top-color: var(--accent); }
+:root[data-theme="dark"] .undo-bar { border-color: #4a2f2d; }
+:root[data-theme="dark"] kbd { background: var(--surface-sunken); }
 
 /* ---------- Small screens ----------------------------------------------- */
 
@@ -1061,15 +1079,83 @@ kbd {
 .step-number { background: var(--accent); }
 .tab-button.active { color: var(--accent); box-shadow: var(--shadow-sm); }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --brand: #ff8078;
-    --brand-soft: #2b1d1c;
-    --accent: #8fa9e8;
-    --accent-hover: #a6bcf0;
-    --accent-soft: #1e2536;
-  }
-  .undo-bar { border-color: #4a2f2d; }
-  .chat-suggestion:hover { background: var(--accent-soft); }
-  kbd { background: var(--surface-sunken); }
+
+/* ==========================================================================
+   Workflow sub-tabs
+   The destination stays pinned above these: every workflow depends on it, so
+   hiding it behind a tab would mean re-picking it constantly.
+   ========================================================================== */
+
+.subtabs {
+  display: flex;
+  gap: 0.125rem;
+  margin: 0 0 1.25rem;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+
+.subtabs::-webkit-scrollbar { display: none; }
+
+.subtab {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  padding: 0.625rem 0.9375rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.subtab:hover:not(.active) { color: var(--ink); background: var(--surface-sunken); }
+
+.subtab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: transparent;
+}
+
+.subpanel { animation: rise 180ms var(--ease) both; }
+.subpanel .step { margin-bottom: 0; }
+
+.step-badge {
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--brand);
+  background: var(--brand-soft);
+  border-radius: 999px;
+  padding: 0.1875rem 0.5rem;
+  flex: none;
+  margin-top: 0.125rem;
+}
+
+/* ==========================================================================
+   Theme toggle
+   ========================================================================== */
+
+.header-actions { display: flex; align-items: center; gap: 0.625rem; }
+
+.theme-toggle {
+  width: 2.125rem;
+  height: 2.125rem;
+  padding: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  color: var(--ink-muted);
+  flex: none;
+}
+
+.theme-toggle:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.theme-toggle svg { width: 1rem; height: 1rem; fill: currentColor; }
+
+/* Show whichever icon represents the theme you'd switch TO. */
+.theme-toggle .icon-moon { display: none; }
+:root[data-theme="light"] .theme-toggle .icon-sun { display: none; }
+:root[data-theme="light"] .theme-toggle .icon-moon { display: block; }
