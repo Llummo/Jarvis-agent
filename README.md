@@ -186,29 +186,100 @@ python -m meta_harness show-frontier \
   --benchmark tblite
 ```
 
+## Technology Stack
+
+No ORM, no message broker, no task queue, and no frontend build step. The
+whole system is a synchronous FastAPI app plus two subprocess boundaries.
+
+### Backend — Python
+
+| Package | Used for |
+| --- | --- |
+| `fastapi` + `uvicorn` | the HTTP API and the localhost UI server |
+| `click` + `rich` | the `meta-harness` CLI |
+| `pypdf` | extracting text from uploaded PDF requirement documents |
+| `fpdf2` | rendering QA findings as downloadable PDF reports |
+| `websockets` | driving Chromium over raw CDP to capture screenshots |
+| `python-multipart` | file uploads |
+| `mcp` | the MCP server exposing captured screenshots |
+| `filelock` | cross-platform locking for the run archive and frontier |
+
+The sibling `p-harness` CLI, which owns all tracker credentials, uses
+`requests` (ClickUp REST, and Linear's GraphQL as plain POSTs),
+`python-dotenv` and `click`.
+
+### Frontend — none, deliberately
+
+Vanilla JavaScript, HTML and CSS served straight from
+`meta_harness/webapp/static/`. There is no `package.json`, no bundler and no
+transpilation: what is on disk is what the browser runs. Node is used only as
+a dev-time syntax checker (`node --check app.js`).
+
+The design system is plain CSS custom properties, and the ClickUp and Linear
+tabs are rendered by one tracker-parameterized layer rather than duplicated
+markup.
+
+### Storage — SQLite and JSON files
+
+| Store | Backing | Holds |
+| --- | --- | --- |
+| `qa/findings.db` | SQLite (WAL, stdlib `sqlite3`) | QA findings |
+| `qa/project_config.json` | JSON, atomic writes | per-project base URLs |
+| `qa/reformat_history.json` | JSON, atomic writes | pre-reformat versions, for undo |
+| `runs/*.json` | JSON, file-locked | replayable run archive |
+
+Schema changes are hand-rolled `ALTER TABLE` guards; there is no migration
+framework.
+
+**Operational note.** Everything is single-node and on local disk beside the
+checkout. SQLite in WAL mode tolerates several UI processes sharing one `qa/`
+directory, but the JSON stores rely on atomic `os.replace` — concurrent
+writers lose a write rather than corrupt the file. Fine for internal use;
+revisit before running behind multiple workers.
+
+### External processes
+
+Two subprocess boundaries, and the reason the app holds no API keys of its own:
+
+- `claude -p "<prompt>"` — all model calls. No tool access, text in and text
+  out, so a bad response cannot mutate anything.
+- `p-harness/.venv/bin/harness <args>` — all ClickUp and Linear I/O.
+
 ## Repo Layout
 
 ```text
 meta_harness/
-├── archive_reader.py
-├── baseline.py
-├── benchmark_runner.py
-├── candidate_registry.py
-├── cli.py
-├── clickup_bridge.py
-├── comparison.py
-├── config.py
-├── frontier.py
-├── hermes_compat.py
-├── mcp_server/          # real MCP server: QA findings + CDP/adb/macOS screenshot tools
-├── models.py
-├── mutation.py
-├── playbook.py
-├── qa_findings.py
-├── run_archive.py
-├── search.py
-├── ticket_generator.py
-├── webapp/               # localhost UI: FastAPI + static vanilla-JS frontend
+├── cli.py                # meta-harness CLI entry point
+├── webapp/               # localhost UI: FastAPI routers + static vanilla-JS frontend
+│   ├── app.py
+│   ├── routes_clickup.py  routes_linear.py  routes_tickets.py
+│   ├── routes_qa.py       routes_qa_flow.py routes_progress.py
+│   └── static/           # index.html, app.js, style.css — no build step
+├── mcp_server/           # MCP server: QA findings + CDP/adb/macOS screenshot tools
+│
+│   # tracker boundaries (shell out to p-harness, never hold credentials)
+├── clickup_bridge.py     linear_bridge.py
+│
+│   # ticket generation and formatting
+├── ticket_generator.py   # document/idea -> proposed tickets, chunked + parallel
+├── ticket_format.py      # per-tracker description rendering
+├── ticket_reformat.py    # rewrite an existing ticket into the house format
+├── reformat_history.py   # pre-reformat versions, for undo
+├── team_assignment.py    # roster verification + random assignment
+│
+│   # QA and analysis
+├── qa_flow.py            # fetch -> analyze -> evidence -> persist -> status move
+├── qa_findings.py        # SQLite-backed findings store
+├── qa_report.py          # Markdown/PDF report rendering
+├── module_relevance.py   # does this ticket belong to a module?
+├── project_config.py     # per-project base URLs
+│
+│   # Hermes candidate evaluation (the original outer loop)
+├── archive_reader.py     baseline.py       benchmark_runner.py
+├── candidate_registry.py comparability.py  comparison.py
+├── frontier.py           hermes_compat.py  mutation.py
+├── playbook.py           run_archive.py    search.py
+├── config.py             models.py
 └── __main__.py
 ```
 
