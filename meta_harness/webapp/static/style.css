@@ -325,8 +325,82 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-msg-user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
 .chat-msg-bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
 
-.chat-compose { display: flex; gap: 0.5rem; align-items: flex-end; }
-.chat-compose .field { flex: 1; }
+/* Column layout: label, composer, then the hint. The send button lives
+   INSIDE the composer, bottom-right — bottom-aligning it against the whole
+   field pushed it down beside the hint text, detached from the box it acts on. */
+.chat-compose { display: flex; flex-direction: column; gap: 0.375rem; }
+
+/* WhatsApp-style composer: the input is a rounded bar and the send control is
+   a circular icon button sitting OUTSIDE it, bottom-aligned so it stays put
+   as the textarea grows. Floating it inside the box crowded the text and
+   read as an overlay rather than an action. */
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.chat-composer textarea {
+  flex: 1;
+  min-height: 2.75rem;
+  max-height: 16rem;
+  padding: 0.6875rem 0.875rem;
+  border-radius: 1.375rem;
+  resize: none;
+  line-height: 1.45;
+}
+
+.chat-icon-btn {
+  flex: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.chat-icon-btn svg { width: 1.125rem; height: 1.125rem; fill: currentColor; }
+
+.chat-icon-send:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: scale(1.05);
+}
+
+.chat-icon-btn:active:not(:disabled) { transform: scale(0.95); }
+
+.chat-icon-btn:disabled {
+  background: var(--surface-sunken);
+  color: var(--ink-faint);
+  box-shadow: none;
+  opacity: 1;
+}
+
+.chat-icon-cancel { background: var(--danger); }
+.chat-icon-cancel:hover { background: #a82725; transform: scale(1.05); }
+.chat-icon-cancel svg { width: 0.875rem; height: 0.875rem; }
+
+.chat-compose-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.chat-reset {
+  font-size: var(--text-xs);
+  padding: 0.25rem 0.625rem;
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-faint);
+}
+
+.chat-reset:hover { background: var(--surface-sunken); border-color: var(--border); color: var(--ink-muted); }
 
 /* A drafted ticket is shown as a wide assistant bubble with its own actions,
    so the whole review-and-add loop happens inside the conversation instead of
@@ -950,7 +1024,6 @@ button:active:not(:disabled) { transform: translateY(1px); }
   background: var(--accent-soft);
 }
 
-.chat-actions { display: flex; flex-direction: column; gap: 0.375rem; }
 
 kbd {
   font-family: var(--font-mono);

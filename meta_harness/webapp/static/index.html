@@ -123,22 +123,26 @@
               <div class="chat-suggestions" id="clickup-chat-suggestions"></div>
 
               <form id="clickup-chat-form" class="chat-compose">
-                <div class="field">
-                  <label for="clickup-chat-input">Describe what you need</label>
-                  <textarea id="clickup-chat-input" rows="3" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                <label class="field-label" for="clickup-chat-input">Describe what you need</label>
+                <div class="chat-composer">
+                  <textarea id="clickup-chat-input" rows="1" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <button type="button" id="clickup-chat-cancel" class="chat-icon-btn chat-icon-cancel" hidden
+                          aria-label="Cancel generation" title="Cancel">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+                  </button>
+                  <button type="submit" id="clickup-chat-send" class="chat-icon-btn chat-icon-send" disabled
+                          aria-label="Send message" title="Send">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10.1 15.5 12 3.4 13.9z"/></svg>
+                  </button>
+                </div>
+                <div class="chat-compose-footer">
                   <span class="field-note">
                     <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
                     the more concrete you are, the better the ticket
                   </span>
-                </div>
-                <div class="chat-actions">
-                  <button type="submit" id="clickup-chat-send" class="btn-primary" disabled>Send</button>
-                  <button type="button" id="clickup-chat-cancel" hidden>Cancel</button>
+                  <button type="button" id="clickup-chat-reset" class="chat-reset">Start over</button>
                 </div>
               </form>
-              <div class="btn-row">
-                <button type="button" id="clickup-chat-reset">Start over</button>
-              </div>
             </div>
 
             <details class="advanced">
@@ -596,22 +600,26 @@
               <div class="chat-suggestions" id="linear-chat-suggestions"></div>
 
               <form id="linear-chat-form" class="chat-compose">
-                <div class="field">
-                  <label for="linear-chat-input">Describe what you need</label>
-                  <textarea id="linear-chat-input" rows="3" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                <label class="field-label" for="linear-chat-input">Describe what you need</label>
+                <div class="chat-composer">
+                  <textarea id="linear-chat-input" rows="1" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <button type="button" id="linear-chat-cancel" class="chat-icon-btn chat-icon-cancel" hidden
+                          aria-label="Cancel generation" title="Cancel">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+                  </button>
+                  <button type="submit" id="linear-chat-send" class="chat-icon-btn chat-icon-send" disabled
+                          aria-label="Send message" title="Send">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10.1 15.5 12 3.4 13.9z"/></svg>
+                  </button>
+                </div>
+                <div class="chat-compose-footer">
                   <span class="field-note">
                     <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
                     the more concrete you are, the better the issue
                   </span>
-                </div>
-                <div class="chat-actions">
-                  <button type="submit" id="linear-chat-send" class="btn-primary" disabled>Send</button>
-                  <button type="button" id="linear-chat-cancel" hidden>Cancel</button>
+                  <button type="button" id="linear-chat-reset" class="chat-reset">Start over</button>
                 </div>
               </form>
-              <div class="btn-row">
-                <button type="button" id="linear-chat-reset">Start over</button>
-              </div>
             </div>
 
             <details class="advanced">

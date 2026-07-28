@@ -721,9 +721,11 @@ function createTrackerPanel(tracker) {
     el("chat-send").disabled = state.chatPending || !input.value.trim();
     el("chat-cancel").hidden = !state.chatPending;
     input.disabled = state.chatPending;
-    // Auto-grow so a long description isn't typed through a keyhole.
+    // Auto-grow so a long description isn't typed through a keyhole. Never
+    // below the resting height, which reserves the space the send button
+    // sits in.
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 44), 256)}px`;
   }
 
   function chatTimestamp() {
