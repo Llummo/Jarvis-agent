@@ -32,6 +32,9 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.30",
     "websockets>=12.0",
+    "pypdf>=4.0",
+    "python-multipart>=0.0.9",
+    "fpdf2>=2.7",
 ]
 
 [project.urls]

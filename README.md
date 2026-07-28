@@ -207,6 +207,7 @@ meta_harness/
 ├── qa_findings.py
 ├── run_archive.py
 ├── search.py
+├── ticket_generator.py
 ├── webapp/               # localhost UI: FastAPI + static vanilla-JS frontend
 └── __main__.py
 ```
@@ -232,8 +233,8 @@ meta-harness playbook runs clickup                       # list recorded runs
 meta-harness playbook replay clickup <run-id>             # repeat a recorded run
 ```
 
-Every `run` against a subject (e.g. a ticket) is archived, so a QA flow can
-be replayed later against the same subject to check it still reproduces.
+Every `run` against a subject (e.g. a ticket) is archived and replayable
+(see the next section for the actual QA flow built on this mechanism).
 
 See [`agents/README.md`](agents/README.md) for the config format.
 
@@ -255,6 +256,37 @@ meta-harness qa close-issue <id> --note "fixed the null check"
 
 `--severity` is one of `minor`/`major`/`critical`. The database defaults to
 `qa/findings.db` (gitignored); override with `--db-path`.
+
+## QA Ticket Review Flow (replayable)
+
+The actual "QA flow": fetch a ClickUp ticket, have Claude analyze it, and
+propose an observation + severity. **Dry-run by default** — nothing is
+saved or created in ClickUp until you pass `--persist`, so replaying the
+same ticket repeatedly never piles up duplicate findings.
+
+```bash
+meta-harness qa review-ticket --ticket-id <id> --project sigo-front            # dry-run
+meta-harness qa review-ticket --ticket-id <id> --project sigo-front --persist  # reports a real finding
+meta-harness qa review-runs                                                    # list recorded reviews
+meta-harness qa replay-review <run-id>                                         # re-fetch + re-analyze, dry-run
+meta-harness qa replay-review <run-id> --persist                               # replay and report for real
+```
+
+Every review (dry-run or persisted) is recorded via the same
+`RunArchive`/`RunRecord` mechanism the agent playbooks use, so `replay-review`
+re-runs the exact same ticket through a fresh live analysis and reports
+whether it reproduces. The analysis call is harnessed the same way ticket
+generation is (bounded retry with the specific validation error fed back
+on a malformed response).
+
+**Also available in the web UI** — the "Review Ticket (QA Flow)" panel
+under the ClickUp tab. No typing required: click a task in the ClickUp
+browser above it to select it, pick a project from the dropdown (prefilled
+with the currently-browsed ClickUp space plus any project already used in
+existing findings), then "Analyze". Persisting from the UI saves *exactly*
+what was previewed — it doesn't silently re-run the analysis, so what you
+review is what gets saved. Past reviews are listed in a dropdown with a
+"Replay" button.
 
 ## Localhost UI
 
@@ -287,6 +319,50 @@ a thin wrapper around the same functions the CLI and web UI use.
 via mocks, but require hardware/an OS this repo isn't developed on to run
 for real (no `adb`, not macOS) — they fail with a clear, typed error when
 unavailable rather than silently no-op'ing.
+
+## Generate Tickets
+
+Upload a requirements document (PDF, `.txt`, or `.md`) and get back a
+reviewed, organized batch of proposed tickets, created in ClickUp
+individually or all at once — the "Generate Tickets" tab in `meta-harness
+ui`. An LLM (the local, already-authenticated Claude Code CLI — no
+separate API key) analyzes the document and proposes tickets in a fixed
+shape (title, description, acceptance criteria, priority, category);
+nothing is created until you review and confirm.
+
+Each ticket is auto-classified into one of four categories, each with its
+own naming sequence:
+
+| Category | Prefix |
+|---|---|
+| mundane (general/cross-cutting/planning) | `TAM` |
+| backend | `TAB` |
+| frontend | `TAF` |
+| deployment | `TAD` |
+
+```bash
+meta-harness tickets generate --file requirements.pdf --start-mundane 2 --json-output proposed.json
+meta-harness tickets create-all --from-json proposed.json --list-id <id>
+```
+
+Titles come out as `"{PREFIX}-{NN} | {title}"` — e.g. `TAM-02 | Build login
+page` — numbered independently per category in the order tickets are
+proposed, so `--start-mundane`/`--start-backend`/`--start-frontend`/
+`--start-deployment` (or the matching web UI fields) let you continue an
+existing sequence in just one category without disturbing the others.
+
+The generation call is harnessed for reliability, not a single blind
+attempt: if Claude's output fails JSON/shape validation, the specific
+error is fed back into a follow-up prompt asking it to self-correct, up
+to 3 attempts total, before giving up. The web UI shows a visible
+"thinking" indicator while analysis/creation requests are in flight, and
+surfaces errors with a status-code-specific label (e.g. "Invalid
+request", "Upstream service failed", "Service unavailable") alongside the
+backend's detail message.
+
+Priority (`urgent`/`high`/`normal`/`low`) is set as ClickUp's native
+priority field, not just text in the description. Bulk creation reports a
+per-ticket result — one failure never aborts the rest of the batch.
 
 ## Best Practices Notes
 

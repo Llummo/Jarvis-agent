@@ -16,6 +16,9 @@ from typing import List, Optional, Sequence
 from meta_harness.playbook import load_agent_playbook, resolve_project_path
 
 
+CLICKUP_PRIORITY_WORDS = ("urgent", "high", "normal", "low")
+
+
 class ClickUpTicketError(RuntimeError):
     """Raised when the p-harness ClickUp CLI fails or returns unusable output."""
 
@@ -102,14 +105,31 @@ def list_clickup_tasks(list_id: str, *, project_path: Optional[Path] = None) -> 
     return payload
 
 
+def get_clickup_task(task_id: str, *, project_path: Optional[Path] = None) -> dict:
+    payload = _run_harness_json(["clickup", "get-task", "--task-id", task_id], project_path=project_path)
+    if not isinstance(payload, dict):
+        raise ClickUpReadError(f"Expected a JSON object for task {task_id}, got: {payload!r}")
+    return payload
+
+
 def create_clickup_ticket(
     name: str,
     description: str,
     *,
     list_id: Optional[str] = None,
+    priority: Optional[str] = None,
+    assignees: Optional[Sequence[int]] = None,
+    due_date_ms: Optional[int] = None,
+    parent: Optional[str] = None,
     project_path: Optional[Path] = None,
 ) -> str:
-    """Create a ClickUp task via the p-harness CLI; return its task id."""
+    """Create a ClickUp task via the p-harness CLI; return its task id.
+
+    `parent` nests the new task under an existing one as a subtask, which
+    is how a generated parent/subticket hierarchy is materialized."""
+    if priority is not None and priority not in CLICKUP_PRIORITY_WORDS:
+        raise ValueError(f"priority must be one of {CLICKUP_PRIORITY_WORDS}, got {priority!r}")
+
     resolved_path = project_path
     if resolved_path is None:
         resolved_path = resolve_project_path(load_agent_playbook("clickup"))
@@ -125,6 +145,14 @@ def create_clickup_ticket(
     ]
     if list_id:
         command += ["--list-id", list_id]
+    if priority is not None:
+        command += ["--priority", priority]
+    if assignees:
+        command += ["--assignees", ",".join(str(a) for a in assignees)]
+    if due_date_ms is not None:
+        command += ["--due-date", str(due_date_ms)]
+    if parent:
+        command += ["--parent", parent]
 
     completed = subprocess.run(command, cwd=resolved_path, capture_output=True, text=True)
     if completed.returncode != 0:
@@ -140,3 +168,71 @@ def create_clickup_ticket(
     if not task_id:
         raise ClickUpTicketError(f"ClickUp CLI response missing 'id': {payload}")
     return str(task_id)
+
+
+def update_clickup_task_status(
+    task_id: str,
+    status: str,
+    *,
+    project_path: Optional[Path] = None,
+) -> dict:
+    """Move a ClickUp task to a different status via the p-harness CLI.
+
+    `status` must be a status name valid for that task's list (e.g. "done",
+    "in progress") — ClickUp rejects anything else with a 400.
+    """
+    resolved_path = project_path
+    if resolved_path is None:
+        resolved_path = resolve_project_path(load_agent_playbook("clickup"))
+
+    command = [
+        str(_harness_executable(resolved_path)),
+        "clickup",
+        "set-status",
+        "--task-id",
+        task_id,
+        "--status",
+        status,
+    ]
+    completed = subprocess.run(command, cwd=resolved_path, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise ClickUpTicketError(
+            f"ClickUp status update failed ({completed.returncode}): {completed.stderr.strip()}"
+        )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ClickUpTicketError(f"Could not parse ClickUp CLI output: {completed.stdout!r}") from exc
+
+
+def update_clickup_task(
+    task_id: str,
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    project_path: Optional[Path] = None,
+) -> dict:
+    """Edit an existing task's name and/or description. Fields left as
+    None are not sent, so nothing is blanked out by accident."""
+    if name is None and description is None:
+        raise ValueError("Provide a name and/or a description to update")
+
+    resolved_path = project_path
+    if resolved_path is None:
+        resolved_path = resolve_project_path(load_agent_playbook("clickup"))
+
+    command = [str(_harness_executable(resolved_path)), "clickup", "update-task", "--task-id", task_id]
+    if name is not None:
+        command += ["--name", name]
+    if description is not None:
+        command += ["--description", description]
+
+    completed = subprocess.run(command, cwd=resolved_path, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise ClickUpTicketError(
+            f"ClickUp task update failed ({completed.returncode}): {completed.stderr.strip()}"
+        )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ClickUpTicketError(f"Could not parse ClickUp CLI output: {completed.stdout!r}") from exc

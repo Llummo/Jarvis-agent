@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
+from meta_harness.mcp_server.images import ImageNotFoundError, read_image
+from meta_harness.project_config import ProjectConfigStore
 from meta_harness.qa_findings import (
     SEVERITIES,
     STATUSES,
@@ -15,8 +17,16 @@ from meta_harness.qa_findings import (
     list_qa_issues,
     report_qa_issue,
 )
-from meta_harness.webapp.deps import get_qa_store
-from meta_harness.webapp.schemas import CloseFindingIn, FindingOut, FindingsListOut, ReportFindingIn
+from meta_harness.qa_report import render_finding_markdown, render_finding_pdf
+from meta_harness.webapp.deps import get_project_config_store, get_qa_store
+from meta_harness.webapp.schemas import (
+    CloseFindingIn,
+    FindingOut,
+    FindingsListOut,
+    ProjectConfigIn,
+    ProjectConfigOut,
+    ReportFindingIn,
+)
 
 router = APIRouter()
 
@@ -51,7 +61,9 @@ def post_finding(body: ReportFindingIn, store: QAFindingStore = Depends(get_qa_s
             body.observation,
             body.severity,
             screenshot_path=body.screenshot_path,
+            tracker=body.tracker,
             clickup_list_id=body.clickup_list_id,
+            linear_team_id=body.linear_team_id,
             auto_escalate=body.auto_escalate,
             store=store,
         )
@@ -71,3 +83,51 @@ def post_close_finding(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return finding
+
+
+@router.get("/findings/{finding_id}/report.md")
+def get_finding_report_markdown(finding_id: int, store: QAFindingStore = Depends(get_qa_store)) -> Response:
+    try:
+        finding = store.get(finding_id)
+    except QAFindingNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    content = render_finding_markdown(finding)
+    return Response(
+        content=content, media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="qa-finding-{finding_id}.md"'},
+    )
+
+
+@router.get("/findings/{finding_id}/report.pdf")
+def get_finding_report_pdf(finding_id: int, store: QAFindingStore = Depends(get_qa_store)) -> Response:
+    try:
+        finding = store.get(finding_id)
+    except QAFindingNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    content = render_finding_pdf(finding)
+    return Response(
+        content=content, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="qa-finding-{finding_id}.pdf"'},
+    )
+
+
+@router.get("/screenshots/{name}")
+def get_screenshot(name: str) -> Response:
+    try:
+        data = read_image(name)
+    except ImageNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(content=data, media_type="image/png")
+
+
+@router.get("/project-config", response_model=ProjectConfigOut)
+def get_project_config(config: ProjectConfigStore = Depends(get_project_config_store)) -> ProjectConfigOut:
+    return ProjectConfigOut(projects=config.list_all())
+
+
+@router.post("/project-config", response_model=ProjectConfigOut)
+def post_project_config(
+    body: ProjectConfigIn, config: ProjectConfigStore = Depends(get_project_config_store)
+) -> ProjectConfigOut:
+    config.set_base_url(body.project, body.base_url)
+    return ProjectConfigOut(projects=config.list_all())

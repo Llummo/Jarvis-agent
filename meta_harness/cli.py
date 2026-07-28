@@ -14,6 +14,7 @@ from meta_harness.archive_reader import load_run_summary
 from meta_harness.baseline import resolve_baseline_selection
 from meta_harness.benchmark_runner import BenchmarkRunResult, run_benchmark
 from meta_harness.candidate_registry import list_builtin_candidates
+from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
 from meta_harness.comparison import build_comparison_report
 from meta_harness.config import MetaHarnessConfig, parse_command_prefix
 from meta_harness.frontier import FrontierStore
@@ -40,8 +41,18 @@ from meta_harness.qa_findings import (
     list_qa_issues,
     report_qa_issue,
 )
+from meta_harness.qa_flow import QAFlowError, replay_qa_review, review_and_record
 from meta_harness.run_archive import RunArchive
 from meta_harness.search import StructuredSearchRequest, run_structured_search
+from meta_harness.ticket_generator import (
+    ClaudeNotFoundError,
+    ProposedTicket,
+    TicketExtractionError,
+    TicketGenerationError,
+    TicketParseError,
+    apply_category_numbering,
+    generate_tickets_from_file,
+)
 
 console = Console()
 
@@ -892,6 +903,76 @@ def qa_close_issue_cmd(finding_id: int, note: str, db_path: Optional[str]) -> No
     _emit_findings_table("QA Finding Closed", [finding])
 
 
+def _emit_review(title: str, review, finding, record) -> None:
+    table = Table(title=title)
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    table.add_row("Run ID", record.run_id)
+    table.add_row("Ticket", f"{review.ticket_id} — {review.ticket_name}")
+    table.add_row("Severity", review.severity)
+    table.add_row("Observation", review.observation)
+    if finding is not None:
+        table.add_row("Persisted", f"[green]yes — finding #{finding.id}[/green]")
+    else:
+        table.add_row("Persisted", "[yellow]no (dry-run)[/yellow]")
+    console.print(table)
+
+
+@qa_group.command("review-ticket")
+@click.option("--ticket-id", required=True, help="ClickUp ticket id to review.")
+@click.option("--project", required=True, help="Project name to file the finding under.")
+@click.option("--persist", is_flag=True, help="Report the review as a real finding (default: dry-run only).")
+@click.option("--clickup-list-id", default=None, help="Override the ClickUp list id used for critical tickets.")
+@click.option("--db-path", default=None)
+def qa_review_ticket_cmd(
+    ticket_id: str, project: str, persist: bool, clickup_list_id: Optional[str], db_path: Optional[str]
+) -> None:
+    """Review a ClickUp ticket as a QA flow: fetch it, analyze it, and
+    (optionally) report a finding. Dry-run by default."""
+    try:
+        review, finding, record = review_and_record(
+            ticket_id, project=project, clickup_list_id=clickup_list_id,
+            persist=persist, store=_qa_store(db_path),
+        )
+    except (QAFlowError, ClickUpReadError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _emit_review("QA Ticket Review", review, finding, record)
+
+
+@qa_group.command("review-runs")
+def qa_review_runs_cmd() -> None:
+    """List recorded QA ticket reviews, most recent last."""
+    records = RunArchive("qa_ticket_review").load()
+    if not records:
+        console.print("No recorded QA ticket reviews. Use `qa review-ticket --ticket-id ... --project ...`.")
+        return
+    table = Table(title="QA Ticket Reviews")
+    table.add_column("Run ID", style="bold")
+    table.add_column("Ticket")
+    table.add_column("Started At")
+    table.add_column("Status")
+    for record in records:
+        table.add_row(record.run_id, record.subject_id or "-", record.started_at, "ok" if record.ok else "failed")
+    console.print(table)
+
+
+@qa_group.command("replay-review")
+@click.argument("run_id")
+@click.option("--persist", is_flag=True, help="Report the replayed review as a real finding (default: dry-run only).")
+@click.option("--clickup-list-id", default=None, help="Override the ClickUp list id used for critical tickets.")
+@click.option("--db-path", default=None)
+def qa_replay_review_cmd(run_id: str, persist: bool, clickup_list_id: Optional[str], db_path: Optional[str]) -> None:
+    """Repeat a previously recorded ticket review against the same ticket."""
+    try:
+        original, review, finding, record = replay_qa_review(
+            run_id, persist=persist, clickup_list_id=clickup_list_id, store=_qa_store(db_path),
+        )
+    except (QAFlowError, ClickUpReadError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    console.print(f"Replaying review [bold]{run_id}[/bold] (ticket: {original.subject_id})")
+    _emit_review("Replayed Review", review, finding, record)
+
+
 @main.command("ui")
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8877, show_default=True, type=int)
@@ -908,3 +989,100 @@ def mcp_server_cmd() -> None:
     from meta_harness.mcp_server.server import main as run_mcp_server
 
     run_mcp_server()
+
+
+@main.group("tickets")
+def tickets_group() -> None:
+    """Generate proposed tickets from a document and create them in ClickUp."""
+
+
+def _proposed_ticket_to_dict(ticket: ProposedTicket) -> dict:
+    return {
+        "title": ticket.title,
+        "description": ticket.description,
+        "acceptance_criteria": ticket.acceptance_criteria,
+        "priority": ticket.priority,
+        "category": ticket.category,
+    }
+
+
+@tickets_group.command("generate")
+@click.option("--file", "file_path", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--json-output", default=None, help="Optional path to write proposed tickets as JSON.")
+@click.option("--start-mundane", default=1, show_default=True, type=int, help="First number for TAM (mundane).")
+@click.option("--start-backend", default=1, show_default=True, type=int, help="First number for TAB (backend).")
+@click.option("--start-frontend", default=1, show_default=True, type=int, help="First number for TAF (frontend).")
+@click.option("--start-deployment", default=1, show_default=True, type=int, help="First number for TAD (deployment).")
+def tickets_generate_cmd(
+    file_path: str,
+    json_output: Optional[str],
+    start_mundane: int,
+    start_backend: int,
+    start_frontend: int,
+    start_deployment: int,
+) -> None:
+    """Analyze a document and propose tickets (not yet created anywhere).
+
+    Each ticket is auto-classified (mundane/backend/frontend/deployment) and
+    named "{TAM,TAB,TAF,TAD}-NN | <title>", numbered independently per
+    category in the order tickets are proposed.
+    """
+    path = Path(file_path)
+    try:
+        tickets, warnings = generate_tickets_from_file(path.name, path.read_bytes())
+    except (TicketExtractionError, ClaudeNotFoundError, TicketGenerationError, TicketParseError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    start_numbers = {
+        "mundane": start_mundane,
+        "backend": start_backend,
+        "frontend": start_frontend,
+        "deployment": start_deployment,
+    }
+    tickets = apply_category_numbering(tickets, start_numbers)
+
+    table = Table(title="Proposed Tickets")
+    table.add_column("Title", style="bold")
+    table.add_column("Category")
+    table.add_column("Priority")
+    table.add_column("Acceptance Criteria")
+    for ticket in tickets:
+        table.add_row(ticket.title, ticket.category, ticket.priority, "; ".join(ticket.acceptance_criteria))
+    console.print(table)
+    for warning in warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    if json_output:
+        _write_json(Path(json_output).expanduser().resolve(), [_proposed_ticket_to_dict(t) for t in tickets])
+
+
+@tickets_group.command("create-all")
+@click.option("--from-json", "from_json_path", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--list-id", default=None, help="Defaults to CLICKUP_LIST_ID from .env.")
+def tickets_create_all_cmd(from_json_path: str, list_id: Optional[str]) -> None:
+    """Create every ticket in a proposed-tickets JSON file in ClickUp."""
+    raw = json.loads(Path(from_json_path).read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise click.ClickException(f"Expected a JSON array of tickets in {from_json_path}")
+
+    table = Table(title="Ticket Creation Results")
+    table.add_column("Title", style="bold")
+    table.add_column("Status")
+    ok_count = 0
+    for item in raw:
+        title = item.get("title", "(untitled)")
+        description = item.get("description", "")
+        criteria = item.get("acceptance_criteria", [])
+        lines = [description, "", "Acceptance Criteria:"]
+        lines += [f"- {c}" for c in criteria] or ["- (none specified)"]
+        try:
+            task_id = create_clickup_ticket(
+                title, "\n".join(lines), list_id=list_id, priority=item.get("priority")
+            )
+        except (ClickUpTicketError, ValueError) as exc:
+            table.add_row(title, f"[red]failed: {exc}[/red]")
+        else:
+            table.add_row(title, f"[green]created: {task_id}[/green]")
+            ok_count += 1
+    console.print(table)
+    console.print(f"\n[bold]{ok_count}/{len(raw)} tickets created.[/bold]")

@@ -1,6 +1,7 @@
 import pytest
 
 from meta_harness.clickup_bridge import ClickUpTicketError
+from meta_harness.linear_bridge import LinearIssueError
 from meta_harness.qa_findings import (
     QAFinding,
     QAFindingNotFoundError,
@@ -76,6 +77,58 @@ def test_report_qa_issue_rejects_invalid_severity(tmp_path):
         report_qa_issue("p", "/r", "obs", "blocker", store=_store(tmp_path))
 
 
+def test_report_qa_issue_rejects_invalid_tracker(tmp_path):
+    with pytest.raises(ValueError, match="tracker"):
+        report_qa_issue("p", "/r", "obs", "minor", tracker="jira", store=_store(tmp_path))
+
+
+def test_report_qa_issue_critical_escalates_into_linear_when_tracker_is_linear(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_create_issue(team_id, title, description, **kw):
+        captured.update(team_id=team_id)
+        return "LIN-1"
+
+    monkeypatch.setattr("meta_harness.qa_findings.linear_bridge.create_linear_issue", fake_create_issue)
+
+    finding = report_qa_issue(
+        "sigo", "/checkout", "500 on submit", "critical",
+        tracker="linear", linear_team_id="team-1", store=_store(tmp_path),
+    )
+
+    assert finding.linear_issue_id == "LIN-1"
+    assert finding.clickup_task_id is None
+    assert captured["team_id"] == "team-1"
+
+
+def test_report_qa_issue_linear_without_team_id_skips_escalation(tmp_path, monkeypatch):
+    def boom(**kwargs):
+        raise AssertionError("should not create a Linear issue without a team id")
+
+    monkeypatch.setattr("meta_harness.qa_findings.linear_bridge.create_linear_issue", boom)
+
+    finding = report_qa_issue(
+        "sigo", "/checkout", "500 on submit", "critical", tracker="linear", store=_store(tmp_path),
+    )
+
+    assert finding.linear_issue_id is None
+
+
+def test_report_qa_issue_linear_escalation_failure_does_not_block_finding(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise LinearIssueError("linear down")
+
+    monkeypatch.setattr("meta_harness.qa_findings.linear_bridge.create_linear_issue", fail)
+
+    finding = report_qa_issue(
+        "sigo", "/checkout", "500 on submit", "critical",
+        tracker="linear", linear_team_id="team-1", store=_store(tmp_path),
+    )
+
+    assert finding.status == "acknowledged"
+    assert finding.linear_issue_id is None
+
+
 def test_list_qa_issues_filters_by_project_severity_status(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "meta_harness.qa_findings.clickup_bridge.create_clickup_ticket", lambda **kw: "CU-1"
@@ -124,3 +177,57 @@ def test_qa_finding_store_persists_across_instances(tmp_path):
 
     assert len(reopened) == 1
     assert reopened[0].project == "p"
+
+
+def test_report_qa_issue_saves_route_check_evidence(tmp_path):
+    finding = report_qa_issue(
+        "sigo-front", "Fix login bug", "Check login", "major", store=_store(tmp_path),
+        checked_route="/login", status_code=500, http_error="HTTP 500: Internal Server Error",
+        screenshot_path="qa/screenshots/shot.png",
+    )
+
+    assert finding.checked_route == "/login"
+    assert finding.status_code == 500
+    assert finding.http_error == "HTTP 500: Internal Server Error"
+    assert finding.screenshot_path == "qa/screenshots/shot.png"
+
+
+def test_existing_database_migrates_to_include_new_columns(tmp_path):
+    # Simulate a database created before checked_route/status_code/http_error
+    # existed, to prove the ALTER TABLE migration in QAFindingStore.__init__
+    # doesn't break (or lose data from) an already-populated older database.
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE qa_findings (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            project          TEXT NOT NULL,
+            route            TEXT NOT NULL,
+            observation      TEXT NOT NULL,
+            severity         TEXT NOT NULL,
+            status           TEXT NOT NULL DEFAULT 'open',
+            screenshot_path  TEXT,
+            correction_note  TEXT,
+            clickup_task_id  TEXT,
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO qa_findings (project, route, observation, severity, status, created_at, updated_at) "
+        "VALUES ('p', '/r', 'old finding', 'minor', 'open', 't', 't')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = QAFindingStore(path)
+    findings = store.list()
+
+    assert len(findings) == 1
+    assert findings[0].observation == "old finding"
+    assert findings[0].checked_route is None
+    assert findings[0].status_code is None

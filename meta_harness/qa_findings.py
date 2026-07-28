@@ -16,11 +16,13 @@ from pathlib import Path
 from typing import List, Optional
 
 import meta_harness.clickup_bridge as clickup_bridge
+import meta_harness.linear_bridge as linear_bridge
 
 logger = logging.getLogger(__name__)
 
 SEVERITIES = ("minor", "major", "critical")
 STATUSES = ("open", "acknowledged", "closed")
+TRACKERS = ("clickup", "linear")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS qa_findings (
@@ -31,6 +33,9 @@ CREATE TABLE IF NOT EXISTS qa_findings (
     severity         TEXT NOT NULL CHECK (severity IN ('minor', 'major', 'critical')),
     status           TEXT NOT NULL CHECK (status IN ('open', 'acknowledged', 'closed')) DEFAULT 'open',
     screenshot_path  TEXT,
+    checked_route    TEXT,
+    status_code      INTEGER,
+    http_error       TEXT,
     correction_note  TEXT,
     clickup_task_id  TEXT,
     created_at       TEXT NOT NULL,
@@ -40,6 +45,16 @@ CREATE INDEX IF NOT EXISTS idx_qa_findings_project  ON qa_findings(project);
 CREATE INDEX IF NOT EXISTS idx_qa_findings_severity ON qa_findings(severity);
 CREATE INDEX IF NOT EXISTS idx_qa_findings_status   ON qa_findings(status);
 """
+
+# Columns added after the original schema — applied via ALTER TABLE for
+# on-disk databases created before they existed, since CREATE TABLE IF NOT
+# EXISTS above only takes effect for a brand-new file.
+_MIGRATION_COLUMNS = {
+    "checked_route": "TEXT",
+    "status_code": "INTEGER",
+    "http_error": "TEXT",
+    "linear_issue_id": "TEXT",
+}
 
 
 class QAFindingNotFoundError(LookupError):
@@ -57,8 +72,12 @@ class QAFinding:
     severity: str
     status: str = "open"
     screenshot_path: Optional[str] = None
+    checked_route: Optional[str] = None
+    status_code: Optional[int] = None
+    http_error: Optional[str] = None
     correction_note: Optional[str] = None
     clickup_task_id: Optional[str] = None
+    linear_issue_id: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -72,8 +91,12 @@ class QAFinding:
             severity=row["severity"],
             status=row["status"],
             screenshot_path=row["screenshot_path"],
+            checked_route=row["checked_route"],
+            status_code=row["status_code"],
+            http_error=row["http_error"],
             correction_note=row["correction_note"],
             clickup_task_id=row["clickup_task_id"],
+            linear_issue_id=row["linear_issue_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -97,6 +120,14 @@ class QAFindingStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(qa_findings)")}
+        for column, coltype in _MIGRATION_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE qa_findings ADD COLUMN {column} {coltype}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=5.0)
@@ -111,9 +142,10 @@ class QAFindingStore:
             cursor = conn.execute(
                 """
                 INSERT INTO qa_findings
-                    (project, route, observation, severity, status,
-                     screenshot_path, correction_note, clickup_task_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (project, route, observation, severity, status, screenshot_path,
+                     checked_route, status_code, http_error, correction_note, clickup_task_id,
+                     linear_issue_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     finding.project,
@@ -122,8 +154,12 @@ class QAFindingStore:
                     finding.severity,
                     finding.status,
                     finding.screenshot_path,
+                    finding.checked_route,
+                    finding.status_code,
+                    finding.http_error,
                     finding.correction_note,
                     finding.clickup_task_id,
+                    finding.linear_issue_id,
                     now,
                     now,
                 ),
@@ -192,18 +228,29 @@ def report_qa_issue(
     severity: str,
     *,
     screenshot_path: Optional[str] = None,
+    checked_route: Optional[str] = None,
+    status_code: Optional[int] = None,
+    http_error: Optional[str] = None,
+    tracker: str = "clickup",
     clickup_list_id: Optional[str] = None,
+    linear_team_id: Optional[str] = None,
     auto_escalate: bool = True,
     store: Optional[QAFindingStore] = None,
 ) -> QAFinding:
     """Register a QA finding.
 
     Critical findings are auto-acknowledged and, unless auto_escalate is
-    False, get a ClickUp correction ticket created and linked back to them.
-    A ClickUp failure never blocks the finding from being persisted.
+    False, get a correction ticket created in the same tracker the finding
+    came from (`tracker`: "clickup" or "linear") and linked back to them.
+    Escalating into Linear needs a `linear_team_id` (Linear issues always
+    belong to a team) the same way ClickUp escalation can optionally take a
+    `clickup_list_id`. A tracker failure never blocks the finding from
+    being persisted.
     """
     if severity not in SEVERITIES:
         raise ValueError(f"Invalid severity '{severity}'; must be one of {SEVERITIES}")
+    if tracker not in TRACKERS:
+        raise ValueError(f"Invalid tracker '{tracker}'; must be one of {TRACKERS}")
 
     store = store if store is not None else QAFindingStore()
     status = "acknowledged" if severity == "critical" else "open"
@@ -216,20 +263,34 @@ def report_qa_issue(
             severity=severity,
             status=status,
             screenshot_path=screenshot_path,
+            checked_route=checked_route,
+            status_code=status_code,
+            http_error=http_error,
         )
     )
 
     if severity == "critical" and auto_escalate:
-        try:
-            task_id = clickup_bridge.create_clickup_ticket(
-                name=f"[QA #{finding.id}] {project}: {route}",
-                description=f"Severity: critical\nRoute: {route}\nObservation: {observation}",
-                list_id=clickup_list_id,
-            )
-        except clickup_bridge.ClickUpTicketError as exc:
-            logger.warning("ClickUp ticket creation failed for finding %s: %s", finding.id, exc)
+        escalation_title = f"[QA #{finding.id}] {project}: {route}"
+        escalation_description = f"Severity: critical\nRoute: {route}\nObservation: {observation}"
+        if tracker == "linear":
+            if linear_team_id:
+                try:
+                    issue_id = linear_bridge.create_linear_issue(
+                        linear_team_id, escalation_title, escalation_description,
+                    )
+                except linear_bridge.LinearIssueError as exc:
+                    logger.warning("Linear issue creation failed for finding %s: %s", finding.id, exc)
+                else:
+                    finding = store.update(finding.id, linear_issue_id=issue_id)
         else:
-            finding = store.update(finding.id, clickup_task_id=task_id)
+            try:
+                task_id = clickup_bridge.create_clickup_ticket(
+                    name=escalation_title, description=escalation_description, list_id=clickup_list_id,
+                )
+            except clickup_bridge.ClickUpTicketError as exc:
+                logger.warning("ClickUp ticket creation failed for finding %s: %s", finding.id, exc)
+            else:
+                finding = store.update(finding.id, clickup_task_id=task_id)
 
     return finding
 

@@ -104,6 +104,39 @@ def _open_new_tab(port: int, timeout_s: float) -> str:
     return ws_url
 
 
+# How long to let a client-side app paint after the document has loaded.
+RENDER_SETTLE_TIMEOUT_S = 8.0
+# Give the app a beat even once it has content, so half-drawn frames and
+# late-arriving data don't get captured mid-render.
+RENDER_SETTLE_GRACE_S = 0.6
+
+
+async def _wait_for_content(send, *, timeout_s: float) -> None:
+    """Wait until the page has actually rendered something visible.
+
+    A single-page app serves an empty shell and fills it in from JavaScript,
+    so "document loaded" is not "screen ready". Polls for real rendered text
+    or a non-trivial element count, then pauses briefly to let the frame
+    settle. Never raises: a genuinely blank page is still evidence worth
+    capturing, so this degrades to the old behaviour instead of failing.
+    """
+    deadline = time.monotonic() + timeout_s
+    expression = (
+        "(() => { const b = document.body; if (!b) return false;"
+        " const text = (b.innerText || '').trim();"
+        " return text.length > 0 || b.querySelectorAll('img,svg,canvas,input,button').length > 0; })()"
+    )
+    while time.monotonic() < deadline:
+        try:
+            response = await send("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+            if response.get("result", {}).get("result", {}).get("value"):
+                await asyncio.sleep(RENDER_SETTLE_GRACE_S)
+                return
+        except Exception:  # noqa: BLE001 - a blank capture beats no capture
+            return
+        await asyncio.sleep(0.15)
+
+
 async def _run_navigation_flow(ws_url: str, url: str, *, timeout_s: float) -> str:
     """Connect over CDP and return base64 PNG data for a full-viewport screenshot.
 
@@ -145,6 +178,13 @@ async def _run_navigation_flow(ws_url: str, url: str, *, timeout_s: float) -> st
                 raise ScreenshotCaptureError(f"Page.navigate failed: {nav_response['error']}")
 
             await asyncio.wait_for(load_event.wait(), timeout=timeout_s)
+
+            # Page.loadEventFired means the HTML document finished loading —
+            # for a single-page app that is BEFORE the client-side router has
+            # mounted anything, so capturing here yields a blank page or the
+            # router's transient fallback ("Not Found") rather than the real
+            # screen. Wait for the app to actually paint something.
+            await _wait_for_content(send, timeout_s=min(timeout_s, RENDER_SETTLE_TIMEOUT_S))
 
             shot_response = await send("Page.captureScreenshot", {"format": "png"})
             if "error" in shot_response:

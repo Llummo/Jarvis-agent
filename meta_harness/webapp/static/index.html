@@ -2,97 +2,1018 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Meta-Harness QA Review</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>METRICA | JARVIS-AGENT</title>
   <link rel="stylesheet" href="/style.css">
+  <script>
+    // Runs before paint: a theme applied after first render flashes the wrong
+    // colours. "system" follows the OS until the user picks a side.
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("mh-theme"); } catch (e) {}
+      var dark = saved ? saved === "dark"
+                       : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    })();
+  </script>
 </head>
 <body>
   <header>
-    <h1>Meta-Harness QA Review</h1>
-    <nav class="tabs">
-      <button class="tab-button active" data-tab="clickup">ClickUp</button>
-      <button class="tab-button" data-tab="linear" disabled title="Coming soon">Linear</button>
-    </nav>
+    <div class="header-inner">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 48 48" role="img" aria-label="Metrica">
+          <rect width="48" height="48" rx="11" fill="#FC6A62"/>
+          <rect x="12" y="12" width="5" height="24" rx="1.6" fill="#fff"/>
+          <rect x="21.5" y="18" width="5" height="18" rx="1.6" fill="#fff"/>
+          <rect x="31" y="12" width="5" height="24" rx="1.6" fill="#fff"/>
+        </svg>
+        <div class="brand-text">
+          <h1><span class="brand-org">METRICA</span><span class="brand-sep">|</span><span class="brand-product">JARVIS-AGENT</span></h1>
+          <span class="brand-sub">Ticket generation &amp; QA review</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <nav class="tabs">
+          <button class="tab-button active" data-tab="clickup">ClickUp</button>
+          <button class="tab-button" data-tab="linear">Linear</button>
+        </nav>
+        <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch colour theme" title="Switch theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-13.2a1 1 0 0 1 1 1v1.4a1 1 0 1 1-2 0V4.8a1 1 0 0 1 1-1zm0 14.4a1 1 0 0 1 1 1v1.4a1 1 0 1 1-2 0v-1.4a1 1 0 0 1 1-1zM4.8 11h1.4a1 1 0 1 1 0 2H4.8a1 1 0 1 1 0-2zm13 0h1.4a1 1 0 1 1 0 2h-1.4a1 1 0 1 1 0-2zM6.3 5a1 1 0 0 1 1.4 0l1 1a1 1 0 0 1-1.4 1.4l-1-1a1 1 0 0 1 0-1.4zm9.6 9.6a1 1 0 0 1 1.4 0l1 1a1 1 0 0 1-1.4 1.4l-1-1a1 1 0 0 1 0-1.4zm1.4-9.6a1 1 0 0 1 0 1.4l-1 1A1 1 0 0 1 14.9 6l1-1a1 1 0 0 1 1.4 0zM7.7 14.6a1 1 0 0 1 0 1.4l-1 1A1 1 0 0 1 5.3 15.6l1-1a1 1 0 0 1 1.4 0z"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.7 14.6A8.6 8.6 0 0 1 9.4 3.3a1 1 0 0 0-1.3-1.2 10.6 10.6 0 1 0 13.8 13.8 1 1 0 0 0-1.2-1.3z"/></svg>
+        </button>
+      </div>
+    </div>
   </header>
 
   <main>
-    <section id="tab-clickup" class="tab-panel">
-      <section class="panel" id="qa-panel">
-        <h2>QA Findings</h2>
+    <!-- ===================================================================
+         ClickUp tab. The Linear tab below is a structural copy of this one:
+         same steps, same order, same controls — only the tracker prefix on
+         each id and the tracker-specific wording differ.
+         =================================================================== -->
+    <section id="tab-clickup" class="tab-panel" data-tracker="clickup">
 
-        <div id="qa-counts" class="counts"></div>
-
-        <form id="qa-filters" class="inline-form">
-          <input type="text" name="project" placeholder="project">
-          <select name="severity">
-            <option value="">any severity</option>
-            <option value="minor">minor</option>
-            <option value="major">major</option>
-            <option value="critical">critical</option>
-          </select>
-          <select name="status">
-            <option value="">any status</option>
-            <option value="open">open</option>
-            <option value="acknowledged">acknowledged</option>
-            <option value="closed">closed</option>
-          </select>
-          <button type="submit">Filter</button>
-        </form>
-
-        <table id="qa-table">
-          <thead>
-            <tr>
-              <th>ID</th><th>Project</th><th>Route</th><th>Severity</th>
-              <th>Status</th><th>ClickUp Task</th><th>Observation</th><th></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-
-        <h3>Report a Finding</h3>
-        <form id="qa-report-form" class="stacked-form">
-          <input type="text" name="project" placeholder="project" required>
-          <input type="text" name="route" placeholder="route or endpoint" required>
-          <input type="text" name="observation" placeholder="observation" required>
-          <select name="severity" required>
-            <option value="minor">minor</option>
-            <option value="major">major</option>
-            <option value="critical">critical</option>
-          </select>
-          <button type="submit">Report Finding</button>
-          <span id="qa-report-error" class="error-text"></span>
-        </form>
-      </section>
-
-      <section class="panel" id="clickup-panel">
-        <h2>ClickUp Ticket Browser</h2>
-        <div id="clickup-error" class="error-banner" hidden></div>
-        <div class="clickup-columns">
-          <div>
-            <h3>Teams</h3>
-            <ul id="clickup-teams" class="click-list"></ul>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-badge">Start here</span>
+            <div>
+              <h2>Choose where to work</h2>
+              <p class="hint">Pick the space and list you want to add tickets to and review. Everything below uses this choice.</p>
+            </div>
           </div>
-          <div>
-            <h3>Spaces</h3>
-            <ul id="clickup-spaces" class="click-list"></ul>
-          </div>
-          <div>
-            <h3>Projects (folders)</h3>
-            <ul id="clickup-folders" class="click-list"></ul>
-          </div>
-          <div>
-            <h3>Lists</h3>
-            <ul id="clickup-lists" class="click-list"></ul>
-          </div>
-          <div>
-            <h3>Tasks</h3>
-            <ul id="clickup-tasks" class="click-list"></ul>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field">
+                <label for="clickup-scope">Space</label>
+                <select id="clickup-scope"><option value="">Loading spaces…</option></select>
+                <span class="field-note">The ClickUp space that owns your work.</span>
+              </div>
+              <div class="field">
+                <label for="clickup-container">List</label>
+                <select id="clickup-container" disabled><option value="">Select a space first</option></select>
+                <span class="field-note">New tickets are created here.</span>
+              </div>
+            </div>
+
+            <div id="clickup-scope-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="clickup-scope-phase-log"></ul>
+              </div>
+            </div>
+            <div id="clickup-scope-error" class="error-banner" hidden></div>
+
+            <div id="clickup-destination-summary" class="selected-callout is-empty">No destination selected yet.</div>
           </div>
         </div>
       </section>
+
+      <nav class="subtabs" role="tablist" aria-label="Workflow">
+        <button class="subtab active" role="tab" aria-selected="true" data-tracker="clickup" data-sub="generate" id="clickup-subtab-generate">Generate tickets</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="clickup" data-sub="qa" id="clickup-subtab-qa">QA review</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="clickup" data-sub="module" id="clickup-subtab-module">Module check</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="clickup" data-sub="modify" id="clickup-subtab-modify">Modify ticket</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="clickup" data-sub="findings" id="clickup-subtab-findings">Findings</button>
+      </nav>
+
+      <div class="subpanel" id="clickup-sub-generate" role="tabpanel" aria-labelledby="clickup-subtab-generate">
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Create tickets</h2>
+              <p class="hint">Either upload a requirements document, or just describe your idea and let the assistant write the ticket for you.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="mode-switch" id="clickup-mode-switch">
+              <button type="button" data-mode="document" class="active">📄 From a document</button>
+              <button type="button" data-mode="chat">💬 Describe an idea</button>
+            </div>
+
+            <!-- Mode A: document -->
+            <div id="clickup-mode-document">
+              <form id="clickup-generate-form">
+                <div class="field-grid">
+                  <div class="field field-wide">
+                    <label for="clickup-file-input">Requirements document</label>
+                    <input type="file" id="clickup-file-input" accept=".md,.pdf,.txt" required>
+                    <span class="field-note">Markdown (.md), PDF or plain text.</span>
+                  </div>
+                  <div class="field">
+                    <label for="clickup-project-start">Project start date</label>
+                    <input type="date" id="clickup-project-start">
+                    <span class="field-note">Optional.</span>
+                  </div>
+                  <div class="field">
+                    <label for="clickup-project-end">Project deadline</label>
+                    <input type="date" id="clickup-project-end">
+                    <span class="field-note">Optional — deadlines are fitted inside this window.</span>
+                  </div>
+                </div>
+                <div class="btn-row">
+                  <button type="submit" class="btn-primary">Generate tickets</button>
+                </div>
+              </form>
+            </div>
+
+            <!-- Mode B: chat -->
+            <div id="clickup-mode-chat" hidden>
+              <div class="chat-log" id="clickup-chat-log" role="log" aria-live="polite" aria-label="Conversation"></div>
+
+              <div class="chat-suggestions" id="clickup-chat-suggestions"></div>
+
+              <form id="clickup-chat-form" class="chat-compose">
+                <label class="field-label" for="clickup-chat-input">Describe what you need</label>
+                <div class="chat-composer">
+                  <textarea id="clickup-chat-input" rows="1" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <button type="button" id="clickup-chat-cancel" class="chat-icon-btn chat-icon-cancel" hidden
+                          aria-label="Cancel generation" title="Cancel">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+                  </button>
+                  <button type="submit" id="clickup-chat-send" class="chat-icon-btn chat-icon-send" disabled
+                          aria-label="Send message" title="Send">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10.1 15.5 12 3.4 13.9z"/></svg>
+                  </button>
+                </div>
+                <div class="chat-compose-footer">
+                  <span class="field-note">
+                    <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
+                    the more concrete you are, the better the ticket
+                  </span>
+                  <button type="button" id="clickup-chat-reset" class="chat-reset">Start over</button>
+                </div>
+              </form>
+            </div>
+
+            <details class="advanced">
+              <summary>Advanced options — numbering and team assignment</summary>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="clickup-start-mundane">TAM · chores start at</label>
+                  <input type="number" id="clickup-start-mundane" min="1" value="1">
+                </div>
+                <div class="field">
+                  <label for="clickup-start-backend">TAB · backend starts at</label>
+                  <input type="number" id="clickup-start-backend" min="1" value="1">
+                </div>
+                <div class="field">
+                  <label for="clickup-start-frontend">TAF · frontend starts at</label>
+                  <input type="number" id="clickup-start-frontend" min="1" value="1">
+                </div>
+                <div class="field">
+                  <label for="clickup-start-deployment">TAD · deployment starts at</label>
+                  <input type="number" id="clickup-start-deployment" min="1" value="1">
+                </div>
+                <div class="field field-wide">
+                  <label class="field-label">Detected team members</label>
+                  <div id="clickup-team-members" class="member-list">
+                    <span class="field-note">Choose a destination in step 1 to load your team.</span>
+                  </div>
+                  <span class="field-note">Read straight from your workspace — no typing. Ticked members are assigned to generated tickets at random.</span>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-refresh-team-btn">Refresh list</button>
+                <button type="button" id="clickup-team-all-btn">Select all</button>
+                <button type="button" id="clickup-team-none-btn">Select none</button>
+              </div>
+            </details>
+
+            <div id="clickup-generate-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="clickup-generate-phase-log"></ul>
+              </div>
+            </div>
+            <div id="clickup-generate-error" class="error-banner" hidden></div>
+            <div id="clickup-generate-warnings" class="warning-banner" hidden></div>
+            <div id="clickup-generate-success" class="success-banner" hidden></div>
+
+            <div id="clickup-generate-actions" class="btn-row" hidden>
+              <button type="button" id="clickup-create-all" class="btn-success">Add all tickets to ClickUp</button>
+              <button type="button" id="clickup-clear-tickets">Discard</button>
+            </div>
+
+            <div id="clickup-tickets-list" class="tickets-grid"></div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="clickup-sub-qa" role="tabpanel" aria-labelledby="clickup-subtab-qa" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>QA review</h2>
+              <p class="hint">Have the assistant check a ticket, capture real evidence from your app, and move the ticket automatically based on the result.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="clickup-qa-ticket">Ticket to review</label>
+                <input type="text" id="clickup-qa-ticket" list="clickup-qa-ticket-options" disabled placeholder="Choose a destination in step 1 first" autocomplete="off">
+                <datalist id="clickup-qa-ticket-options"></datalist>
+                <span class="field-note" id="clickup-qa-ticket-status"></span>
+              </div>
+              <div class="field">
+                <label for="clickup-qa-base-url">App base URL</label>
+                <input type="url" id="clickup-qa-base-url" placeholder="https://your-app.example.com">
+                <span class="field-note">Optional — enables real HTTP checks and screenshots.</span>
+              </div>
+              <div class="field">
+                <label class="field-label">&nbsp;</label>
+                <button type="button" id="clickup-qa-base-url-save">Save URL</button>
+                <span id="clickup-qa-base-url-status" class="success-text"></span>
+              </div>
+              <div class="field">
+                <label for="clickup-qa-status-pass">If QA passes, move to</label>
+                <select id="clickup-qa-status-pass"><option value="">Leave unchanged</option></select>
+                <span class="field-note">A minor result counts as a pass.</span>
+              </div>
+              <div class="field">
+                <label for="clickup-qa-status-fail">If QA fails, move to</label>
+                <select id="clickup-qa-status-fail"><option value="">Leave unchanged</option></select>
+                <span class="field-note">Major or critical results count as a fail.</span>
+              </div>
+            </div>
+
+            <div id="clickup-qa-selected" class="selected-callout is-empty">No ticket selected.</div>
+
+            <div class="btn-row">
+              <button type="button" id="clickup-qa-analyze-btn" class="btn-primary" disabled>Review this ticket</button>
+              <button type="button" id="clickup-qa-bulk-run-btn" disabled>Review every ticket in this list</button>
+            </div>
+
+            <div id="clickup-qa-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="clickup-qa-phase-log"></ul>
+              </div>
+            </div>
+            <div id="clickup-qa-error" class="error-banner" hidden></div>
+            <div id="clickup-qa-success" class="success-banner" hidden></div>
+
+            <div id="clickup-qa-result" class="ticket-card" hidden></div>
+
+            <div id="clickup-qa-bulk-results" hidden>
+              <h3>Review results</h3>
+              <div class="table-wrap">
+                <table id="clickup-qa-bulk-table">
+                  <thead>
+                    <tr><th>Ticket</th><th>Result</th><th>Evidence</th><th>Will move to</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-qa-bulk-confirm-btn" class="btn-success">Save results and move tickets</button>
+                <button type="button" id="clickup-qa-bulk-readme-btn">Download QA-README.md</button>
+              </div>
+            </div>
+
+            <details class="advanced">
+              <summary>Past reviews — replay an earlier review</summary>
+              <div class="field-grid">
+                <div class="field field-wide">
+                  <label for="clickup-qa-runs-select">Recorded review</label>
+                  <select id="clickup-qa-runs-select"></select>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-qa-replay-btn">Replay review</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="clickup-sub-module" role="tabpanel" aria-labelledby="clickup-subtab-module" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Does this ticket belong to a module?</h2>
+              <p class="hint">Pick a ticket, paste the module's official documentation, and get a reasoned verdict on whether the ticket is work on that module.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="clickup-module-ticket">Ticket to check</label>
+                <input type="text" id="clickup-module-ticket" list="clickup-module-ticket-options" disabled placeholder="Choose a destination in step 1 first" autocomplete="off">
+                <datalist id="clickup-module-ticket-options"></datalist>
+                <span class="field-note" id="clickup-module-ticket-status"></span>
+              </div>
+              <div class="field field-wide">
+                <label for="clickup-module-name">Module name</label>
+                <input type="text" id="clickup-module-name" placeholder="Personas / Gestión de Pool de Talento">
+              </div>
+              <div class="field field-wide">
+                <label for="clickup-module-context">Module documentation</label>
+                <textarea id="clickup-module-context" rows="6" placeholder="Paste the official documentation describing what this module covers…"></textarea>
+                <span class="field-note">The verdict is based only on what you paste here, so include the module's real scope.</span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="clickup-module-check-btn" class="btn-primary">Check this ticket</button>
+              <button type="button" id="clickup-module-check-all-btn" disabled>Check every ticket in this list</button>
+            </div>
+
+            <div id="clickup-module-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="clickup-module-phase-log"></ul>
+              </div>
+            </div>
+            <div id="clickup-module-error" class="error-banner" hidden></div>
+            <div id="clickup-module-summary" class="success-banner" hidden></div>
+            <div id="clickup-module-result" class="ticket-card" hidden></div>
+
+            <div id="clickup-module-bulk-results" hidden>
+              <h3>Which tickets align with this module</h3>
+              <div id="clickup-module-aligned" class="evidence"></div>
+              <div class="table-wrap">
+                <table id="clickup-module-bulk-table">
+                  <thead>
+                    <tr><th>Ticket</th><th>Verdict</th><th>Confidence</th><th>Reasoning</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-module-report-btn">Download module report</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="clickup-sub-modify" role="tabpanel" aria-labelledby="clickup-subtab-modify" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Fix an existing ticket's format</h2>
+              <p class="hint">Pick an existing ticket and the assistant will restructure what it already says into the standard format. You review the result before anything is saved.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="clickup-reformat-ticket">Ticket to reformat</label>
+                <input type="text" id="clickup-reformat-ticket" list="clickup-reformat-ticket-options" disabled placeholder="Choose a destination in step 1 first" autocomplete="off">
+                <datalist id="clickup-reformat-ticket-options"></datalist>
+                <span class="field-note" id="clickup-reformat-ticket-status"></span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="clickup-reformat-btn" class="btn-primary" disabled>Modify</button>
+            </div>
+
+            <div id="clickup-reformat-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="clickup-reformat-phase-log"></ul>
+              </div>
+            </div>
+            <div id="clickup-reformat-error" class="error-banner" hidden></div>
+            <div id="clickup-reformat-success" class="success-banner" hidden></div>
+
+            <div id="clickup-revert-panel" class="undo-bar" hidden>
+              <div>
+                <strong>Reformatted tickets you can undo</strong>
+                <span class="field-note" id="clickup-revert-note"></span>
+              </div>
+              <div class="inline-controls">
+                <select id="clickup-revert-select"></select>
+                <button type="button" id="clickup-revert-btn">Revert to previous version</button>
+              </div>
+            </div>
+
+            <div id="clickup-reformat-result" hidden>
+              <h3>Proposed rewrite</h3>
+              <div class="diff-grid">
+                <div class="diff-pane">
+                  <div class="ticket-section-label">Current</div>
+                  <div class="diff-title" id="clickup-reformat-old-title"></div>
+                  <pre class="diff-body" id="clickup-reformat-old-body"></pre>
+                </div>
+                <div class="diff-pane diff-pane-new">
+                  <div class="ticket-section-label">After reformatting</div>
+                  <div class="diff-title" id="clickup-reformat-new-title"></div>
+                  <pre class="diff-body" id="clickup-reformat-new-body"></pre>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-reformat-apply-btn" class="btn-success">Confirm and update the ticket</button>
+                <button type="button" id="clickup-reformat-discard-btn">Discard</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="clickup-sub-findings" role="tabpanel" aria-labelledby="clickup-subtab-findings" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Findings</h2>
+              <p class="hint">Everything QA has recorded. Close a finding once it has been corrected.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div id="clickup-findings-counts" class="counts"></div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="clickup-filter-project">Project</label>
+                <select id="clickup-filter-project"><option value="">Any project</option></select>
+              </div>
+              <div class="field">
+                <label for="clickup-filter-severity">Severity</label>
+                <select id="clickup-filter-severity">
+                  <option value="">Any severity</option>
+                  <option value="minor">Minor</option>
+                  <option value="major">Major</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="clickup-filter-status">Status</label>
+                <select id="clickup-filter-status">
+                  <option value="">Any status</option>
+                  <option value="open">Open</option>
+                  <option value="acknowledged">Acknowledged</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table id="clickup-findings-table">
+                <thead>
+                  <tr>
+                    <th>ID</th><th>Project</th><th>Ticket</th><th>Severity</th>
+                    <th>Status</th><th>Linked</th><th>Observation</th><th>Close</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div id="clickup-findings-error" class="error-banner" hidden></div>
+
+            <details class="advanced">
+              <summary>Report a finding manually</summary>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="clickup-report-project">Project</label>
+                  <select id="clickup-report-project"></select>
+                </div>
+                <div class="field">
+                  <label for="clickup-report-route">Screen or endpoint</label>
+                  <input type="text" id="clickup-report-route" placeholder="/erp/talent/people">
+                </div>
+                <div class="field">
+                  <label for="clickup-report-severity">Severity</label>
+                  <select id="clickup-report-severity">
+                    <option value="minor">Minor</option>
+                    <option value="major">Major</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="field field-wide">
+                  <label for="clickup-report-observation">What is wrong?</label>
+                  <textarea id="clickup-report-observation" rows="2"></textarea>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="clickup-report-submit" class="btn-primary">Report finding</button>
+                <span id="clickup-report-status" class="success-text"></span>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+      </div>
     </section>
 
-    <section id="tab-linear" class="tab-panel" hidden>
-      <p>Linear support is coming soon.</p>
+    <!-- ===================================================================
+         Linear tab — structural copy of the ClickUp tab above.
+         =================================================================== -->
+    <section id="tab-linear" class="tab-panel" data-tracker="linear" hidden>
+
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-badge">Start here</span>
+            <div>
+              <h2>Choose where to work</h2>
+              <p class="hint">Pick the team and project you want to add issues to and review. Everything below uses this choice.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field">
+                <label for="linear-scope">Team</label>
+                <select id="linear-scope"><option value="">Loading teams…</option></select>
+                <span class="field-note">The Linear team that owns your work.</span>
+              </div>
+              <div class="field">
+                <label for="linear-container">Project</label>
+                <select id="linear-container" disabled><option value="">Select a team first</option></select>
+                <span class="field-note">Optional — leave empty to create issues with no project.</span>
+              </div>
+            </div>
+
+            <div id="linear-scope-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-scope-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-scope-error" class="error-banner" hidden></div>
+
+            <div id="linear-destination-summary" class="selected-callout is-empty">No destination selected yet.</div>
+          </div>
+        </div>
+      </section>
+
+      <nav class="subtabs" role="tablist" aria-label="Workflow">
+        <button class="subtab active" role="tab" aria-selected="true" data-tracker="linear" data-sub="generate" id="linear-subtab-generate">Generate tickets</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="qa" id="linear-subtab-qa">QA review</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="module" id="linear-subtab-module">Module check</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="modify" id="linear-subtab-modify">Modify ticket</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="findings" id="linear-subtab-findings">Findings</button>
+      </nav>
+
+      <div class="subpanel" id="linear-sub-generate" role="tabpanel" aria-labelledby="linear-subtab-generate">
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Create issues</h2>
+              <p class="hint">Either upload a requirements document, or just describe your idea and let the assistant write the issue for you.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="mode-switch" id="linear-mode-switch">
+              <button type="button" data-mode="document" class="active">📄 From a document</button>
+              <button type="button" data-mode="chat">💬 Describe an idea</button>
+            </div>
+
+            <!-- Mode A: document -->
+            <div id="linear-mode-document">
+              <form id="linear-generate-form">
+                <div class="field-grid">
+                  <div class="field field-wide">
+                    <label for="linear-file-input">Requirements document</label>
+                    <input type="file" id="linear-file-input" accept=".md,.pdf,.txt" required>
+                    <span class="field-note">Markdown (.md), PDF or plain text.</span>
+                  </div>
+                  <div class="field">
+                    <label for="linear-project-start">Project start date</label>
+                    <input type="date" id="linear-project-start">
+                    <span class="field-note">Optional.</span>
+                  </div>
+                  <div class="field">
+                    <label for="linear-project-end">Project deadline</label>
+                    <input type="date" id="linear-project-end">
+                    <span class="field-note">Optional — deadlines are fitted inside this window.</span>
+                  </div>
+                </div>
+                <div class="btn-row">
+                  <button type="submit" class="btn-primary">Generate issues</button>
+                </div>
+              </form>
+            </div>
+
+            <!-- Mode B: chat -->
+            <div id="linear-mode-chat" hidden>
+              <div class="chat-log" id="linear-chat-log" role="log" aria-live="polite" aria-label="Conversation"></div>
+
+              <div class="chat-suggestions" id="linear-chat-suggestions"></div>
+
+              <form id="linear-chat-form" class="chat-compose">
+                <label class="field-label" for="linear-chat-input">Describe what you need</label>
+                <div class="chat-composer">
+                  <textarea id="linear-chat-input" rows="1" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <button type="button" id="linear-chat-cancel" class="chat-icon-btn chat-icon-cancel" hidden
+                          aria-label="Cancel generation" title="Cancel">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+                  </button>
+                  <button type="submit" id="linear-chat-send" class="chat-icon-btn chat-icon-send" disabled
+                          aria-label="Send message" title="Send">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10.1 15.5 12 3.4 13.9z"/></svg>
+                  </button>
+                </div>
+                <div class="chat-compose-footer">
+                  <span class="field-note">
+                    <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
+                    the more concrete you are, the better the issue
+                  </span>
+                  <button type="button" id="linear-chat-reset" class="chat-reset">Start over</button>
+                </div>
+              </form>
+            </div>
+
+            <details class="advanced">
+              <summary>Advanced options — numbering and team assignment</summary>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="linear-start-mundane">TAM · chores start at</label>
+                  <input type="number" id="linear-start-mundane" min="1" value="1">
+                </div>
+                <div class="field">
+                  <label for="linear-start-backend">TAB · backend starts at</label>
+                  <input type="number" id="linear-start-backend" min="1" value="1">
+                </div>
+                <div class="field">
+                  <label for="linear-start-frontend">TAF · frontend starts at</label>
+                  <input type="number" id="linear-start-frontend" min="1" value="1">
+                </div>
+                <div class="field">
+                  <label for="linear-start-deployment">TAD · deployment starts at</label>
+                  <input type="number" id="linear-start-deployment" min="1" value="1">
+                </div>
+                <div class="field field-wide">
+                  <label class="field-label">Detected team members</label>
+                  <div id="linear-team-members" class="member-list">
+                    <span class="field-note">Choose a destination in step 1 to load your team.</span>
+                  </div>
+                  <span class="field-note">Read straight from your workspace — no typing. Ticked members are assigned to generated issues at random.</span>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-refresh-team-btn">Refresh list</button>
+                <button type="button" id="linear-team-all-btn">Select all</button>
+                <button type="button" id="linear-team-none-btn">Select none</button>
+              </div>
+            </details>
+
+            <div id="linear-generate-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-generate-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-generate-error" class="error-banner" hidden></div>
+            <div id="linear-generate-warnings" class="warning-banner" hidden></div>
+            <div id="linear-generate-success" class="success-banner" hidden></div>
+
+            <div id="linear-generate-actions" class="btn-row" hidden>
+              <button type="button" id="linear-create-all" class="btn-success">Add all issues to Linear</button>
+              <button type="button" id="linear-clear-tickets">Discard</button>
+            </div>
+
+            <div id="linear-tickets-list" class="tickets-grid"></div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="linear-sub-qa" role="tabpanel" aria-labelledby="linear-subtab-qa" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>QA review</h2>
+              <p class="hint">Have the assistant check an issue, capture real evidence from your app, and move the issue automatically based on the result.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="linear-qa-ticket">Issue to review</label>
+                <input type="text" id="linear-qa-ticket" list="linear-qa-ticket-options" disabled placeholder="Choose a destination in step 1 first" autocomplete="off">
+                <datalist id="linear-qa-ticket-options"></datalist>
+                <span class="field-note" id="linear-qa-ticket-status"></span>
+              </div>
+              <div class="field">
+                <label for="linear-qa-base-url">App base URL</label>
+                <input type="url" id="linear-qa-base-url" placeholder="https://your-app.example.com">
+                <span class="field-note">Optional — enables real HTTP checks and screenshots.</span>
+              </div>
+              <div class="field">
+                <label class="field-label">&nbsp;</label>
+                <button type="button" id="linear-qa-base-url-save">Save URL</button>
+                <span id="linear-qa-base-url-status" class="success-text"></span>
+              </div>
+              <div class="field">
+                <label for="linear-qa-status-pass">If QA passes, move to</label>
+                <select id="linear-qa-status-pass"><option value="">Leave unchanged</option></select>
+                <span class="field-note">A minor result counts as a pass.</span>
+              </div>
+              <div class="field">
+                <label for="linear-qa-status-fail">If QA fails, move to</label>
+                <select id="linear-qa-status-fail"><option value="">Leave unchanged</option></select>
+                <span class="field-note">Major or critical results count as a fail.</span>
+              </div>
+            </div>
+
+            <div id="linear-qa-selected" class="selected-callout is-empty">No issue selected.</div>
+
+            <div class="btn-row">
+              <button type="button" id="linear-qa-analyze-btn" class="btn-primary" disabled>Review this issue</button>
+              <button type="button" id="linear-qa-bulk-run-btn" disabled>Review every issue in this team</button>
+            </div>
+
+            <div id="linear-qa-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-qa-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-qa-error" class="error-banner" hidden></div>
+            <div id="linear-qa-success" class="success-banner" hidden></div>
+
+            <div id="linear-qa-result" class="ticket-card" hidden></div>
+
+            <div id="linear-qa-bulk-results" hidden>
+              <h3>Review results</h3>
+              <div class="table-wrap">
+                <table id="linear-qa-bulk-table">
+                  <thead>
+                    <tr><th>Issue</th><th>Result</th><th>Evidence</th><th>Will move to</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-qa-bulk-confirm-btn" class="btn-success">Save results and move issues</button>
+                <button type="button" id="linear-qa-bulk-readme-btn">Download QA-README.md</button>
+              </div>
+            </div>
+
+            <details class="advanced">
+              <summary>Past reviews — replay an earlier review</summary>
+              <div class="field-grid">
+                <div class="field field-wide">
+                  <label for="linear-qa-runs-select">Recorded review</label>
+                  <select id="linear-qa-runs-select"></select>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-qa-replay-btn">Replay review</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="linear-sub-module" role="tabpanel" aria-labelledby="linear-subtab-module" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Does this issue belong to a module?</h2>
+              <p class="hint">Pick a issue, paste the module's official documentation, and get a reasoned verdict on whether the issue is work on that module.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="linear-module-ticket">Issue to check</label>
+                <input type="text" id="linear-module-ticket" list="linear-module-ticket-options" disabled placeholder="Choose a destination in step 1 first" autocomplete="off">
+                <datalist id="linear-module-ticket-options"></datalist>
+                <span class="field-note" id="linear-module-ticket-status"></span>
+              </div>
+              <div class="field field-wide">
+                <label for="linear-module-name">Module name</label>
+                <input type="text" id="linear-module-name" placeholder="Personas / Gestión de Pool de Talento">
+              </div>
+              <div class="field field-wide">
+                <label for="linear-module-context">Module documentation</label>
+                <textarea id="linear-module-context" rows="6" placeholder="Paste the official documentation describing what this module covers…"></textarea>
+                <span class="field-note">The verdict is based only on what you paste here, so include the module's real scope.</span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="linear-module-check-btn" class="btn-primary">Check this issue</button>
+              <button type="button" id="linear-module-check-all-btn" disabled>Check every issue in this list</button>
+            </div>
+
+            <div id="linear-module-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-module-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-module-error" class="error-banner" hidden></div>
+            <div id="linear-module-summary" class="success-banner" hidden></div>
+            <div id="linear-module-result" class="ticket-card" hidden></div>
+
+            <div id="linear-module-bulk-results" hidden>
+              <h3>Which issues align with this module</h3>
+              <div id="linear-module-aligned" class="evidence"></div>
+              <div class="table-wrap">
+                <table id="linear-module-bulk-table">
+                  <thead>
+                    <tr><th>Issue</th><th>Verdict</th><th>Confidence</th><th>Reasoning</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-module-report-btn">Download module report</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="linear-sub-modify" role="tabpanel" aria-labelledby="linear-subtab-modify" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Fix an existing issue's format</h2>
+              <p class="hint">Pick an existing issue and the assistant will restructure what it already says into the standard format. You review the result before anything is saved.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="linear-reformat-ticket">Issue to reformat</label>
+                <input type="text" id="linear-reformat-ticket" list="linear-reformat-ticket-options" disabled placeholder="Choose a destination in step 1 first" autocomplete="off">
+                <datalist id="linear-reformat-ticket-options"></datalist>
+                <span class="field-note" id="linear-reformat-ticket-status"></span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="linear-reformat-btn" class="btn-primary" disabled>Modify</button>
+            </div>
+
+            <div id="linear-reformat-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-reformat-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-reformat-error" class="error-banner" hidden></div>
+            <div id="linear-reformat-success" class="success-banner" hidden></div>
+
+            <div id="linear-revert-panel" class="undo-bar" hidden>
+              <div>
+                <strong>Reformatted issues you can undo</strong>
+                <span class="field-note" id="linear-revert-note"></span>
+              </div>
+              <div class="inline-controls">
+                <select id="linear-revert-select"></select>
+                <button type="button" id="linear-revert-btn">Revert to previous version</button>
+              </div>
+            </div>
+
+            <div id="linear-reformat-result" hidden>
+              <h3>Proposed rewrite</h3>
+              <div class="diff-grid">
+                <div class="diff-pane">
+                  <div class="ticket-section-label">Current</div>
+                  <div class="diff-title" id="linear-reformat-old-title"></div>
+                  <pre class="diff-body" id="linear-reformat-old-body"></pre>
+                </div>
+                <div class="diff-pane diff-pane-new">
+                  <div class="ticket-section-label">After reformatting</div>
+                  <div class="diff-title" id="linear-reformat-new-title"></div>
+                  <pre class="diff-body" id="linear-reformat-new-body"></pre>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-reformat-apply-btn" class="btn-success">Confirm and update the issue</button>
+                <button type="button" id="linear-reformat-discard-btn">Discard</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="linear-sub-findings" role="tabpanel" aria-labelledby="linear-subtab-findings" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Findings</h2>
+              <p class="hint">Everything QA has recorded. Close a finding once it has been corrected.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div id="linear-findings-counts" class="counts"></div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="linear-filter-project">Project</label>
+                <select id="linear-filter-project"><option value="">Any project</option></select>
+              </div>
+              <div class="field">
+                <label for="linear-filter-severity">Severity</label>
+                <select id="linear-filter-severity">
+                  <option value="">Any severity</option>
+                  <option value="minor">Minor</option>
+                  <option value="major">Major</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="linear-filter-status">Status</label>
+                <select id="linear-filter-status">
+                  <option value="">Any status</option>
+                  <option value="open">Open</option>
+                  <option value="acknowledged">Acknowledged</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table id="linear-findings-table">
+                <thead>
+                  <tr>
+                    <th>ID</th><th>Project</th><th>Ticket</th><th>Severity</th>
+                    <th>Status</th><th>Linked</th><th>Observation</th><th>Close</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div id="linear-findings-error" class="error-banner" hidden></div>
+
+            <details class="advanced">
+              <summary>Report a finding manually</summary>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="linear-report-project">Project</label>
+                  <select id="linear-report-project"></select>
+                </div>
+                <div class="field">
+                  <label for="linear-report-route">Screen or endpoint</label>
+                  <input type="text" id="linear-report-route" placeholder="/erp/talent/people">
+                </div>
+                <div class="field">
+                  <label for="linear-report-severity">Severity</label>
+                  <select id="linear-report-severity">
+                    <option value="minor">Minor</option>
+                    <option value="major">Major</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="field field-wide">
+                  <label for="linear-report-observation">What is wrong?</label>
+                  <textarea id="linear-report-observation" rows="2"></textarea>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="linear-report-submit" class="btn-primary">Report finding</button>
+                <span id="linear-report-status" class="success-text"></span>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+      </div>
     </section>
   </main>
 
