@@ -186,29 +186,217 @@ python -m meta_harness show-frontier \
   --benchmark tblite
 ```
 
+## Running the Project
+
+The Quick Start above covers the Hermes candidate-evaluation side. This section
+covers running the ticket-generation and QA product — the localhost UI.
+
+### 1. Prerequisites
+
+| Requirement | Needed for | Notes |
+| --- | --- | --- |
+| Python 3.10+ | everything | |
+| The `claude` CLI, logged in | generation, QA review, module checks, reformatting | already-authenticated Claude Code install; no API key is stored by this repo |
+| A `p-harness` checkout | all ClickUp/Linear reads and writes | sibling directory, see step 3 |
+| Chromium or Chrome | QA screenshot evidence, and the browser e2e tests | optional — QA still records the HTTP status without it |
+
+### 2. Install the harness
+
+```bash
+git clone https://github.com/Llummo/Jarvis-agent.git
+cd Jarvis-agent
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### 3. Install and configure `p-harness`
+
+This repo never holds tracker credentials — they live in the sibling CLI it
+shells out to. Clone it *next to* this checkout (or point at it with
+`CLICKUP_PROJECT_REPO` / `LINEAR_PROJECT_REPO`):
+
+```bash
+cd ..
+git clone https://github.com/Llummo/personal-harness.git p-harness
+cd p-harness
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+cp .env.example .env      # then fill it in
+```
+
+`p-harness/.env`:
+
+```bash
+CLICKUP_API_TOKEN=pk_xxx_xxx   # ClickUp personal token
+CLICKUP_TEAM_ID=              # optional
+CLICKUP_LIST_ID=              # optional default list
+LINEAR_API_KEY=lin_api_xxx     # Linear personal API key
+```
+
+Verify the credentials before starting the UI — a failure here is much easier
+to read from the CLI than from a dropdown that silently stays empty:
+
+```bash
+.venv/bin/harness clickup teams
+.venv/bin/harness linear teams
+```
+
+### 4. Start the UI
+
+```bash
+cd ../Jarvis-agent
+source .venv/bin/activate
+meta-harness ui                    # http://127.0.0.1:8877
+meta-harness ui --port 8879        # or any other port
+```
+
+Then open the URL and work top to bottom:
+
+1. **Choose where to work** — space + list (ClickUp) or team + project (Linear).
+   Everything below depends on this, which is why it stays pinned above the tabs.
+2. **Generate tickets** — upload a `.md`/`.pdf`/`.txt`, or describe an idea in
+   the chat. Review the drafts, then add them.
+3. **QA review** — pick a ticket, analyze it, optionally capture real evidence
+   (set a base URL first), then save the finding and move the ticket.
+4. **Modify ticket** — reformat an existing ticket into the house format;
+   applying it saves an undo point you can revert from the same panel.
+5. **Module check** — decide whether a ticket belongs to a module, given that
+   module's documentation.
+6. **Findings** — everything QA has recorded.
+
+> The UI does not hot-reload Python. Static assets (HTML/CSS/JS) are re-read per
+> request, but after changing any `.py` file you must restart `meta-harness ui`
+> or you will be looking at the previous build.
+
+### 5. Run the tests
+
+```bash
+pytest                                  # everything
+pytest tests/test_e2e_ui.py             # browser end-to-end only
+pytest --ignore=tests/test_e2e_ui.py    # skip the browser suite
+```
+
+The e2e suite drives the real UI in headless Chromium against a stubbed API,
+and skips itself automatically when Chromium is unavailable.
+
+### Environment variables
+
+All optional; sensible defaults apply.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CLICKUP_PROJECT_REPO` / `LINEAR_PROJECT_REPO` | sibling `../p-harness` | where the tracker CLI lives |
+| `META_HARNESS_CLAUDE_PATH` | `claude` on `PATH` | Claude CLI binary |
+| `META_HARNESS_CHROMIUM_PATH` | Playwright cache, then `PATH` | Chromium binary for screenshots |
+| `META_HARNESS_CLAUDE_TIMEOUT_S` | `1800` | ticket-generation timeout |
+| `META_HARNESS_QA_REVIEW_TIMEOUT_S` | `120` | QA review timeout |
+| `META_HARNESS_MODULE_CHECK_TIMEOUT_S` | `180` | module-relevance timeout |
+| `META_HARNESS_QA_DB_PATH` | `qa/findings.db` | findings database |
+| `META_HARNESS_PROJECT_CONFIG_PATH` | `qa/project_config.json` | per-project base URLs |
+
+### Troubleshooting
+
+| Symptom | Cause |
+| --- | --- |
+| Dropdowns stay empty | `p-harness/.env` missing or invalid — run `harness clickup teams` to see the real error |
+| Generation returns 502 | the Claude CLI failed or timed out; the message now includes its output |
+| Changes to a `.py` file have no effect | the UI does not hot-reload Python — restart it |
+| Screenshots are blank | the target app had not rendered yet; the capture waits for paint, but a page that never renders yields a blank image |
+| e2e tests skip | Chromium or `websockets` unavailable |
+
+## Technology Stack
+
+No ORM, no message broker, no task queue, and no frontend build step. The
+whole system is a synchronous FastAPI app plus two subprocess boundaries.
+
+### Backend — Python
+
+| Package | Used for |
+| --- | --- |
+| `fastapi` + `uvicorn` | the HTTP API and the localhost UI server |
+| `click` + `rich` | the `meta-harness` CLI |
+| `pypdf` | extracting text from uploaded PDF requirement documents |
+| `fpdf2` | rendering QA findings as downloadable PDF reports |
+| `websockets` | driving Chromium over raw CDP to capture screenshots |
+| `python-multipart` | file uploads |
+| `mcp` | the MCP server exposing captured screenshots |
+| `filelock` | cross-platform locking for the run archive and frontier |
+
+The sibling `p-harness` CLI, which owns all tracker credentials, uses
+`requests` (ClickUp REST, and Linear's GraphQL as plain POSTs),
+`python-dotenv` and `click`.
+
+### Frontend — none, deliberately
+
+Vanilla JavaScript, HTML and CSS served straight from
+`meta_harness/webapp/static/`. There is no `package.json`, no bundler and no
+transpilation: what is on disk is what the browser runs. Node is used only as
+a dev-time syntax checker (`node --check app.js`).
+
+The design system is plain CSS custom properties, and the ClickUp and Linear
+tabs are rendered by one tracker-parameterized layer rather than duplicated
+markup.
+
+### Storage — SQLite and JSON files
+
+| Store | Backing | Holds |
+| --- | --- | --- |
+| `qa/findings.db` | SQLite (WAL, stdlib `sqlite3`) | QA findings |
+| `qa/project_config.json` | JSON, atomic writes | per-project base URLs |
+| `qa/reformat_history.json` | JSON, atomic writes | pre-reformat versions, for undo |
+| `runs/*.json` | JSON, file-locked | replayable run archive |
+
+Schema changes are hand-rolled `ALTER TABLE` guards; there is no migration
+framework.
+
+**Operational note.** Everything is single-node and on local disk beside the
+checkout. SQLite in WAL mode tolerates several UI processes sharing one `qa/`
+directory, but the JSON stores rely on atomic `os.replace` — concurrent
+writers lose a write rather than corrupt the file. Fine for internal use;
+revisit before running behind multiple workers.
+
+### External processes
+
+Two subprocess boundaries, and the reason the app holds no API keys of its own:
+
+- `claude -p "<prompt>"` — all model calls. No tool access, text in and text
+  out, so a bad response cannot mutate anything.
+- `p-harness/.venv/bin/harness <args>` — all ClickUp and Linear I/O.
+
 ## Repo Layout
 
 ```text
 meta_harness/
-├── archive_reader.py
-├── baseline.py
-├── benchmark_runner.py
-├── candidate_registry.py
-├── cli.py
-├── clickup_bridge.py
-├── comparison.py
-├── config.py
-├── frontier.py
-├── hermes_compat.py
-├── mcp_server/          # real MCP server: QA findings + CDP/adb/macOS screenshot tools
-├── models.py
-├── mutation.py
-├── playbook.py
-├── qa_findings.py
-├── run_archive.py
-├── search.py
-├── ticket_generator.py
-├── webapp/               # localhost UI: FastAPI + static vanilla-JS frontend
+├── cli.py                # meta-harness CLI entry point
+├── webapp/               # localhost UI: FastAPI routers + static vanilla-JS frontend
+│   ├── app.py
+│   ├── routes_clickup.py  routes_linear.py  routes_tickets.py
+│   ├── routes_qa.py       routes_qa_flow.py routes_progress.py
+│   └── static/           # index.html, app.js, style.css — no build step
+├── mcp_server/           # MCP server: QA findings + CDP/adb/macOS screenshot tools
+│
+│   # tracker boundaries (shell out to p-harness, never hold credentials)
+├── clickup_bridge.py     linear_bridge.py
+│
+│   # ticket generation and formatting
+├── ticket_generator.py   # document/idea -> proposed tickets, chunked + parallel
+├── ticket_format.py      # per-tracker description rendering
+├── ticket_reformat.py    # rewrite an existing ticket into the house format
+├── reformat_history.py   # pre-reformat versions, for undo
+├── team_assignment.py    # roster verification + random assignment
+│
+│   # QA and analysis
+├── qa_flow.py            # fetch -> analyze -> evidence -> persist -> status move
+├── qa_findings.py        # SQLite-backed findings store
+├── qa_report.py          # Markdown/PDF report rendering
+├── module_relevance.py   # does this ticket belong to a module?
+├── project_config.py     # per-project base URLs
+│
+│   # Hermes candidate evaluation (the original outer loop)
+├── archive_reader.py     baseline.py       benchmark_runner.py
+├── candidate_registry.py comparability.py  comparison.py
+├── frontier.py           hermes_compat.py  mutation.py
+├── playbook.py           run_archive.py    search.py
+├── config.py             models.py
 └── __main__.py
 ```
 
