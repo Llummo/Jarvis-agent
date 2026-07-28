@@ -134,6 +134,56 @@ function fillSelect(select, options, placeholder, { keepValue = true } = {}) {
   if (keepValue && options.some((o) => String(o.value) === previous)) select.value = previous;
 }
 
+// A ticket picker is a typable <input> backed by a <datalist> rather than a
+// <select>: with 90+ tickets in a list, scrolling a dropdown is far slower
+// than typing part of a title. The label->id map is kept alongside because a
+// datalist only ever hands back the label the user typed, never an id.
+function fillTicketPicker(input, options, placeholder) {
+  const datalist = document.getElementById(`${input.id}-options`);
+  const status = document.getElementById(`${input.id}-status`);
+  const map = new Map();
+
+  datalist.innerHTML = "";
+  for (const option of options) {
+    // Labels must be unique or a typed value can't be resolved back to a
+    // single ticket. Collisions are rare, but silently acting on the wrong
+    // ticket would be far worse than an ugly suffix.
+    let label = option.label;
+    let n = 2;
+    while (map.has(label)) label = `${option.label} (${n++})`;
+    map.set(label, option.value);
+
+    const el = document.createElement("option");
+    el.value = label;
+    datalist.appendChild(el);
+  }
+
+  input.__options = map;
+  input.value = "";
+  input.disabled = options.length === 0;
+  input.placeholder = placeholder;
+  if (status) {
+    status.textContent = options.length ? `${options.length} available — type to filter` : "";
+  }
+}
+
+// The selected ticket's id, or "" when what's typed isn't a real ticket.
+function pickerValue(input) {
+  const map = input.__options;
+  return map ? map.get(input.value.trim()) || "" : "";
+}
+
+function resetTicketPicker(input, placeholder) {
+  const datalist = document.getElementById(`${input.id}-options`);
+  const status = document.getElementById(`${input.id}-status`);
+  if (datalist) datalist.innerHTML = "";
+  if (status) status.textContent = "";
+  input.__options = new Map();
+  input.value = "";
+  input.disabled = true;
+  input.placeholder = placeholder;
+}
+
 // Base URLs are shared across both tabs — one project can be reviewed from
 // either tracker, and it should keep the same app URL either way.
 let projectBaseUrls = {};
@@ -503,12 +553,9 @@ function createTrackerPanel(tracker) {
   async function loadTickets() {
     // One fetch feeds every ticket dropdown on the tab (QA review and the
     // module check), so they can never drift out of sync.
-    const selects = [el("qa-ticket"), el("module-ticket"), el("reformat-ticket")];
+    const pickers = [el("qa-ticket"), el("module-ticket"), el("reformat-ticket")];
     if (!state.scope || (tracker.containerRequired && !state.container)) {
-      selects.forEach((select) => {
-        select.innerHTML = '<option value="">Choose a destination in step 1 first</option>';
-        select.disabled = true;
-      });
+      pickers.forEach((p) => resetTicketPicker(p, "Choose a destination in step 1 first"));
       el("qa-bulk-run-btn").disabled = true;
       el("module-check-all-btn").disabled = true;
       el("reformat-btn").disabled = true;
@@ -522,19 +569,13 @@ function createTrackerPanel(tracker) {
         value: t.id,
         label: t.stateLabel ? `${t.name} (${t.stateLabel})` : t.name,
       }));
-      selects.forEach((select) => {
-        fillSelect(select, options, `Select a ${tracker.noun}…`, { keepValue: false });
-        select.disabled = state.tickets.length === 0;
-      });
+      pickers.forEach((p) => fillTicketPicker(p, options, `Type to search ${tracker.noun}s…`));
       el("qa-bulk-run-btn").disabled = state.tickets.length === 0;
       el("module-check-all-btn").disabled = state.tickets.length === 0;
       el("reformat-btn").disabled = state.tickets.length === 0;
     } catch (err) {
       banner("scope-error", err.message);
-      selects.forEach((select) => {
-        select.innerHTML = '<option value="">Failed to load</option>';
-        select.disabled = true;
-      });
+      pickers.forEach((p) => resetTicketPicker(p, "Failed to load"));
     } finally {
       thinking("scope", false);
     }
@@ -948,7 +989,7 @@ function createTrackerPanel(tracker) {
   }
 
   function onTicketChange() {
-    const id = el("qa-ticket").value;
+    const id = pickerValue(el("qa-ticket"));
     if (!id) {
       resetTicketSelection();
       return;
@@ -1368,7 +1409,7 @@ function createTrackerPanel(tracker) {
   }
 
   async function onReformat() {
-    const ticketId = el("reformat-ticket").value;
+    const ticketId = pickerValue(el("reformat-ticket"));
     banner("reformat-error", null);
     banner("reformat-success", null);
     if (!ticketId) {
@@ -1587,7 +1628,7 @@ function createTrackerPanel(tracker) {
   }
 
   async function onCheckModule() {
-    const ticketId = el("module-ticket").value;
+    const ticketId = pickerValue(el("module-ticket"));
     const moduleName = el("module-name").value.trim();
     const moduleContext = el("module-context").value.trim();
     banner("module-error", null);
@@ -1812,6 +1853,7 @@ function createTrackerPanel(tracker) {
     el("team-none-btn").addEventListener("click", () => setAllMembers(false));
 
     el("qa-ticket").addEventListener("change", onTicketChange);
+    el("qa-ticket").addEventListener("input", onTicketChange);
     el("qa-base-url-save").addEventListener("click", onSaveBaseUrl);
     el("qa-analyze-btn").addEventListener("click", onAnalyze);
     el("qa-replay-btn").addEventListener("click", onReplay);

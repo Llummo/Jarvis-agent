@@ -69,6 +69,7 @@ class ProposedTicketOut(BaseModel):
     backend_endpoint: str = ""
     technical_notes: str = ""
     parent_title: str = ""
+    visual_resources: list[str] = []
     acceptance_criteria: list[AcceptanceCriterionModel]
     priority: str
     category: str
@@ -94,6 +95,7 @@ class ProposedTicketIn(BaseModel):
     backend_endpoint: str = ""
     technical_notes: str = ""
     parent_title: str = ""
+    visual_resources: list[str] = []
     acceptance_criteria: list[AcceptanceCriterionModel] = []
     priority: str = "normal"
     category: str = "mundane"

@@ -439,6 +439,11 @@ class ProposedTicket:
     # of; empty for a top-level ticket. Resolved to a real parent id at
     # creation time, once the parent actually exists in the tracker.
     parent_title: str = ""
+    # Images and reference links carried over verbatim from an existing
+    # ticket when reformatting it. Extracted in code rather than asked of
+    # the model — these are long signed URLs that must survive byte-for-byte
+    # or the image is lost.
+    visual_resources: List[str] = field(default_factory=list)
     acceptance_criteria: List[AcceptanceCriterion] = field(default_factory=list)
     priority: str = DEFAULT_PRIORITY
     category: str = DEFAULT_CATEGORY

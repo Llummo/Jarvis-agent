@@ -232,3 +232,81 @@ def test_apply_requires_something_to_change():
 def test_apply_rejects_unknown_tracker():
     with pytest.raises(ValueError, match="Invalid tracker"):
         apply_reformatted_ticket("T1", tracker="jira", title="x")
+
+
+# ---------------------------------------------------------------------------
+# Images must survive reformatting — a rewrite that drops a ticket's
+# screenshots destroys information the model cannot regenerate.
+# ---------------------------------------------------------------------------
+
+
+IMG_A = "![image.png](https://uploads.linear.app/49f0ee8d/c81589e5/cd31de32-d2e9-4fe0-be40-9ce.png)"
+IMG_B = "![captura](https://uploads.linear.app/49f0ee8d/7f540bc7/3d2ec07f-3776-41a0-be93-97d.png)"
+
+
+def test_extract_visual_resources_finds_markdown_images():
+    from meta_harness.ticket_format import extract_visual_resources
+
+    found = extract_visual_resources(f"texto\n\n{IMG_A}\n\nmas texto\n\n{IMG_B}")
+
+    assert found == [IMG_A, IMG_B]
+
+
+def test_extract_visual_resources_does_not_double_count_an_image():
+    # The attachment-link pattern also matches the inner half of a markdown
+    # image unless guarded -- that reported every image twice.
+    from meta_harness.ticket_format import extract_visual_resources
+
+    assert extract_visual_resources(IMG_A) == [IMG_A]
+
+
+def test_extract_visual_resources_finds_html_and_attachments():
+    from meta_harness.ticket_format import extract_visual_resources
+
+    body = '<img src="https://x.test/a.png" alt="a"> y [adjunto.pdf](https://x.test/uploads/adjunto.pdf)'
+
+    found = extract_visual_resources(body)
+
+    assert any("<img" in f for f in found)
+    assert any("adjunto.pdf" in f for f in found)
+
+
+def test_extract_visual_resources_empty_for_a_plain_ticket():
+    from meta_harness.ticket_format import extract_visual_resources
+
+    assert extract_visual_resources("solo texto, sin imagenes") == []
+    assert extract_visual_resources("") == []
+
+
+def test_reformat_carries_the_original_images_across(monkeypatch):
+    _mock_linear(monkeypatch, description=f"Contexto del ticket\n\n{IMG_A}\n\n{IMG_B}")
+    _mock_claude(monkeypatch)
+
+    result = reformat_ticket("I1", tracker="linear", timeout_s=5)
+
+    assert result.ticket.visual_resources == [IMG_A, IMG_B]
+    # and they land in the rendered body, not just the data
+    assert IMG_A in result.formatted_description
+    assert IMG_B in result.formatted_description
+
+
+def test_reformat_keeps_the_placeholder_when_there_were_no_images(monkeypatch):
+    _mock_linear(monkeypatch, description="un ticket sin imagenes")
+    _mock_claude(monkeypatch)
+
+    result = reformat_ticket("I1", tracker="linear", timeout_s=5)
+
+    assert result.ticket.visual_resources == []
+    assert "[Link a Figma]" in result.formatted_description
+
+
+def test_carried_images_replace_the_placeholder_not_append_to_it(monkeypatch):
+    # The placeholder is a prompt to add images; showing it alongside real
+    # ones reads as though the real ones are missing.
+    _mock_clickup(monkeypatch, description=f"texto\n\n{IMG_A}")
+    _mock_claude(monkeypatch)
+
+    result = reformat_ticket("T1", tracker="clickup", timeout_s=5)
+
+    assert IMG_A in result.formatted_description
+    assert "No se proporcionaron recursos visuales" not in result.formatted_description
