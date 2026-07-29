@@ -556,7 +556,7 @@ def test_chat_generates_from_a_typed_message(monkeypatch):
     assert response.status_code == 200
     assert captured["idea"] == "exportar candidatos"
     assert captured["history"] == [{"role": "user", "content": "hola"}]
-    assert response.json()["tickets"][0]["title"] == "TAB-01 | Exportar candidatos"
+    assert response.json()["tickets"][0]["title"] == "TAS-01 | Exportar candidatos"
     assert response.json()["source_document"] is None
 
 
@@ -659,15 +659,31 @@ def test_chat_does_not_flag_overflow_at_the_inline_limit(monkeypatch):
     assert response.json()["overflow"] is False
 
 
-def test_chat_respects_category_start_numbers(monkeypatch):
+def test_chat_respects_the_start_number(monkeypatch):
     monkeypatch.setattr(
         "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
         lambda idea, **kw: (_one_ticket("Exportar"), []),
     )
 
-    response = client.post("/api/tickets/chat", data={"idea": "exportar", "start_backend": 7})
+    response = client.post("/api/tickets/chat", data={"idea": "exportar", "start_number": 7})
 
-    assert response.json()["tickets"][0]["title"] == "TAB-07 | Exportar"
+    assert response.json()["tickets"][0]["title"] == "TAS-07 | Exportar"
+
+
+def test_chat_numbers_every_ticket_with_the_shared_tas_prefix(monkeypatch):
+    # The regression that broke generation outright: /chat kept calling the
+    # per-category numbering that the TAS change had already deleted.
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (
+            _one_ticket("Endpoint", "backend") + _one_ticket("Pantalla", "frontend"),
+            [],
+        ),
+    )
+
+    titles = [t["title"] for t in client.post("/api/tickets/chat", data={"idea": "x"}).json()["tickets"]]
+
+    assert titles == ["TAS-01 | Endpoint", "TAS-02 | Pantalla"]
 
 
 def test_chat_assigns_verified_team_members(monkeypatch):

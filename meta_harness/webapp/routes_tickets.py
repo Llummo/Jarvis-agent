@@ -234,10 +234,7 @@ def post_generate_from_idea(body: GenerateFromIdeaIn) -> GenerateTicketsOut:
 def post_chat_generate(
     idea: str = Form(""),
     history: str = Form("[]"),
-    start_mundane: int = Form(1),
-    start_backend: int = Form(1),
-    start_frontend: int = Form(1),
-    start_deployment: int = Form(1),
+    start_number: int = Form(1),
     team_emails_text: Optional[str] = Form(None),
     linear_team_id: Optional[str] = Form(None),
     project_start: Optional[str] = Form(None),
@@ -290,15 +287,7 @@ def post_chat_generate(
     except (TicketGenerationError, TicketParseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    tickets = apply_category_numbering(
-        tickets,
-        {
-            "mundane": start_mundane,
-            "backend": start_backend,
-            "frontend": start_frontend,
-            "deployment": start_deployment,
-        },
-    )
+    tickets = apply_ticket_numbering(tickets, start_number)
     tickets = apply_sprint_due_dates(tickets, sprint_start=parsed_start, project_end=parsed_end)
     tickets = _assign_verified_members(
         tickets, warnings, team_emails_text, linear_team_id, on_step=on_step
