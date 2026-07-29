@@ -26,6 +26,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote
 
 from meta_harness.mcp_server.cdp_screenshot import (
     _find_chromium,
@@ -107,6 +108,17 @@ GENERATED = {
     "warnings": [],
 }
 
+# The chat endpoint's shape: the same tickets plus the flag that decides
+# whether they're readable inside a bubble or must move below the page.
+CHAT_GENERATED = {**GENERATED, "overflow": False, "source_document": None}
+
+CHAT_OVERFLOW = {
+    "tickets": [_ticket(f"Ticket {i}") for i in range(1, 9)],
+    "warnings": [],
+    "overflow": True,
+    "source_document": "requisitos.md",
+}
+
 FINDING = dict(FINDINGS["findings"][0])
 
 REVIEW_RESULT = {
@@ -136,6 +148,11 @@ REFORMATTED = {
 }
 
 
+# What the page actually put on the wire, so a test can assert a request was
+# really sent — not merely that the UI looked as though it had been.
+LAST_POST: dict = {}
+
+
 def _post_route(path: str):
     """Canned response for a POST path, or None if it isn't stubbed."""
     base = path.split("?", 1)[0]
@@ -144,6 +161,7 @@ def _post_route(path: str):
     table = {
         "/api/tickets/generate": GENERATED,
         "/api/tickets/from-idea": GENERATED,
+        "/api/tickets/chat": CHAT_GENERATED,
         "/api/tickets/create": {
             "results": [
                 {"ticket": t, "ok": True, "clickup_task_id": f"new-{i}", "error": None}
@@ -228,11 +246,16 @@ class _Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
+        LAST_POST[self.path.split("?", 1)[0]] = body.decode("utf-8", "replace")
         # Escape hatch so the error/retry path is still reachable now that the
         # happy path is stubbed.
         if b"FORCE_ERROR" in body:
             self.send_error(502, "forced failure")
             return
+        # Escape hatch for the too-many-tickets branch, which is a property of
+        # the response rather than of anything the UI can be clicked into.
+        if b"FORCE_OVERFLOW" in body:
+            return self._json(CHAT_OVERFLOW)
         payload = _post_route(self.path)
         if payload is None:
             self.send_error(404)
@@ -243,6 +266,9 @@ class _Handler(SimpleHTTPRequestHandler):
         # Progress polling: any token returns a finished-looking log.
         if self.path.startswith("/api/progress/"):
             return self._json({"steps": ["Working…", "Done."]})
+        if self.path.startswith("/__last_post"):
+            wanted = unquote(self.path.split("?path=", 1)[1]) if "?path=" in self.path else ""
+            return self._json({"body": LAST_POST.get(wanted, "")})
         payload = _route(self.path)
         if payload is None:
             return super().do_GET()
@@ -379,6 +405,22 @@ class Browser:
             f"const el = document.querySelector({json.dumps(selector)});"
             f"el.value = {json.dumps(text)};"
             "el.dispatchEvent(new Event('input', {bubbles: true}));"
+            "el.dispatchEvent(new Event('change', {bubbles: true}));"
+            "return true;"
+        )
+
+    def attach_file(self, selector: str, filename: str, content: str = "# Requisitos\n") -> None:
+        """Put a real File on a file input, exactly as the file picker would.
+
+        A file input's `files` is read-only to assignment of anything but a
+        FileList, so the file is built through a DataTransfer — the same
+        object a drag-and-drop would hand it."""
+        self.eval(
+            f"const el = document.querySelector({json.dumps(selector)});"
+            f"const dt = new DataTransfer();"
+            f"dt.items.add(new File([{json.dumps(content)}], {json.dumps(filename)}, "
+            "{type: 'text/markdown'}));"
+            "el.files = dt.files;"
             "el.dispatchEvent(new Event('change', {bubbles: true}));"
             "return true;"
         )

@@ -344,6 +344,9 @@ def ticket_budget_for(chars: int) -> Tuple[int, int]:
 # kept small so a big document doesn't spawn an unbounded number of CLI
 # processes at once.
 DEFAULT_CHUNK_WORKERS = 3
+# Above this many tickets a chat bubble stops being readable, so the UI moves
+# the batch below the conversation and says so.
+CHAT_INLINE_TICKET_LIMIT = 3
 
 
 @dataclass
