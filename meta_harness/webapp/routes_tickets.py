@@ -10,10 +10,9 @@ from __future__ import annotations
 import json
 
 from datetime import date, datetime, time
-from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
 from meta_harness.image_input import (
@@ -60,7 +59,6 @@ from meta_harness.ticket_generator import (
     generate_tickets_from_text,
 )
 from meta_harness.webapp import progress
-from meta_harness.webapp.deps import get_clickup_project_path
 from meta_harness.webapp.schemas import (
     ChatGenerateOut,
     ChatTurnIn,
@@ -404,10 +402,7 @@ def _due_date_ms(due_date_iso: Optional[str]) -> Optional[int]:
 
 
 @router.post("/create", response_model=CreateTicketsOut)
-def post_create_tickets(
-    body: CreateTicketsIn,
-    project_path: Optional[Path] = Depends(get_clickup_project_path),
-) -> CreateTicketsOut:
+def post_create_tickets(body: CreateTicketsIn) -> CreateTicketsOut:
     # Parents first, so a subtask can be nested under a task that already
     # exists — see the matching comment in routes_linear.post_create_issues.
     order = sorted(range(len(body.tickets)), key=lambda i: bool(body.tickets[i].parent_title))
@@ -425,7 +420,6 @@ def post_create_tickets(
                 assignees=[ticket.assignee_clickup_id] if ticket.assignee_clickup_id else None,
                 due_date_ms=_due_date_ms(ticket.due_date),
                 parent=created_ids.get(ticket.parent_title) if ticket.parent_title else None,
-                project_path=project_path,
             )
         except (ClickUpTicketError, ValueError) as exc:
             results[index] = TicketCreateResult(ticket=ticket, ok=False, error=str(exc))

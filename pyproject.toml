@@ -27,6 +27,8 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "filelock>=3.16",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
     "rich>=13.0",
     "mcp>=1.0",
     "fastapi>=0.110",
@@ -45,6 +47,7 @@ Issues = "https://github.com/howdymary/hermes-agent-metaharness/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "responses>=0.25",
 ]
 
 [project.scripts]

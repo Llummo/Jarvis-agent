@@ -4,6 +4,13 @@ This directory holds one JSON file per agent. Each file is that agent's
 config, kept separate from every other agent's — nothing here is shared
 globally.
 
+No playbooks ship with the repo right now. ClickUp and Linear used to have
+one each, pointing at a sibling `p-harness` checkout that owned the API
+clients; those clients now live in `meta_harness/trackers/`, so driving
+either tracker no longer needs a playbook — use `meta-harness clickup ...`
+and `meta-harness linear ...` instead. The mechanism below stays for
+projects that genuinely live in another repo.
+
 A playbook describes:
 
 - where the agent's target project lives (`project_env_var` for an explicit
@@ -13,14 +20,14 @@ A playbook describes:
 
 ```json
 {
-  "name": "clickup",
+  "name": "my-agent",
   "description": "...",
-  "project_env_var": "CLICKUP_PROJECT_REPO",
-  "project_sibling": "p-harness",
+  "project_env_var": "MY_AGENT_PROJECT_REPO",
+  "project_sibling": "my-project",
   "setup": [["python3", "-m", "venv", ".venv"]],
   "env_example": ".env.example",
   "env_file": ".env",
-  "flow": [[".venv/bin/harness", "clickup", "get-task", "--task-id", "{subject_id}"]]
+  "flow": [[".venv/bin/my-cli", "process", "--id", "{subject_id}"]]
 }
 ```
 
@@ -32,8 +39,8 @@ Use it from the CLI:
 
 ```bash
 python -m meta_harness playbook list
-python -m meta_harness playbook init clickup
-python -m meta_harness playbook run clickup --subject <ticket-id>
+python -m meta_harness playbook init my-agent
+python -m meta_harness playbook run my-agent --subject <item-id>
 ```
 
 `playbook init` only runs `setup`. `playbook run` runs `setup` then `flow` —
@@ -45,8 +52,8 @@ Every `playbook run --subject ...` is archived (per agent, under `runs/`,
 gitignored — it can contain real ticket content). List and repeat past runs:
 
 ```bash
-python -m meta_harness playbook runs clickup      # list recorded runs
-python -m meta_harness playbook replay clickup <run-id>
+python -m meta_harness playbook runs my-agent      # list recorded runs
+python -m meta_harness playbook replay my-agent <run-id>
 ```
 
 `replay` looks up the recorded run's subject, re-runs the flow against that

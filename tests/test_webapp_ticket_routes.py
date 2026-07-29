@@ -131,7 +131,7 @@ def test_generate_tickets_parse_error_returns_502(monkeypatch):
 
 
 def test_create_tickets_partial_failure_reports_both_results(monkeypatch):
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+    def fake_create(name, description, *, list_id=None, priority=None, **kwargs):
         if name == "Ticket A":
             return "CU-1"
         raise ClickUpTicketError("ClickUp API error 500")
@@ -160,7 +160,7 @@ def test_create_tickets_partial_failure_reports_both_results(monkeypatch):
 def test_create_tickets_passes_list_id_and_priority(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+    def fake_create(name, description, *, list_id=None, priority=None, **kwargs):
         captured["list_id"] = list_id
         captured["priority"] = priority
         return "CU-1"
@@ -185,7 +185,7 @@ def test_create_tickets_passes_list_id_and_priority(monkeypatch):
 def test_create_tickets_description_includes_acceptance_criteria(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+    def fake_create(name, description, *, list_id=None, priority=None, **kwargs):
         captured["description"] = description
         return "CU-1"
 
@@ -216,7 +216,7 @@ def test_create_tickets_description_includes_acceptance_criteria(monkeypatch):
 def test_create_tickets_description_includes_user_story(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+    def fake_create(name, description, *, list_id=None, priority=None, **kwargs):
         captured["description"] = description
         return "CU-1"
 
@@ -243,7 +243,7 @@ def test_create_tickets_description_includes_user_story(monkeypatch):
 def test_create_tickets_description_omits_user_story_line_when_absent(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+    def fake_create(name, description, *, list_id=None, priority=None, **kwargs):
         captured["description"] = description
         return "CU-1"
 
@@ -264,7 +264,7 @@ def test_create_tickets_description_omits_user_story_line_when_absent(monkeypatc
 def test_create_tickets_passes_assignees_and_due_date(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+    def fake_create(name, description, *, list_id=None, priority=None, **kwargs):
         captured["assignees"] = kwargs.get("assignees")
         captured["due_date_ms"] = kwargs.get("due_date_ms")
         return "CU-1"
@@ -290,7 +290,7 @@ def test_create_tickets_passes_assignees_and_due_date(monkeypatch):
 def test_create_tickets_omits_assignees_and_due_date_when_absent(monkeypatch):
     captured = {}
 
-    def fake_create(name, description, *, list_id=None, priority=None, project_path=None, **kwargs):
+    def fake_create(name, description, *, list_id=None, priority=None, **kwargs):
         captured["assignees"] = kwargs.get("assignees")
         captured["due_date_ms"] = kwargs.get("due_date_ms")
         return "CU-1"

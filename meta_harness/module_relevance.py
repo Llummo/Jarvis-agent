@@ -160,14 +160,14 @@ def _parse(raw_output: str, ticket_id: str, ticket_name: str, module_name: str) 
     )
 
 
-def fetch_ticket(ticket_id: str, tracker: str, project_path: Optional[Path] = None) -> Tuple[str, str]:
+def fetch_ticket(ticket_id: str, tracker: str) -> Tuple[str, str]:
     """Normalize a ticket from either tracker to (name, description)."""
     if tracker not in TRACKERS:
         raise ValueError(f"Invalid tracker '{tracker}'; must be one of {TRACKERS}")
     if tracker == "linear":
-        issue = get_linear_issue(ticket_id, project_path=project_path)
+        issue = get_linear_issue(ticket_id)
         return issue.get("title") or ticket_id, issue.get("description") or ""
-    task = get_clickup_task(ticket_id, project_path=project_path)
+    task = get_clickup_task(ticket_id)
     return task.get("name") or ticket_id, task.get("text_content") or task.get("description") or ""
 
 
@@ -177,7 +177,6 @@ def analyze_module_relevance(
     tracker: str = "clickup",
     module_name: str,
     module_context: str,
-    project_path: Optional[Path] = None,
     timeout_s: Optional[float] = None,
     max_attempts: int = MAX_ATTEMPTS,
     on_step: OnStep = None,
@@ -193,7 +192,7 @@ def analyze_module_relevance(
         raise ValueError("module_context is required — paste the module's documentation")
 
     _report(on_step, f"Fetching ticket {ticket_id} from {'Linear' if tracker == 'linear' else 'ClickUp'}…")
-    ticket_name, ticket_description = fetch_ticket(ticket_id, tracker, project_path)
+    ticket_name, ticket_description = fetch_ticket(ticket_id, tracker)
     _report(on_step, f'Ticket fetched: "{ticket_name}".')
 
     claude_path = _find_claude()
@@ -258,7 +257,6 @@ def analyze_modules_bulk(
     tracker: str = "clickup",
     module_name: str,
     module_context: str,
-    project_path: Optional[Path] = None,
     timeout_s: Optional[float] = None,
     on_step: OnStep = None,
 ) -> List[Tuple[str, Optional[ModuleRelevance], Optional[str]]]:
@@ -279,7 +277,6 @@ def analyze_modules_bulk(
                 tracker=tracker,
                 module_name=module_name,
                 module_context=module_context,
-                project_path=project_path,
                 timeout_s=timeout_s,
             )
             results.append((ticket_id, relevance, None))

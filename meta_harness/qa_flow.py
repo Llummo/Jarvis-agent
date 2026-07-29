@@ -262,25 +262,25 @@ def _validate_tracker(tracker: str) -> None:
         raise ValueError(f"Invalid tracker '{tracker}'; must be one of {TRACKERS}")
 
 
-def _fetch_ticket(ticket_id: str, tracker: str, project_path: Optional[Path]) -> Tuple[str, str]:
+def _fetch_ticket(ticket_id: str, tracker: str) -> Tuple[str, str]:
     """Fetch a ticket/issue from whichever tracker, normalized to
     (name, description) — the shape review_qa_ticket needs regardless of
     where it came from."""
     if tracker == "linear":
-        issue = get_linear_issue(ticket_id, project_path=project_path)
+        issue = get_linear_issue(ticket_id)
         return issue.get("title") or ticket_id, issue.get("description") or ""
-    ticket = get_clickup_task(ticket_id, project_path=project_path)
+    ticket = get_clickup_task(ticket_id)
     return ticket.get("name") or ticket_id, ticket.get("text_content") or ticket.get("description") or ""
 
 
-def _move_status(ticket_id: str, tracker: str, target: str, project_path: Optional[Path]) -> None:
+def _move_status(ticket_id: str, tracker: str, target: str) -> None:
     """Move a ticket/issue to a new status/state. `target` is a ClickUp
     status name for tracker="clickup", or a Linear workflow state id for
     tracker="linear" — the two trackers' own vocabularies, unchanged."""
     if tracker == "linear":
-        update_linear_issue_state(ticket_id, target, project_path=project_path)
+        update_linear_issue_state(ticket_id, target)
     else:
-        update_clickup_task_status(ticket_id, target, project_path=project_path)
+        update_clickup_task_status(ticket_id, target)
 
 
 def review_qa_ticket(
@@ -291,7 +291,6 @@ def review_qa_ticket(
     clickup_list_id: Optional[str] = None,
     linear_team_id: Optional[str] = None,
     persist: bool = False,
-    project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
     on_step: OnStep = None,
     pass_status: Optional[str] = None,
@@ -312,7 +311,7 @@ def review_qa_ticket(
     """
     _validate_tracker(tracker)
     _report(on_step, f"Fetching ticket {ticket_id} from {'Linear' if tracker == 'linear' else 'ClickUp'}…")
-    ticket_name, ticket_description = _fetch_ticket(ticket_id, tracker, project_path)
+    ticket_name, ticket_description = _fetch_ticket(ticket_id, tracker)
     _report(on_step, f'Ticket fetched: "{ticket_name}".')
 
     review = analyze_ticket(ticket_id, ticket_name, ticket_description, on_step=on_step)
@@ -329,7 +328,7 @@ def review_qa_ticket(
         finding = persist_review(
             review, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
             linear_team_id=linear_team_id, store=store,
-            pass_status=pass_status, fail_status=fail_status, project_path=project_path, on_step=on_step,
+            pass_status=pass_status, fail_status=fail_status, on_step=on_step,
         )
     return review, finding
 
@@ -344,7 +343,6 @@ def persist_review(
     store: Optional[QAFindingStore] = None,
     pass_status: Optional[str] = None,
     fail_status: Optional[str] = None,
-    project_path: Optional[Path] = None,
     on_step: OnStep = None,
 ) -> QAFinding:
     """Report an already-computed review as a real finding, without
@@ -377,7 +375,7 @@ def persist_review(
             f'QA {outcome} (severity: {review.severity}) — moving {tracker_label} to "{target_status}"…',
         )
         try:
-            _move_status(review.ticket_id, tracker, target_status, project_path)
+            _move_status(review.ticket_id, tracker, target_status)
             _report(on_step, f'Moved {tracker_label} to "{target_status}".')
         except (ClickUpTicketError, LinearIssueError) as exc:
             _report(on_step, f'Finding persisted, but could not move {tracker_label} to "{target_status}": {exc}')
@@ -422,7 +420,6 @@ def review_and_record(
     clickup_list_id: Optional[str] = None,
     linear_team_id: Optional[str] = None,
     persist: bool = False,
-    project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
     archive: Optional[RunArchive] = None,
     on_step: OnStep = None,
@@ -434,7 +431,7 @@ def review_and_record(
     review, finding = review_qa_ticket(
         ticket_id, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
         linear_team_id=linear_team_id,
-        persist=persist, project_path=project_path, store=store, on_step=on_step,
+        persist=persist, store=store, on_step=on_step,
         pass_status=pass_status, fail_status=fail_status, project_config=project_config,
     )
     archive = archive if archive is not None else RunArchive(REVIEW_AGENT_NAME)
@@ -448,7 +445,6 @@ def replay_qa_review(
     persist: bool = False,
     clickup_list_id: Optional[str] = None,
     linear_team_id: Optional[str] = None,
-    project_path: Optional[Path] = None,
     store: Optional[QAFindingStore] = None,
     archive: Optional[RunArchive] = None,
     on_step: OnStep = None,
@@ -475,7 +471,7 @@ def replay_qa_review(
     review, finding, new_record = review_and_record(
         original.subject_id, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
         linear_team_id=linear_team_id,
-        persist=persist, project_path=project_path, store=store, archive=archive, on_step=on_step,
+        persist=persist, store=store, archive=archive, on_step=on_step,
         pass_status=pass_status, fail_status=fail_status, project_config=project_config,
     )
     return original, review, finding, new_record
@@ -488,7 +484,6 @@ def review_tickets_bulk(
     tracker: str = "clickup",
     clickup_list_id: Optional[str] = None,
     linear_team_id: Optional[str] = None,
-    project_path: Optional[Path] = None,
     on_step: OnStep = None,
     project_config: Optional[ProjectConfigStore] = None,
 ) -> List[Tuple[str, Optional[QATicketReview], Optional[str]]]:
@@ -511,7 +506,7 @@ def review_tickets_bulk(
             review, _finding = review_qa_ticket(
                 ticket_id, project=project, tracker=tracker, clickup_list_id=clickup_list_id,
                 linear_team_id=linear_team_id,
-                persist=False, project_path=project_path, on_step=on_step, project_config=project_config,
+                persist=False, on_step=on_step, project_config=project_config,
             )
             results.append((ticket_id, review, None))
         except (ClickUpReadError, LinearReadError, QAFlowError) as exc:

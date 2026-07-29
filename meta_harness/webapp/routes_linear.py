@@ -3,10 +3,9 @@ state moves — the Linear-side counterpart to routes_clickup.py."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from meta_harness.linear_bridge import (
     LinearIssueError,
@@ -20,7 +19,6 @@ from meta_harness.linear_bridge import (
     update_linear_issue_state,
 )
 from meta_harness.ticket_format import format_linear_description
-from meta_harness.webapp.deps import get_linear_project_path
 from meta_harness.webapp.schemas import (
     CreateLinearIssuesIn,
     CreateLinearIssuesOut,
@@ -32,54 +30,39 @@ router = APIRouter()
 
 
 @router.get("/teams")
-def get_teams(project_path: Optional[Path] = Depends(get_linear_project_path)) -> list:
-    return list_linear_teams(project_path=project_path)
+def get_teams() -> list:
+    return list_linear_teams()
 
 
 @router.get("/states")
-def get_states(
-    team_id: str = Query(...), project_path: Optional[Path] = Depends(get_linear_project_path)
-) -> list:
-    return list_linear_states(team_id, project_path=project_path)
+def get_states(team_id: str = Query(...)) -> list:
+    return list_linear_states(team_id)
 
 
 @router.get("/members")
-def get_members(
-    team_id: str = Query(...), project_path: Optional[Path] = Depends(get_linear_project_path)
-) -> list:
-    return list_linear_members(team_id, project_path=project_path)
+def get_members(team_id: str = Query(...)) -> list:
+    return list_linear_members(team_id)
 
 
 @router.get("/projects")
-def get_projects(
-    team_id: str = Query(...), project_path: Optional[Path] = Depends(get_linear_project_path)
-) -> list:
-    return list_linear_projects(team_id, project_path=project_path)
+def get_projects(team_id: str = Query(...)) -> list:
+    return list_linear_projects(team_id)
 
 
 @router.get("/issues")
-def get_issues(
-    team_id: str = Query(...),
-    limit: Optional[int] = None,
-    project_path: Optional[Path] = Depends(get_linear_project_path),
-) -> list:
+def get_issues(team_id: str = Query(...), limit: Optional[int] = None) -> list:
     """Defaults to every issue on the team — a fixed page size here would
     silently hide work from every dropdown that feeds off this."""
-    return list_linear_issues(team_id, limit=limit, project_path=project_path)
+    return list_linear_issues(team_id, limit=limit)
 
 
 @router.get("/issues/{issue_id}")
-def get_issue(
-    issue_id: str, project_path: Optional[Path] = Depends(get_linear_project_path)
-) -> dict:
-    return get_linear_issue(issue_id, project_path=project_path)
+def get_issue(issue_id: str) -> dict:
+    return get_linear_issue(issue_id)
 
 
 @router.post("/issues", response_model=CreateLinearIssuesOut)
-def post_create_issues(
-    body: CreateLinearIssuesIn,
-    project_path: Optional[Path] = Depends(get_linear_project_path),
-) -> CreateLinearIssuesOut:
+def post_create_issues(body: CreateLinearIssuesIn) -> CreateLinearIssuesOut:
     """Create a batch of issues, isolating per-item failures the same way
     the ClickUp bulk-create route does."""
     # Parents are created before their children so a subticket can be nested
@@ -101,7 +84,6 @@ def post_create_issues(
                 due_date=ticket.due_date,
                 project_id=body.project_id,
                 parent_id=created_ids.get(ticket.parent_title) if ticket.parent_title else None,
-                project_path=project_path,
             )
         except (LinearIssueError, ValueError) as exc:
             results[index] = LinearIssueCreateResult(ticket=ticket, ok=False, error=str(exc))
@@ -113,12 +95,8 @@ def post_create_issues(
 
 
 @router.post("/issues/{issue_id}/state")
-def post_set_state(
-    issue_id: str,
-    body: SetLinearStateIn,
-    project_path: Optional[Path] = Depends(get_linear_project_path),
-) -> dict:
+def post_set_state(issue_id: str, body: SetLinearStateIn) -> dict:
     try:
-        return update_linear_issue_state(issue_id, body.state_id, project_path=project_path)
+        return update_linear_issue_state(issue_id, body.state_id)
     except LinearIssueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
