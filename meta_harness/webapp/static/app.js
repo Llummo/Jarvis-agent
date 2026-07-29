@@ -444,6 +444,7 @@ function createTrackerPanel(tracker) {
     members: [], // [{ email, username, clickup_id, linear_id, selected }]
     chatHistory: [],
     chatFile: null, // the document attached to the next message, if any
+    chatImages: [], // [{ file, url }] pasted screenshots riding with the message
     chatPending: false,
     chatLastSent: "",
     chatAbort: null,
@@ -631,6 +632,10 @@ function createTrackerPanel(tracker) {
   // Ready-made openers. Nielsen #6, recognition rather than recall: a blank
   // box makes the user invent both the idea and its phrasing; concrete
   // examples show what a good request looks like and are one click to use.
+  // Mirrors MAX_IMAGES in meta_harness/image_input.py — the server enforces
+  // it too; this only avoids a round trip to be told so.
+  const MAX_PASTED_IMAGES = 6;
+
   const CHAT_SUGGESTIONS = [
     "Necesito una pantalla para exportar candidatos a Excel, con filtros por estado",
     "Agregar validación de email y teléfono en el formulario de alta de persona",
@@ -681,6 +686,66 @@ function createTrackerPanel(tracker) {
     syncChatSendState();
   }
 
+  // Ctrl+V with a screenshot on the clipboard. A mockup is usually the
+  // clearest statement of what someone wants built, and the fastest way to
+  // hand one over is the way people already share them everywhere else —
+  // paste. Nothing is uploaded until the message is actually sent.
+  function onChatPaste(event) {
+    const items = (event.clipboardData && event.clipboardData.items) || [];
+    const pasted = [];
+    for (const item of items) {
+      if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) pasted.push(file);
+    }
+    if (!pasted.length) return; // a normal text paste must behave normally
+    event.preventDefault();
+    for (const file of pasted) {
+      if (state.chatImages.length >= MAX_PASTED_IMAGES) {
+        banner("generate-error", `You can attach at most ${MAX_PASTED_IMAGES} images to one message.`);
+        break;
+      }
+      state.chatImages.push({ file, url: URL.createObjectURL(file) });
+    }
+    renderChatImages();
+    syncChatSendState();
+  }
+
+  function removeChatImage(index) {
+    const [removed] = state.chatImages.splice(index, 1);
+    if (removed) URL.revokeObjectURL(removed.url);
+    renderChatImages();
+    syncChatSendState();
+  }
+
+  function clearChatImages() {
+    // The URLs stay alive when the images move into the transcript, so only
+    // the pending row is dropped here.
+    state.chatImages = [];
+    renderChatImages();
+  }
+
+  function renderChatImages() {
+    const node = el("chat-images");
+    node.hidden = state.chatImages.length === 0;
+    node.innerHTML = "";
+    state.chatImages.forEach((image, index) => {
+      const chip = document.createElement("div");
+      chip.className = "chat-image";
+      const thumb = document.createElement("img");
+      thumb.src = image.url;
+      thumb.alt = image.file.name || `Pasted image ${index + 1}`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "chat-image-remove";
+      remove.setAttribute("aria-label", `Remove pasted image ${index + 1}`);
+      remove.textContent = "\u00d7";
+      remove.addEventListener("click", () => removeChatImage(index));
+      chip.append(thumb, remove);
+      node.appendChild(chip);
+    });
+  }
+
   function renderChatAttachment() {
     const node = el("chat-attachment");
     node.hidden = !state.chatFile;
@@ -693,7 +758,8 @@ function createTrackerPanel(tracker) {
   // control says so rather than failing after the click.
   function syncChatSendState() {
     const input = el("chat-input");
-    el("chat-send").disabled = state.chatPending || !(input.value.trim() || state.chatFile);
+    el("chat-send").disabled =
+      state.chatPending || !(input.value.trim() || state.chatFile || state.chatImages.length);
     el("chat-attach").disabled = state.chatPending;
     el("chat-cancel").hidden = !state.chatPending;
     input.disabled = state.chatPending;
@@ -717,9 +783,9 @@ function createTrackerPanel(tracker) {
     if (!state.chatHistory.length && !state.chatPending) {
       log.innerHTML =
         `<div class="chat-empty">` +
-        `<strong>Describe a feature — or attach a requirements document — and get formatted ${tracker.noun}s back.</strong>` +
-        `<span>Say what the user needs to do and where, or use \u{1F4CE} to analyze a .md, .pdf or .txt. ` +
-        `You'll review every draft before anything is created.</span>` +
+        `<strong>Describe a feature, attach a document or paste a mockup — and get formatted ${tracker.noun}s back.</strong>` +
+        `<span>Say what the user needs to do and where, use \u{1F4CE} to analyze a .md, .pdf or .txt, ` +
+        `or paste a screenshot with Ctrl+V. You'll review every draft before anything is created.</span>` +
         `</div>`;
       return;
     }
@@ -741,6 +807,17 @@ function createTrackerPanel(tracker) {
           chip.textContent = `\u{1F4CE} ${turn.attachment}`;
           bubble.appendChild(chip);
         }
+        if (turn.images && turn.images.length) {
+          const strip = document.createElement("div");
+          strip.className = "chat-msg-images";
+          turn.images.forEach((url, index) => {
+            const thumb = document.createElement("img");
+            thumb.src = url;
+            thumb.alt = `Pasted image ${index + 1}`;
+            strip.appendChild(thumb);
+          });
+          bubble.appendChild(strip);
+        }
         wrap.appendChild(bubble);
 
         const meta = document.createElement("div");
@@ -755,7 +832,9 @@ function createTrackerPanel(tracker) {
           retry.type = "button";
           retry.className = "chat-retry";
           retry.textContent = "↻ Try again";
-          retry.addEventListener("click", () => sendChatMessage(turn.retry, turn.retryFile));
+          retry.addEventListener("click", () =>
+            sendChatMessage(turn.retry, turn.retryFile, turn.retryImages)
+          );
           wrap.appendChild(retry);
         }
         log.appendChild(wrap);
@@ -859,13 +938,15 @@ function createTrackerPanel(tracker) {
 
   async function onChatSubmit(event) {
     event.preventDefault();
-    sendChatMessage(el("chat-input").value.trim(), state.chatFile);
+    sendChatMessage(el("chat-input").value.trim(), state.chatFile, state.chatImages.slice());
   }
 
-  // The one generation path. A message, a document, or both go to the same
-  // endpoint, so there is nothing to choose between before typing.
-  async function sendChatMessage(idea, file) {
-    if ((!idea && !file) || state.chatPending) return;
+  // The one generation path. A message, a document, pasted screenshots or
+  // any combination go to the same endpoint, so there is nothing to choose
+  // between before typing.
+  async function sendChatMessage(idea, file, images) {
+    images = images || [];
+    if ((!idea && !file && !images.length) || state.chatPending) return;
     banner("generate-error", null);
     banner("generate-success", null);
     banner("generate-warnings", null);
@@ -881,14 +962,16 @@ function createTrackerPanel(tracker) {
     state.chatHistory = state.chatHistory.filter((turn) => !turn.error);
     state.chatHistory.push({
       role: "user",
-      content: idea || "Analiza este documento:",
+      content: idea || (file ? "Analiza este documento:" : "Analiza estas imágenes:"),
       attachment: file ? file.name : null,
+      images: images.map((image) => image.url),
       at: chatTimestamp(),
     });
     state.chatLastSent = idea;
     state.chatPending = true;
     el("chat-input").value = "";
     clearChatAttachment();
+    clearChatImages();
     syncChatSendState();
     renderChat();
 
@@ -904,6 +987,7 @@ function createTrackerPanel(tracker) {
     formData.append("progress_token", token);
     Object.entries(startNumbers()).forEach(([key, value]) => formData.append(key, value));
     if (file) formData.append("file", file);
+    images.forEach((image) => formData.append("images", image.file, image.file.name || "pasted.png"));
     const emails = selectedMemberEmails();
     if (emails.length) formData.append("team_emails_text", emails.join("\n"));
     if (tracker.key === "linear" && state.scope) formData.append("linear_team_id", state.scope.id);
@@ -959,6 +1043,7 @@ function createTrackerPanel(tracker) {
         error: !cancelled,
         retry: cancelled ? null : idea,
         retryFile: cancelled ? null : file || null,
+        retryImages: cancelled ? null : images,
         at: chatTimestamp(),
       });
     } finally {
@@ -982,16 +1067,20 @@ function createTrackerPanel(tracker) {
   function onChatKeydown(event) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      sendChatMessage(el("chat-input").value.trim(), state.chatFile);
+      sendChatMessage(el("chat-input").value.trim(), state.chatFile, state.chatImages.slice());
     }
   }
 
   function onChatReset() {
     if (state.chatAbort) state.chatAbort.abort();
+    state.chatHistory.forEach((turn) => (turn.images || []).forEach(URL.revokeObjectURL));
+    state.chatImages.forEach((image) => URL.revokeObjectURL(image.url));
+    state.chatImages = [];
     state.chatHistory = [];
     state.chatPending = false;
     state.proposed = [];
     clearChatAttachment();
+    clearChatImages();
     syncChatSendState();
     renderChat();
     renderProposed();
@@ -2072,6 +2161,7 @@ function createTrackerPanel(tracker) {
     el("chat-file").addEventListener("change", onChatFileChange);
     el("chat-attach-clear").addEventListener("click", clearChatAttachment);
     el("chat-input").addEventListener("keydown", onChatKeydown);
+    el("chat-input").addEventListener("paste", onChatPaste);
     el("chat-input").addEventListener("input", syncChatSendState);
     el("chat-cancel").addEventListener("click", onChatCancel);
     el("chat-reset").addEventListener("click", onChatReset);

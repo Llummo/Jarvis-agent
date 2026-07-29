@@ -3,6 +3,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError
+from meta_harness.image_input import MAX_IMAGES, ImageDescriptionError
 from meta_harness.ticket_generator import (
     CHAT_INLINE_TICKET_LIMIT,
     AcceptanceCriterion,
@@ -775,6 +776,153 @@ def test_chat_claude_missing_returns_503(monkeypatch):
     response = client.post("/api/tickets/chat", data={"idea": "algo"})
 
     assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# /api/tickets/chat — pasted images
+# ---------------------------------------------------------------------------
+
+
+def _png_bytes() -> bytes:
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + bytes([255, 255, 255] * 4) for _ in range(4))
+
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def _stub_description(monkeypatch, text="Una pantalla de alta de persona con campos nombre y email."):
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.describe_images", lambda paths, **kw: text)
+
+
+def test_chat_accepts_a_pasted_image_with_no_text_at_all(monkeypatch):
+    _stub_description(monkeypatch)
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (_one_ticket(), []),
+    )
+
+    response = client.post(
+        "/api/tickets/chat", files={"images": ("pasted.png", _png_bytes(), "image/png")}
+    )
+
+    assert response.status_code == 200
+
+
+def test_chat_feeds_the_image_description_into_generation(monkeypatch):
+    captured = {}
+    _stub_description(monkeypatch, "Un formulario con los campos nombre, email y telefono.")
+
+    def fake_generate(idea, **kw):
+        captured["idea"] = idea
+        return (_one_ticket(), [])
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", fake_generate)
+
+    client.post(
+        "/api/tickets/chat",
+        data={"idea": "haz el alta de personas"},
+        files={"images": ("pasted.png", _png_bytes(), "image/png")},
+    )
+
+    assert "haz el alta de personas" in captured["idea"]
+    assert "nombre, email y telefono" in captured["idea"], (
+        "what the image showed must reach the generator"
+    )
+
+
+def test_chat_appends_the_image_description_to_an_attached_document(monkeypatch):
+    captured = {}
+    _stub_description(monkeypatch, "Un diagrama de flujo de aprobacion.")
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_text",
+        lambda text, **kw: (captured.update(text=text) or (_one_ticket(), [])),
+    )
+
+    client.post(
+        "/api/tickets/chat",
+        files=[
+            ("file", ("requisitos.md", b"# Requisitos", "text/markdown")),
+            ("images", ("pasted.png", _png_bytes(), "image/png")),
+        ],
+    )
+
+    assert "# Requisitos" in captured["text"]
+    assert "diagrama de flujo de aprobacion" in captured["text"]
+
+
+def test_chat_generation_stays_tool_free_when_images_are_pasted(monkeypatch):
+    # The whole point of the two-stage split: only the describing call may
+    # touch the filesystem, and it is never the call that drafts tickets.
+    _stub_description(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (captured.update(kwargs=kw) or (_one_ticket(), [])),
+    )
+
+    client.post("/api/tickets/chat", files={"images": ("pasted.png", _png_bytes(), "image/png")})
+
+    assert "image_paths" not in captured["kwargs"]
+    assert "allowed_tools" not in captured["kwargs"]
+
+
+def test_chat_without_images_never_invokes_the_vision_call(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("a text-only message must not pay for a vision call")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.describe_images", boom)
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (_one_ticket(), []),
+    )
+
+    assert client.post("/api/tickets/chat", data={"idea": "algo"}).status_code == 200
+
+
+def test_chat_rejects_a_pasted_file_that_is_not_an_image():
+    response = client.post(
+        "/api/tickets/chat",
+        data={"idea": "algo"},
+        files={"images": ("payload.png", b"#!/bin/sh\nrm -rf /", "image/png")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_chat_rejects_more_images_than_the_cap():
+    files = [("images", (f"p{i}.png", _png_bytes(), "image/png")) for i in range(MAX_IMAGES + 1)]
+
+    response = client.post("/api/tickets/chat", data={"idea": "algo"}, files=files)
+
+    assert response.status_code == 400
+
+
+def test_chat_image_description_failure_returns_502(monkeypatch):
+    def boom(paths, **kw):
+        raise ImageDescriptionError("vision unavailable")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.describe_images", boom)
+
+    response = client.post(
+        "/api/tickets/chat", files={"images": ("pasted.png", _png_bytes(), "image/png")}
+    )
+
+    assert response.status_code == 502
+
+
+def test_chat_still_rejects_a_request_with_nothing_in_it_at_all():
+    assert client.post("/api/tickets/chat", data={"idea": "   "}).status_code == 400
 
 
 # ---------------------------------------------------------------------------
