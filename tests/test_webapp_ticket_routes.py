@@ -36,7 +36,7 @@ def test_generate_tickets_returns_proposed_tickets(monkeypatch):
     body = response.json()
     assert len(body["tickets"]) == 1
     ticket = body["tickets"][0]
-    assert ticket["title"] == "TAB-01 | Build login page"
+    assert ticket["title"] == "TAS-01 | Build login page"
     assert ticket["user_story"] == "As a user, I want to log in, so I can access my account."
     assert ticket["description"] == "desc"
     assert ticket["acceptance_criteria"][0]["name"] == "C1"
@@ -47,7 +47,7 @@ def test_generate_tickets_returns_proposed_tickets(monkeypatch):
     assert body["warnings"] == ["some warning"]
 
 
-def test_generate_tickets_numbers_by_category_and_respects_start_numbers(monkeypatch):
+def test_generate_tickets_numbers_in_one_sequence_from_the_start_number(monkeypatch):
     monkeypatch.setattr(
         "meta_harness.webapp.routes_tickets.generate_tickets_from_file",
         lambda filename, content, **kw: (
@@ -63,15 +63,16 @@ def test_generate_tickets_numbers_by_category_and_respects_start_numbers(monkeyp
     response = client.post(
         "/api/tickets/generate",
         files={"file": ("spec.txt", b"some text", "text/plain")},
-        data={"start_mundane": "2"},
+        data={"start_number": "2"},
     )
 
     assert response.status_code == 200
     titles = [t["title"] for t in response.json()["tickets"]]
+    # One shared sequence regardless of category, continuing from 2.
     assert titles == [
-        "TAM-02 | General planning",
-        "TAB-01 | Build API endpoint",
-        "TAF-01 | Build login page",
+        "TAS-02 | General planning",
+        "TAS-03 | Build API endpoint",
+        "TAS-04 | Build login page",
     ]
 
 
@@ -86,7 +87,7 @@ def test_generate_tickets_numbering_defaults_to_one_when_no_start_given(monkeypa
 
     response = client.post("/api/tickets/generate", files={"file": ("spec.txt", b"some text", "text/plain")})
 
-    assert response.json()["tickets"][0]["title"] == "TAD-01 | Set up CI pipeline"
+    assert response.json()["tickets"][0]["title"] == "TAS-01 | Set up CI pipeline"
 
 
 def test_generate_tickets_extraction_error_returns_400(monkeypatch):
@@ -465,7 +466,7 @@ def test_from_idea_returns_numbered_tickets(monkeypatch):
     response = client.post("/api/tickets/from-idea", json={"idea": "exportar candidatos a excel"})
 
     assert response.status_code == 200
-    assert response.json()["tickets"][0]["title"] == "TAB-01 | Exportar candidatos"
+    assert response.json()["tickets"][0]["title"] == "TAS-01 | Exportar candidatos"
 
 
 def test_from_idea_passes_idea_and_history(monkeypatch):
@@ -487,7 +488,7 @@ def test_from_idea_passes_idea_and_history(monkeypatch):
     assert captured["history"] == [{"role": "user", "content": "exportar candidatos"}]
 
 
-def test_from_idea_respects_category_start_numbers(monkeypatch):
+def test_from_idea_respects_the_start_number(monkeypatch):
     monkeypatch.setattr(
         "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
         lambda idea, **kw: (
@@ -497,10 +498,10 @@ def test_from_idea_respects_category_start_numbers(monkeypatch):
     )
 
     response = client.post(
-        "/api/tickets/from-idea", json={"idea": "exportar", "start_backend": 7}
+        "/api/tickets/from-idea", json={"idea": "exportar", "start_number": 7}
     )
 
-    assert response.json()["tickets"][0]["title"] == "TAB-07 | Exportar"
+    assert response.json()["tickets"][0]["title"] == "TAS-07 | Exportar"
 
 
 def test_from_idea_parse_error_returns_502(monkeypatch):

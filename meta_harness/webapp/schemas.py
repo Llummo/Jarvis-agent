@@ -132,10 +132,7 @@ class ChatTurnIn(BaseModel):
 class GenerateFromIdeaIn(BaseModel):
     idea: str
     history: list[ChatTurnIn] = []
-    start_mundane: int = 1
-    start_backend: int = 1
-    start_frontend: int = 1
-    start_deployment: int = 1
+    start_number: int = 1
     progress_token: Optional[str] = None
 
 

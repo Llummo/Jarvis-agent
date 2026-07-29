@@ -43,7 +43,7 @@ from meta_harness.ticket_generator import (
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
-    apply_category_numbering,
+    apply_ticket_numbering,
     apply_sprint_due_dates,
     generate_tickets_from_file,
     generate_tickets_from_idea,
@@ -106,10 +106,7 @@ def _merged_roster(linear_team_id: Optional[str], *, on_step=None) -> list[dict]
 @router.post("/generate", response_model=GenerateTicketsOut)
 def post_generate_tickets(
     file: UploadFile = File(...),
-    start_mundane: int = Form(1),
-    start_backend: int = Form(1),
-    start_frontend: int = Form(1),
-    start_deployment: int = Form(1),
+    start_number: int = Form(1),
     team_emails_text: Optional[str] = Form(None),
     linear_team_id: Optional[str] = Form(None),
     project_start: Optional[str] = Form(None),
@@ -145,13 +142,7 @@ def post_generate_tickets(
 
     if on_step:
         on_step(f"Numbering {len(tickets)} ticket(s)…")
-    start_numbers = {
-        "mundane": start_mundane,
-        "backend": start_backend,
-        "frontend": start_frontend,
-        "deployment": start_deployment,
-    }
-    tickets = apply_category_numbering(tickets, start_numbers)
+    tickets = apply_ticket_numbering(tickets, start_number)
 
     if on_step:
         on_step("Assigning sprint due dates…")
@@ -198,15 +189,7 @@ def post_generate_from_idea(body: GenerateFromIdeaIn) -> GenerateTicketsOut:
     except (TicketGenerationError, TicketParseError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    tickets = apply_category_numbering(
-        tickets,
-        {
-            "mundane": body.start_mundane,
-            "backend": body.start_backend,
-            "frontend": body.start_frontend,
-            "deployment": body.start_deployment,
-        },
-    )
+    tickets = apply_ticket_numbering(tickets, body.start_number)
     if on_step:
         on_step("Done.")
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)

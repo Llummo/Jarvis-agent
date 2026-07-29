@@ -614,12 +614,7 @@ function createTrackerPanel(tracker) {
   }
 
   function startNumbers() {
-    return {
-      start_mundane: el("start-mundane").value || "1",
-      start_backend: el("start-backend").value || "1",
-      start_frontend: el("start-frontend").value || "1",
-      start_deployment: el("start-deployment").value || "1",
-    };
+    return { start_number: el("start-number").value || "1" };
   }
 
   function renderProposed() {
