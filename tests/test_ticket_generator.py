@@ -11,7 +11,7 @@ from meta_harness.ticket_generator import (
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
-    apply_category_numbering,
+    apply_ticket_numbering,
     apply_sprint_due_dates,
     extract_document_text,
     generate_tickets_from_file,
@@ -497,7 +497,10 @@ def test_generate_tickets_succeeds_first_try_does_not_retry(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# apply_category_numbering
+# apply_ticket_numbering — one prefix for every ticket.
+# TAB/TAF/TAD/TAM claimed a distinction the model could not make reliably;
+# a technical story and a user story differ by what they describe, not by a
+# guessed label baked into the identifier.
 # ---------------------------------------------------------------------------
 
 
@@ -505,16 +508,16 @@ def _ticket(title, category="mundane"):
     return ProposedTicket(title=title, description="d", acceptance_criteria=[], priority="normal", category=category)
 
 
-def test_apply_category_numbering_single_category_default_start():
-    tickets = [_ticket("Do thing one", "mundane"), _ticket("Do thing two", "mundane")]
+def test_every_ticket_gets_the_tas_prefix():
+    tickets = [_ticket("Do thing one"), _ticket("Do thing two")]
 
-    numbered = apply_category_numbering(tickets)
+    numbered = apply_ticket_numbering(tickets)
 
-    assert numbered[0].title == "TAM-01 | Do thing one"
-    assert numbered[1].title == "TAM-02 | Do thing two"
+    assert numbered[0].title == "TAS-01 | Do thing one"
+    assert numbered[1].title == "TAS-02 | Do thing two"
 
 
-def test_apply_category_numbering_uses_correct_prefix_per_category():
+def test_the_prefix_does_not_depend_on_category():
     tickets = [
         _ticket("General planning", "mundane"),
         _ticket("Build API endpoint", "backend"),
@@ -522,55 +525,60 @@ def test_apply_category_numbering_uses_correct_prefix_per_category():
         _ticket("Set up CI pipeline", "deployment"),
     ]
 
-    numbered = apply_category_numbering(tickets)
+    numbered = apply_ticket_numbering(tickets)
 
-    assert numbered[0].title == "TAM-01 | General planning"
-    assert numbered[1].title == "TAB-01 | Build API endpoint"
-    assert numbered[2].title == "TAF-01 | Build login page"
-    assert numbered[3].title == "TAD-01 | Set up CI pipeline"
+    assert [t.title for t in numbered] == [
+        "TAS-01 | General planning",
+        "TAS-02 | Build API endpoint",
+        "TAS-03 | Build login page",
+        "TAS-04 | Set up CI pipeline",
+    ]
 
 
-def test_apply_category_numbering_counts_independently_per_category():
+def test_one_shared_counter_across_categories():
     tickets = [
         _ticket("Backend one", "backend"),
         _ticket("Frontend one", "frontend"),
         _ticket("Backend two", "backend"),
-        _ticket("Backend three", "backend"),
-        _ticket("Frontend two", "frontend"),
     ]
 
-    numbered = apply_category_numbering(tickets)
+    numbered = apply_ticket_numbering(tickets)
 
     assert [t.title for t in numbered] == [
-        "TAB-01 | Backend one",
-        "TAF-01 | Frontend one",
-        "TAB-02 | Backend two",
-        "TAB-03 | Backend three",
-        "TAF-02 | Frontend two",
+        "TAS-01 | Backend one",
+        "TAS-02 | Frontend one",
+        "TAS-03 | Backend two",
     ]
 
 
-def test_apply_category_numbering_respects_per_category_start_numbers():
-    tickets = [_ticket("Existing series continues", "mundane"), _ticket("Fresh backend series", "backend")]
+def test_numbering_can_continue_an_existing_backlog():
+    tickets = [_ticket("Next one"), _ticket("And another")]
 
-    numbered = apply_category_numbering(tickets, start_numbers={"mundane": 2})
+    numbered = apply_ticket_numbering(tickets, start_number=7)
 
-    assert numbered[0].title == "TAM-02 | Existing series continues"
-    assert numbered[1].title == "TAB-01 | Fresh backend series"
+    assert numbered[0].title == "TAS-07 | Next one"
+    assert numbered[1].title == "TAS-08 | And another"
 
 
-def test_apply_category_numbering_does_not_mutate_input():
+def test_category_is_still_classified_for_the_badge():
+    # It stops driving the identifier, but remains useful when scanning.
+    numbered = apply_ticket_numbering([_ticket("Build API endpoint", "backend")])
+
+    assert numbered[0].category == "backend"
+
+
+def test_numbering_does_not_mutate_input():
     tickets = [_ticket("Do thing", "mundane")]
 
-    apply_category_numbering(tickets, start_numbers={"mundane": 5})
+    apply_ticket_numbering(tickets, start_number=5)
 
     assert tickets[0].title == "Do thing"
 
 
-def test_apply_category_numbering_preserves_other_fields():
+def test_numbering_preserves_other_fields():
     tickets = [ProposedTicket(title="t1", description="desc", acceptance_criteria=["a"], priority="urgent", category="backend")]
 
-    numbered = apply_category_numbering(tickets)
+    numbered = apply_ticket_numbering(tickets)
 
     assert numbered[0].description == "desc"
     assert numbered[0].acceptance_criteria == ["a"]
@@ -1096,3 +1104,48 @@ def test_the_single_call_prompt_states_the_size_derived_target(monkeypatch):
 
     assert "50-80" not in captured["prompt"], "a small document must not be asked for 50-80"
     assert "for a document of this size" in captured["prompt"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Technical stories vs user stories.
+# Backend tickets were being written as though someone were clicking through a
+# screen, leaving the endpoint they exist to define unstated.
+# ---------------------------------------------------------------------------
+
+
+def test_every_prompt_teaches_the_two_story_kinds():
+    from meta_harness.ticket_generator import IDEA_TICKET_PROMPT, TICKET_EXTRACTION_PROMPT
+    from meta_harness.ticket_reformat import REFORMAT_PROMPT
+
+    for prompt in (TICKET_EXTRACTION_PROMPT, IDEA_TICKET_PROMPT, REFORMAT_PROMPT):
+        assert "TECHNICAL STORY" in prompt
+        assert "USER STORY" in prompt
+        # stated once, not duplicated by the shared field spec
+        assert prompt.count("EVERY ticket is one of two kinds") == 1
+
+
+def test_a_technical_story_must_carry_its_endpoint():
+    from meta_harness.ticket_generator import TICKET_EXTRACTION_PROMPT
+
+    assert 'fill "backend_endpoint"' in TICKET_EXTRACTION_PROMPT
+    assert 'do not leave "backend_endpoint"' in TICKET_EXTRACTION_PROMPT
+
+
+def test_a_technical_story_is_described_by_its_contract():
+    from meta_harness.ticket_generator import TICKET_EXTRACTION_PROMPT
+
+    for expected in ("what it receives", "what it validates", "status codes"):
+        assert expected in TICKET_EXTRACTION_PROMPT
+    assert "Do NOT write a technical story as though a person were clicking" in TICKET_EXTRACTION_PROMPT
+
+
+def test_mixed_work_is_split_rather_than_blurred():
+    from meta_harness.ticket_generator import TICKET_EXTRACTION_PROMPT
+
+    assert "split it into one technical story and one user story" in TICKET_EXTRACTION_PROMPT
+
+
+def test_the_category_label_no_longer_claims_to_set_the_identifier():
+    from meta_harness.ticket_generator import TICKET_EXTRACTION_PROMPT
+
+    assert "does not change the ticket identifier" in TICKET_EXTRACTION_PROMPT

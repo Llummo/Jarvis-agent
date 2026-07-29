@@ -44,12 +44,12 @@ DEFAULT_PRIORITY = "normal"
 
 CATEGORIES = ("mundane", "backend", "frontend", "deployment")
 DEFAULT_CATEGORY = "mundane"
-CATEGORY_PREFIXES = {
-    "mundane": "TAM",
-    "backend": "TAB",
-    "frontend": "TAF",
-    "deployment": "TAD",
-}
+# One prefix for every ticket. The old per-category prefixes (TAB/TAF/TAD/TAM)
+# claimed a distinction the model could not make reliably: a technical story
+# and a user story are told apart by what they describe, not by a label the
+# generator guesses. Category is still classified for the UI badge, but it no
+# longer drives the identifier.
+TICKET_PREFIX = "TAS"
 
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
@@ -101,13 +101,38 @@ def _count_guidance_for_chunk(low: int, high: int) -> str:
     )
 
 
+# What separates a technical story from a user story. Shared by every prompt
+# via _TICKET_FIELDS_SPEC, so generation, chat and reformat all apply it.
+_STORY_KIND_RULES = (
+    "EVERY ticket is one of two kinds, and the kind decides what its body must contain:\n"
+    "- A TECHNICAL STORY (TS) describes server-side capability: an endpoint, a job, a migration, "
+    "a piece of infrastructure. Its value is the contract, not a screen. For one of these you MUST "
+    'fill "backend_endpoint" with the concrete method(s) and path (e.g. '
+    '"POST /api/v1/talent/people"), leave "ui_route" empty unless a screen is genuinely in scope, '
+    "and write the description and acceptance criteria in terms of the endpoint's behaviour: what "
+    "it receives, what it validates, what it returns on success, and what it returns on each "
+    "failure (status codes, error shapes, permissions, side effects). Do NOT write a technical "
+    'story as though a person were clicking through a screen, and do not leave "backend_endpoint" '
+    "empty on a ticket whose whole purpose is server-side work.\n"
+    "- A USER STORY (US) describes a need a person has and the flow that satisfies it. For one of "
+    'these fill "ui_route" with the screen(s) involved, and write the description and criteria in '
+    "terms of what the user sees and does. Reference the endpoint it consumes when there is one, "
+    "but the subject is the flow.\n"
+    "Decide the kind from what the work actually is. If a piece of work has both a server side "
+    "and a screen, split it into one technical story and one user story rather than blurring both "
+    "into a single ticket.\n"
+    "\n"
+)
+
+
 _PROMPT_TAIL = (
     "Order the array in a logical implementation sequence — foundational or setup work and "
     "anything another ticket depends on comes before the tickets that build on it (e.g. a "
     "backend endpoint before the frontend that calls it, setup/config before the feature that "
     "needs it). "
     "\n\n"
-    "All human-readable text content in the output (title, epic, user_story, description, "
+    + _STORY_KIND_RULES
+    + "All human-readable text content in the output (title, epic, user_story, description, "
     "acceptance_criteria, technical_notes) must be written in SPANISH — this is the working "
     "language of the team consuming these tickets. Only the JSON field names themselves stay "
     "in English. "
@@ -152,11 +177,11 @@ _PROMPT_TAIL = (
     "Matriz de permisos:\\n```\\ntalent:read   Lectura del directorio\\ntalent:write  "
     "Creacion y edicion\\n```), "
     '"priority" (one of: "urgent", "high", "normal", "low"), '
-    '"category" (one of: "backend", "frontend", "deployment", "mundane" — classify by the '
-    'primary type of work: "backend" for server/API/database/business-logic work, '
-    '"frontend" for UI/client-side work, "deployment" for CI/CD, infra, release, or ops work, '
-    'and "mundane" for anything general, cross-cutting, or planning-oriented that does not '
-    "clearly fit the other three), "
+    '"category" (one of: "backend", "frontend", "deployment", "mundane" — the primary type of '
+    'work. "backend" for a technical story: server, API, database or business logic. "frontend" '
+    'for a user story delivered as UI. "deployment" for CI/CD, infra, release or ops work. '
+    '"mundane" for anything general, cross-cutting or planning-oriented. This is a label for '
+    "humans scanning the backlog; it does not change the ticket identifier), "
     '"parent_title" (string — use this to build a two-level hierarchy. When several tickets are '
     "pieces of one larger feature, emit one parent ticket describing that feature as a whole and "
     "set every piece's parent_title to the parent ticket's exact title; the parent must appear "
@@ -178,7 +203,9 @@ TICKET_EXTRACTION_PROMPT = _PROMPT_HEAD + _COUNT_GUIDANCE_WHOLE + _PROMPT_TAIL
 # The shared "what a ticket looks like" contract, reused verbatim by the
 # idea/chat path so a ticket drafted from a one-line idea is structurally
 # identical to one extracted from a full requirements document.
-_TICKET_FIELDS_SPEC = TICKET_EXTRACTION_PROMPT[TICKET_EXTRACTION_PROMPT.index("Each ticket must be a JSON object") :]
+_TICKET_FIELDS_SPEC = _STORY_KIND_RULES + TICKET_EXTRACTION_PROMPT[
+    TICKET_EXTRACTION_PROMPT.index("Each ticket must be a JSON object") :
+]
 
 IDEA_TICKET_PROMPT = (
     "You are helping someone turn a rough idea into properly-formatted work tickets. "
@@ -923,33 +950,27 @@ def generate_tickets_from_file(
     )
 
 
-def apply_category_numbering(
-    tickets: List[ProposedTicket], start_numbers: Optional[Dict[str, int]] = None
+def apply_ticket_numbering(
+    tickets: List[ProposedTicket], start_number: int = 1
 ) -> List[ProposedTicket]:
-    """Rename tickets in order using a per-category prefix and counter:
-    TAM (mundane), TAB (backend), TAF (frontend), TAD (deployment).
+    """Rename tickets in order as "TAS-NN | title", counting from
+    `start_number` so an existing sequence can be continued.
 
-    Each category counts independently in the order tickets appear, so an
-    existing sequence (e.g. TAM already at 01) can be continued via
-    `start_numbers={"mundane": 2}` without disturbing the other three,
-    each of which still starts at 1 by default. Returns a new list — the
-    input tickets are not mutated.
+    One shared counter, not one per category: every ticket carries the same
+    prefix now. Returns a new list — the input tickets are not mutated.
     """
-    counters: Dict[str, int] = dict(start_numbers or {})
+    number = max(1, start_number)
     renamed: Dict[str, str] = {}
     numbered = []
     for ticket in tickets:
-        category = ticket.category if ticket.category in CATEGORIES else DEFAULT_CATEGORY
-        prefix = CATEGORY_PREFIXES[category]
-        number = counters.get(category, 1)
-        counters[category] = number + 1
-        new_title = f"{prefix}-{number:02d} | {ticket.title}"
+        new_title = f"{TICKET_PREFIX}-{number:02d} | {ticket.title}"
+        number += 1
         renamed[ticket.title] = new_title
         numbered.append(replace(ticket, title=new_title))
 
     # parent_title points at another ticket's title, so it has to follow the
     # rename — otherwise every parent link would dangle the moment tickets
-    # get their category numbers.
+    # get their numbers.
     return [
         replace(ticket, parent_title=renamed.get(ticket.parent_title, ticket.parent_title))
         if ticket.parent_title
