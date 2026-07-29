@@ -1,7 +1,10 @@
+from datetime import date
+
 from fastapi.testclient import TestClient
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError
 from meta_harness.ticket_generator import (
+    CHAT_INLINE_TICKET_LIMIT,
     AcceptanceCriterion,
     ClaudeNotFoundError,
     ProposedTicket,
@@ -522,6 +525,238 @@ def test_from_idea_claude_missing_returns_503(monkeypatch):
     monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", boom)
 
     response = client.post("/api/tickets/from-idea", json={"idea": "algo"})
+
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# /api/tickets/chat — the one generation entry point (message and/or document)
+# ---------------------------------------------------------------------------
+
+
+def _one_ticket(title="Exportar candidatos", category="backend"):
+    return [ProposedTicket(title=title, description="d", acceptance_criteria=[], category=category)]
+
+
+def test_chat_generates_from_a_typed_message(monkeypatch):
+    captured = {}
+
+    def fake_generate(idea, **kw):
+        captured["idea"] = idea
+        captured["history"] = kw.get("history")
+        return (_one_ticket(), [])
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", fake_generate)
+
+    response = client.post(
+        "/api/tickets/chat",
+        data={"idea": "exportar candidatos", "history": '[{"role": "user", "content": "hola"}]'},
+    )
+
+    assert response.status_code == 200
+    assert captured["idea"] == "exportar candidatos"
+    assert captured["history"] == [{"role": "user", "content": "hola"}]
+    assert response.json()["tickets"][0]["title"] == "TAB-01 | Exportar candidatos"
+    assert response.json()["source_document"] is None
+
+
+def test_chat_generates_from_an_attached_document(monkeypatch):
+    captured = {}
+
+    def fake_generate(text, **kw):
+        captured["text"] = text
+        return (_one_ticket(), [])
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_text", fake_generate)
+
+    response = client.post(
+        "/api/tickets/chat",
+        files={"file": ("requisitos.md", "# Requisitos\nExportar candidatos".encode(), "text/markdown")},
+    )
+
+    assert response.status_code == 200
+    assert "Exportar candidatos" in captured["text"]
+    assert response.json()["source_document"] == "requisitos.md"
+
+
+def test_chat_message_sent_with_a_document_steers_the_analysis(monkeypatch):
+    captured = {}
+
+    def fake_generate(text, **kw):
+        captured["text"] = text
+        return (_one_ticket(), [])
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_text", fake_generate)
+
+    client.post(
+        "/api/tickets/chat",
+        data={"idea": "solo el modulo de talento"},
+        files={"file": ("requisitos.md", b"# Requisitos", "text/markdown")},
+    )
+
+    assert "# Requisitos" in captured["text"]
+    assert "solo el modulo de talento" in captured["text"], (
+        "a message sent with a document must reach the model, not be dropped"
+    )
+
+
+def test_chat_with_a_document_never_calls_the_idea_generator(monkeypatch):
+    def boom(*args, **kw):
+        raise AssertionError("a document must go through the document generator")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", boom)
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_text",
+        lambda text, **kw: (_one_ticket(), []),
+    )
+
+    response = client.post(
+        "/api/tickets/chat",
+        data={"idea": "y agrega validaciones"},
+        files={"file": ("requisitos.md", b"# Requisitos", "text/markdown")},
+    )
+
+    assert response.status_code == 200
+
+
+def test_chat_with_neither_message_nor_document_returns_400():
+    response = client.post("/api/tickets/chat", data={"idea": "   "})
+
+    assert response.status_code == 400
+
+
+def test_chat_rejects_unparseable_history():
+    response = client.post("/api/tickets/chat", data={"idea": "algo", "history": "not json"})
+
+    assert response.status_code == 400
+
+
+def test_chat_flags_overflow_past_the_inline_limit(monkeypatch):
+    many = [
+        ProposedTicket(title=f"T{i}", description="d", acceptance_criteria=[], category="backend")
+        for i in range(CHAT_INLINE_TICKET_LIMIT + 1)
+    ]
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea", lambda idea, **kw: (many, [])
+    )
+
+    response = client.post("/api/tickets/chat", data={"idea": "algo grande"})
+
+    assert response.json()["overflow"] is True
+
+
+def test_chat_does_not_flag_overflow_at_the_inline_limit(monkeypatch):
+    few = [
+        ProposedTicket(title=f"T{i}", description="d", acceptance_criteria=[], category="backend")
+        for i in range(CHAT_INLINE_TICKET_LIMIT)
+    ]
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea", lambda idea, **kw: (few, [])
+    )
+
+    response = client.post("/api/tickets/chat", data={"idea": "algo corto"})
+
+    assert response.json()["overflow"] is False
+
+
+def test_chat_respects_category_start_numbers(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (_one_ticket("Exportar"), []),
+    )
+
+    response = client.post("/api/tickets/chat", data={"idea": "exportar", "start_backend": 7})
+
+    assert response.json()["tickets"][0]["title"] == "TAB-07 | Exportar"
+
+
+def test_chat_assigns_verified_team_members(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (_one_ticket(), []),
+    )
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.list_team_members",
+        lambda **kw: [{"clickup_id": 1, "email": "alice@example.com", "username": "Alice"}],
+    )
+
+    response = client.post(
+        "/api/tickets/chat",
+        data={"idea": "exportar", "team_emails_text": "alice@example.com"},
+    )
+
+    assert response.json()["tickets"][0]["assignee_email"] == "alice@example.com"
+
+
+def test_chat_reports_team_emails_that_match_nobody(monkeypatch):
+    monkeypatch.setattr(
+        "meta_harness.webapp.routes_tickets.generate_tickets_from_idea",
+        lambda idea, **kw: (_one_ticket(), []),
+    )
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.list_team_members", lambda **kw: [])
+
+    response = client.post(
+        "/api/tickets/chat", data={"idea": "exportar", "team_emails_text": "ghost@example.com"}
+    )
+
+    assert response.status_code == 200
+    assert any("ghost@example.com" in w for w in response.json()["warnings"])
+
+
+def test_chat_passes_the_project_window_to_the_document_generator(monkeypatch):
+    captured = {}
+
+    def fake_generate(text, **kw):
+        captured.update(start=kw.get("project_start"), end=kw.get("project_end"))
+        return (_one_ticket(), [])
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_text", fake_generate)
+
+    client.post(
+        "/api/tickets/chat",
+        data={"project_start": "2026-07-01", "project_end": "2026-08-01"},
+        files={"file": ("requisitos.md", b"# Requisitos", "text/markdown")},
+    )
+
+    assert captured["start"] == date(2026, 7, 1)
+    assert captured["end"] == date(2026, 8, 1)
+
+
+def test_chat_rejects_an_end_date_before_the_start_date():
+    response = client.post(
+        "/api/tickets/chat",
+        data={"idea": "algo", "project_start": "2026-08-24", "project_end": "2026-07-27"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_chat_unsupported_document_returns_400(monkeypatch):
+    response = client.post(
+        "/api/tickets/chat", files={"file": ("spec.docx", b"binary", "application/octet-stream")}
+    )
+
+    assert response.status_code == 400
+
+
+def test_chat_parse_error_returns_502(monkeypatch):
+    def boom(idea, **kw):
+        raise TicketParseError("no usable tickets")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", boom)
+
+    response = client.post("/api/tickets/chat", data={"idea": "algo"})
+
+    assert response.status_code == 502
+
+
+def test_chat_claude_missing_returns_503(monkeypatch):
+    def boom(idea, **kw):
+        raise ClaudeNotFoundError("no claude binary")
+
+    monkeypatch.setattr("meta_harness.webapp.routes_tickets.generate_tickets_from_idea", boom)
+
+    response = client.post("/api/tickets/chat", data={"idea": "algo"})
 
     assert response.status_code == 503
 

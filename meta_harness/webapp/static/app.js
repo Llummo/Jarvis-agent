@@ -443,6 +443,7 @@ function createTrackerPanel(tracker) {
     proposed: [], // [{ ticket, status, createdId, error }]
     members: [], // [{ email, username, clickup_id, linear_id, selected }]
     chatHistory: [],
+    chatFile: null, // the document attached to the next message, if any
     chatPending: false,
     chatLastSent: "",
     chatAbort: null,
@@ -605,14 +606,6 @@ function createTrackerPanel(tracker) {
 
   // --- Step 2: generation ---------------------------------------------------
 
-  function setMode(mode) {
-    el("mode-document").hidden = mode !== "document";
-    el("mode-chat").hidden = mode !== "chat";
-    el("mode-switch")
-      .querySelectorAll("button")
-      .forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
-  }
-
   function startNumbers() {
     return { start_number: el("start-number").value || "1" };
   }
@@ -631,46 +624,6 @@ function createTrackerPanel(tracker) {
     banner("generate-warnings", body.warnings && body.warnings.length ? `Note: ${body.warnings.join("; ")}` : null);
     renderProposed();
     banner("generate-success", successMessage);
-  }
-
-  async function onGenerateFromDocument(event) {
-    event.preventDefault();
-    const file = el("file-input").files[0];
-    if (!file) return;
-    banner("generate-error", null);
-    banner("generate-success", null);
-    banner("generate-warnings", null);
-
-    const formData = new FormData();
-    formData.append("file", file);
-    Object.entries(startNumbers()).forEach(([key, value]) => formData.append(key, value));
-    const emails = selectedMemberEmails();
-    if (emails.length) formData.append("team_emails_text", emails.join("\n"));
-    if (tracker.key === "linear" && state.scope) formData.append("linear_team_id", state.scope.id);
-    const start = el("project-start").value;
-    const end = el("project-end").value;
-    if (start) formData.append("project_start", start);
-    if (end) formData.append("project_end", end);
-    const token = newProgressToken();
-    formData.append("progress_token", token);
-
-    const submit = event.target.querySelector('button[type="submit"]');
-    submit.disabled = true;
-    thinking("generate", true, "Starting…");
-    const stop = pollProgress(token, (steps) => {
-      thinking("generate", true, steps[steps.length - 1]);
-      phaseLog("generate", steps);
-    });
-    try {
-      const body = await fetchJson("/api/tickets/generate", { method: "POST", body: formData });
-      acceptGenerated(body, `${body.tickets.length} ${tracker.noun}(s) drafted — review them below, then add them.`);
-    } catch (err) {
-      banner("generate-error", err.message);
-    } finally {
-      await stop();
-      submit.disabled = false;
-      thinking("generate", false);
-    }
   }
 
   // --- chat mode ------------------------------------------------------------
@@ -709,11 +662,39 @@ function createTrackerPanel(tracker) {
     }
   }
 
+  // Attaching a requirements document is just another way to say what you
+  // need: it rides along with the next message instead of living in a
+  // separate form, so there is one place to generate from. Nielsen #1,
+  // visibility of system status: the attached file stays named on screen
+  // until it's sent or removed.
+  function onChatFileChange() {
+    const file = el("chat-file").files[0] || null;
+    state.chatFile = file;
+    renderChatAttachment();
+    syncChatSendState();
+  }
+
+  function clearChatAttachment() {
+    state.chatFile = null;
+    el("chat-file").value = "";
+    renderChatAttachment();
+    syncChatSendState();
+  }
+
+  function renderChatAttachment() {
+    const node = el("chat-attachment");
+    node.hidden = !state.chatFile;
+    if (state.chatFile) {
+      node.querySelector(".chat-attachment-name").textContent = `\u{1F4CE} ${state.chatFile.name}`;
+    }
+  }
+
   // Nielsen #5, error prevention: an empty message can't be sent, and the
   // control says so rather than failing after the click.
   function syncChatSendState() {
     const input = el("chat-input");
-    el("chat-send").disabled = state.chatPending || !input.value.trim();
+    el("chat-send").disabled = state.chatPending || !(input.value.trim() || state.chatFile);
+    el("chat-attach").disabled = state.chatPending;
     el("chat-cancel").hidden = !state.chatPending;
     input.disabled = state.chatPending;
     // Auto-grow so a long description isn't typed through a keyhole. Never
@@ -736,8 +717,9 @@ function createTrackerPanel(tracker) {
     if (!state.chatHistory.length && !state.chatPending) {
       log.innerHTML =
         `<div class="chat-empty">` +
-        `<strong>Describe a feature and get a formatted ${tracker.noun} back.</strong>` +
-        `<span>Say what the user needs to do and where. You'll review the draft before anything is created.</span>` +
+        `<strong>Describe a feature — or attach a requirements document — and get formatted ${tracker.noun}s back.</strong>` +
+        `<span>Say what the user needs to do and where, or use \u{1F4CE} to analyze a .md, .pdf or .txt. ` +
+        `You'll review every draft before anything is created.</span>` +
         `</div>`;
       return;
     }
@@ -750,8 +732,15 @@ function createTrackerPanel(tracker) {
         const bubble = document.createElement("div");
         bubble.className =
           `chat-msg chat-msg-${turn.role === "assistant" ? "bot" : "user"}` +
-          (turn.error ? " chat-msg-error" : "");
+          (turn.error ? " chat-msg-error" : "") +
+          (turn.overflow ? " chat-msg-overflow" : "");
         bubble.textContent = turn.content;
+        if (turn.attachment) {
+          const chip = document.createElement("span");
+          chip.className = "chat-msg-attachment";
+          chip.textContent = `\u{1F4CE} ${turn.attachment}`;
+          bubble.appendChild(chip);
+        }
         wrap.appendChild(bubble);
 
         const meta = document.createElement("div");
@@ -766,7 +755,7 @@ function createTrackerPanel(tracker) {
           retry.type = "button";
           retry.className = "chat-retry";
           retry.textContent = "↻ Try again";
-          retry.addEventListener("click", () => sendChatMessage(turn.retry));
+          retry.addEventListener("click", () => sendChatMessage(turn.retry, turn.retryFile));
           wrap.appendChild(retry);
         }
         log.appendChild(wrap);
@@ -870,11 +859,13 @@ function createTrackerPanel(tracker) {
 
   async function onChatSubmit(event) {
     event.preventDefault();
-    sendChatMessage(el("chat-input").value.trim());
+    sendChatMessage(el("chat-input").value.trim(), state.chatFile);
   }
 
-  async function sendChatMessage(idea) {
-    if (!idea || state.chatPending) return;
+  // The one generation path. A message, a document, or both go to the same
+  // endpoint, so there is nothing to choose between before typing.
+  async function sendChatMessage(idea, file) {
+    if ((!idea && !file) || state.chatPending) return;
     banner("generate-error", null);
     banner("generate-success", null);
     banner("generate-warnings", null);
@@ -888,10 +879,16 @@ function createTrackerPanel(tracker) {
 
     // Drop a previous failure once it's being retried.
     state.chatHistory = state.chatHistory.filter((turn) => !turn.error);
-    state.chatHistory.push({ role: "user", content: idea, at: chatTimestamp() });
+    state.chatHistory.push({
+      role: "user",
+      content: idea || "Analiza este documento:",
+      attachment: file ? file.name : null,
+      at: chatTimestamp(),
+    });
     state.chatLastSent = idea;
     state.chatPending = true;
     el("chat-input").value = "";
+    clearChatAttachment();
     syncChatSendState();
     renderChat();
 
@@ -901,25 +898,58 @@ function createTrackerPanel(tracker) {
     state.chatAbort = controller;
 
     const token = newProgressToken();
+    const formData = new FormData();
+    formData.append("idea", idea || "");
+    formData.append("history", JSON.stringify(history));
+    formData.append("progress_token", token);
+    Object.entries(startNumbers()).forEach(([key, value]) => formData.append(key, value));
+    if (file) formData.append("file", file);
+    const emails = selectedMemberEmails();
+    if (emails.length) formData.append("team_emails_text", emails.join("\n"));
+    if (tracker.key === "linear" && state.scope) formData.append("linear_team_id", state.scope.id);
+    const projectStart = el("project-start").value;
+    const projectEnd = el("project-end").value;
+    if (projectStart) formData.append("project_start", projectStart);
+    if (projectEnd) formData.append("project_end", projectEnd);
+
     const stop = pollProgress(token, (steps) => {
       thinking("generate", true, steps[steps.length - 1]);
       phaseLog("generate", steps);
     });
     thinking("generate", true, "Starting…");
     try {
-      const body = await fetchJson("/api/tickets/from-idea", {
+      const body = await fetchJson("/api/tickets/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idea, history, ...startNumbers(), progress_token: token }),
+        body: formData,
         signal: controller.signal,
       });
-      state.chatHistory.push({
-        role: "assistant",
-        kind: "tickets",
-        entries: body.tickets.map((ticket) => ({ ticket, status: "pending" })),
-        summary: body.tickets.map((t) => `- ${t.title}: ${t.description}`).join("\n"),
-        at: chatTimestamp(),
-      });
+      const entries = body.tickets.map((ticket) => ({ ticket, status: "pending" }));
+      if (body.overflow) {
+        // A long batch read inside a chat bubble is unusable — it buries the
+        // conversation and the Add controls scroll off with it. The bubble
+        // stays a one-line pointer and the reviewable cards render below.
+        state.chatHistory.push({
+          role: "assistant",
+          content: "Response was too big so it was moved below in the page, please scroll down",
+          overflow: true,
+          summary: body.tickets.map((t) => `- ${t.title}: ${t.description}`).join("\n"),
+          at: chatTimestamp(),
+        });
+        state.proposed = entries;
+        renderProposed();
+        banner(
+          "generate-success",
+          `${body.tickets.length} ${tracker.noun}(s) drafted — review them below, then add them.`
+        );
+      } else {
+        state.chatHistory.push({
+          role: "assistant",
+          kind: "tickets",
+          entries,
+          summary: body.tickets.map((t) => `- ${t.title}: ${t.description}`).join("\n"),
+          at: chatTimestamp(),
+        });
+      }
       banner("generate-warnings", body.warnings && body.warnings.length ? `Note: ${body.warnings.join("; ")}` : null);
     } catch (err) {
       const cancelled = err.name === "AbortError";
@@ -928,6 +958,7 @@ function createTrackerPanel(tracker) {
         content: cancelled ? "Cancelled." : `Sorry — ${err.message}`,
         error: !cancelled,
         retry: cancelled ? null : idea,
+        retryFile: cancelled ? null : file || null,
         at: chatTimestamp(),
       });
     } finally {
@@ -951,7 +982,7 @@ function createTrackerPanel(tracker) {
   function onChatKeydown(event) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      sendChatMessage(el("chat-input").value.trim());
+      sendChatMessage(el("chat-input").value.trim(), state.chatFile);
     }
   }
 
@@ -960,6 +991,7 @@ function createTrackerPanel(tracker) {
     state.chatHistory = [];
     state.chatPending = false;
     state.proposed = [];
+    clearChatAttachment();
     syncChatSendState();
     renderChat();
     renderProposed();
@@ -2035,12 +2067,10 @@ function createTrackerPanel(tracker) {
     el("scope").addEventListener("change", onScopeChange);
     el("container").addEventListener("change", onContainerChange);
 
-    el("mode-switch")
-      .querySelectorAll("button")
-      .forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
-
-    el("generate-form").addEventListener("submit", onGenerateFromDocument);
     el("chat-form").addEventListener("submit", onChatSubmit);
+    el("chat-attach").addEventListener("click", () => el("chat-file").click());
+    el("chat-file").addEventListener("change", onChatFileChange);
+    el("chat-attach-clear").addEventListener("click", clearChatAttachment);
     el("chat-input").addEventListener("keydown", onChatKeydown);
     el("chat-input").addEventListener("input", syncChatSendState);
     el("chat-cancel").addEventListener("click", onChatCancel);

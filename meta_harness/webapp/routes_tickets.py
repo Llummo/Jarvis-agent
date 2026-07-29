@@ -7,6 +7,8 @@ them" flow.
 
 from __future__ import annotations
 
+import json
+
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Optional
@@ -39,18 +41,23 @@ from meta_harness.ticket_reformat import (
     revert_ticket,
 )
 from meta_harness.ticket_generator import (
+    CHAT_INLINE_TICKET_LIMIT,
     ClaudeNotFoundError,
     TicketExtractionError,
     TicketGenerationError,
     TicketParseError,
     apply_ticket_numbering,
     apply_sprint_due_dates,
+    extract_document_text,
     generate_tickets_from_file,
     generate_tickets_from_idea,
+    generate_tickets_from_text,
 )
 from meta_harness.webapp import progress
 from meta_harness.webapp.deps import get_clickup_project_path
 from meta_harness.webapp.schemas import (
+    ChatGenerateOut,
+    ChatTurnIn,
     CreateTicketsIn,
     CreateTicketsOut,
     GenerateFromIdeaIn,
@@ -103,6 +110,51 @@ def _merged_roster(linear_team_id: Optional[str], *, on_step=None) -> list[dict]
     return merge_member_rosters(clickup_members, linear_members)
 
 
+def _parse_project_window(
+    project_start: Optional[str], project_end: Optional[str]
+) -> tuple[Optional[date], Optional[date]]:
+    try:
+        parsed_start = date.fromisoformat(project_start) if project_start else None
+        parsed_end = date.fromisoformat(project_end) if project_end else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {exc}") from exc
+    if parsed_start and parsed_end and parsed_end <= parsed_start:
+        raise HTTPException(status_code=400, detail="Project end date must be after the start date.")
+    return parsed_start, parsed_end
+
+
+def _assign_verified_members(
+    tickets: list,
+    warnings: list[str],
+    team_emails_text: Optional[str],
+    linear_team_id: Optional[str],
+    *,
+    on_step=None,
+) -> list:
+    """Spread the verified members of `team_emails_text` across `tickets`.
+
+    An email that matches nobody is reported as a warning rather than
+    failing the batch — the tickets are still worth having unassigned."""
+    if not (team_emails_text and team_emails_text.strip()):
+        return tickets
+    if on_step:
+        on_step("Verifying team members…")
+    emails = parse_emails(team_emails_text)
+    roster = _merged_roster(linear_team_id, on_step=on_step)
+    verified, not_found = verify_team_emails(emails, members=roster)
+    if verified:
+        if on_step:
+            on_step(f"Randomly assigning {len(verified)} verified member(s) to tickets…")
+        tickets = assign_random_members(tickets, verified)
+    elif emails:
+        warnings.append(
+            "None of the given team emails matched a real ClickUp or Linear workspace member — tickets left unassigned."
+        )
+    if not_found:
+        warnings.append(f"Team emails not found in ClickUp/Linear: {', '.join(not_found)}")
+    return tickets
+
+
 @router.post("/generate", response_model=GenerateTicketsOut)
 def post_generate_tickets(
     file: UploadFile = File(...),
@@ -113,13 +165,7 @@ def post_generate_tickets(
     project_end: Optional[str] = Form(None),
     progress_token: Optional[str] = Form(None),
 ) -> GenerateTicketsOut:
-    try:
-        parsed_start = date.fromisoformat(project_start) if project_start else None
-        parsed_end = date.fromisoformat(project_end) if project_end else None
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid date: {exc}") from exc
-    if parsed_start and parsed_end and parsed_end <= parsed_start:
-        raise HTTPException(status_code=400, detail="Project end date must be after the start date.")
+    parsed_start, parsed_end = _parse_project_window(project_start, project_end)
 
     content = file.file.read()
     on_step = None
@@ -148,20 +194,9 @@ def post_generate_tickets(
         on_step("Assigning sprint due dates…")
     tickets = apply_sprint_due_dates(tickets, sprint_start=parsed_start, project_end=parsed_end)
 
-    if team_emails_text and team_emails_text.strip():
-        if on_step:
-            on_step("Verifying team members…")
-        emails = parse_emails(team_emails_text)
-        roster = _merged_roster(linear_team_id, on_step=on_step)
-        verified, not_found = verify_team_emails(emails, members=roster)
-        if verified:
-            if on_step:
-                on_step(f"Randomly assigning {len(verified)} verified member(s) to tickets…")
-            tickets = assign_random_members(tickets, verified)
-        elif emails:
-            warnings.append("None of the given team emails matched a real ClickUp or Linear workspace member — tickets left unassigned.")
-        if not_found:
-            warnings.append(f"Team emails not found in ClickUp/Linear: {', '.join(not_found)}")
+    tickets = _assign_verified_members(
+        tickets, warnings, team_emails_text, linear_team_id, on_step=on_step
+    )
 
     if on_step:
         on_step("Done.")
@@ -193,6 +228,91 @@ def post_generate_from_idea(body: GenerateFromIdeaIn) -> GenerateTicketsOut:
     if on_step:
         on_step("Done.")
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
+
+
+@router.post("/chat", response_model=ChatGenerateOut)
+def post_chat_generate(
+    idea: str = Form(""),
+    history: str = Form("[]"),
+    start_mundane: int = Form(1),
+    start_backend: int = Form(1),
+    start_frontend: int = Form(1),
+    start_deployment: int = Form(1),
+    team_emails_text: Optional[str] = Form(None),
+    linear_team_id: Optional[str] = Form(None),
+    project_start: Optional[str] = Form(None),
+    project_end: Optional[str] = Form(None),
+    progress_token: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+) -> ChatGenerateOut:
+    """The chat's single generation entry point: a typed idea, an attached
+    document, or both.
+
+    Multipart rather than JSON because a document can come with the message.
+    A document is analyzed through the same chunked, size-budgeted generator
+    as before — which is what makes attaching one from the chat fast enough
+    to wait for.
+    """
+    parsed_start, parsed_end = _parse_project_window(project_start, project_end)
+    on_step = None
+    if progress_token:
+        progress.start(progress_token)
+        on_step = lambda message: progress.push(progress_token, message)  # noqa: E731
+
+    try:
+        turns = [ChatTurnIn(**turn) for turn in json.loads(history or "[]")]
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid conversation history: {exc}") from exc
+
+    if not idea.strip() and file is None:
+        raise HTTPException(status_code=400, detail="Send a message or attach a document.")
+
+    try:
+        if file is not None:
+            content = file.file.read()
+            document = extract_document_text(file.filename or "document", content)
+            # A message sent alongside a document steers the analysis.
+            if idea.strip():
+                document = f"{document}\n\n---\nInstrucción adicional del usuario: {idea.strip()}"
+            tickets, warnings = generate_tickets_from_text(
+                document, on_step=on_step, project_start=parsed_start, project_end=parsed_end
+            )
+            source = file.filename or "document"
+        else:
+            tickets, warnings = generate_tickets_from_idea(
+                idea, history=[turn.model_dump() for turn in turns], on_step=on_step
+            )
+            source = None
+    except TicketExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ClaudeNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (TicketGenerationError, TicketParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    tickets = apply_category_numbering(
+        tickets,
+        {
+            "mundane": start_mundane,
+            "backend": start_backend,
+            "frontend": start_frontend,
+            "deployment": start_deployment,
+        },
+    )
+    tickets = apply_sprint_due_dates(tickets, sprint_start=parsed_start, project_end=parsed_end)
+    tickets = _assign_verified_members(
+        tickets, warnings, team_emails_text, linear_team_id, on_step=on_step
+    )
+    if on_step:
+        on_step("Done.")
+    return ChatGenerateOut(
+        tickets=tickets,
+        warnings=warnings,
+        source_document=source,
+        # More than a handful of full ticket previews makes the conversation
+        # unreadable, so the caller renders them below the chat instead.
+        overflow=len(tickets) > CHAT_INLINE_TICKET_LIMIT,
+    )
 
 
 @router.get("/team-members", response_model=list[TeamMemberOut])

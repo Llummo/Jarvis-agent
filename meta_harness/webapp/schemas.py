@@ -136,6 +136,15 @@ class GenerateFromIdeaIn(BaseModel):
     progress_token: Optional[str] = None
 
 
+class ChatGenerateOut(BaseModel):
+    tickets: list[ProposedTicketOut]
+    warnings: list[str]
+    # Set when the batch is too large to read inside a chat bubble; the UI
+    # renders the tickets below the conversation instead.
+    overflow: bool = False
+    source_document: Optional[str] = None
+
+
 class CreateTicketsIn(BaseModel):
     tickets: list[ProposedTicketIn]
     list_id: Optional[str] = None

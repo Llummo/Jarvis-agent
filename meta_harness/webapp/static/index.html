@@ -104,51 +104,30 @@
           <div class="panel-head">
             <div>
               <h2>Create tickets</h2>
-              <p class="hint">Either upload a requirements document, or just describe your idea and let the assistant write the ticket for you.</p>
+              <p class="hint">Describe what you need in the chat, or attach a requirements document — the assistant drafts the tickets and you review them before anything is created.</p>
             </div>
           </div>
           <div class="panel-body">
-            <div class="mode-switch" id="clickup-mode-switch">
-              <button type="button" data-mode="document" class="active">📄 From a document</button>
-              <button type="button" data-mode="chat">💬 Describe an idea</button>
-            </div>
 
-            <!-- Mode A: document -->
-            <div id="clickup-mode-document">
-              <form id="clickup-generate-form">
-                <div class="field-grid">
-                  <div class="field field-wide">
-                    <label for="clickup-file-input">Requirements document</label>
-                    <input type="file" id="clickup-file-input" accept=".md,.pdf,.txt" required>
-                    <span class="field-note">Markdown (.md), PDF or plain text.</span>
-                  </div>
-                  <div class="field">
-                    <label for="clickup-project-start">Project start date</label>
-                    <input type="date" id="clickup-project-start">
-                    <span class="field-note">Optional.</span>
-                  </div>
-                  <div class="field">
-                    <label for="clickup-project-end">Project deadline</label>
-                    <input type="date" id="clickup-project-end">
-                    <span class="field-note">Optional — deadlines are fitted inside this window.</span>
-                  </div>
-                </div>
-                <div class="btn-row">
-                  <button type="submit" class="btn-primary">Generate tickets</button>
-                </div>
-              </form>
-            </div>
-
-            <!-- Mode B: chat -->
-            <div id="clickup-mode-chat" hidden>
+                        <div id="clickup-mode-chat">
               <div class="chat-log" id="clickup-chat-log" role="log" aria-live="polite" aria-label="Conversation"></div>
 
               <div class="chat-suggestions" id="clickup-chat-suggestions"></div>
 
               <form id="clickup-chat-form" class="chat-compose">
                 <label class="field-label" for="clickup-chat-input">Describe what you need</label>
+                <div id="clickup-chat-attachment" class="chat-attachment" hidden>
+                  <span class="chat-attachment-name"></span>
+                  <button type="button" id="clickup-chat-attach-clear" class="chat-attachment-clear"
+                          aria-label="Remove attachment" title="Remove">&times;</button>
+                </div>
                 <div class="chat-composer">
-                  <textarea id="clickup-chat-input" rows="1" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <input type="file" id="clickup-chat-file" accept=".md,.pdf,.txt" hidden>
+                  <button type="button" id="clickup-chat-attach" class="chat-icon-btn chat-icon-attach"
+                          aria-label="Attach a requirements document" title="Attach a document">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 6.5v8a4.5 4.5 0 0 1-9 0V5.5a3 3 0 0 1 6 0v8a1.5 1.5 0 0 1-3 0V6.5H9v7a3 3 0 0 0 6 0v-8a4.5 4.5 0 0 0-9 0v9a6 6 0 0 0 12 0v-8z"/></svg>
+                  </button>
+                  <textarea id="clickup-chat-input" rows="1" placeholder="Describe what you need, or attach a requirements document"></textarea>
                   <button type="button" id="clickup-chat-cancel" class="chat-icon-btn chat-icon-cancel" hidden
                           aria-label="Cancel generation" title="Cancel">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
@@ -161,7 +140,7 @@
                 <div class="chat-compose-footer">
                   <span class="field-note">
                     <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
-                    the more concrete you are, the better the ticket
+                    attach a .md/.pdf/.txt to generate from a document
                   </span>
                   <button type="button" id="clickup-chat-reset" class="chat-reset">Start over</button>
                 </div>
@@ -169,12 +148,22 @@
             </div>
 
             <details class="advanced">
-              <summary>Advanced options — numbering and team assignment</summary>
+              <summary>Advanced options — numbering, sprint dates and team assignment</summary>
               <div class="field-grid">
                 <div class="field">
                   <label for="clickup-start-number">Numbering starts at</label>
                   <input type="number" id="clickup-start-number" min="1" value="1">
                   <span class="field-note">Tickets are named TAS-01, TAS-02… Set this to continue an existing backlog.</span>
+                </div>
+                <div class="field">
+                  <label for="clickup-project-start">Project start date</label>
+                  <input type="date" id="clickup-project-start">
+                  <span class="field-note">Optional.</span>
+                </div>
+                <div class="field">
+                  <label for="clickup-project-end">Project deadline</label>
+                  <input type="date" id="clickup-project-end">
+                  <span class="field-note">Optional — deadlines are fitted inside this window.</span>
                 </div>
                 <div class="field field-wide">
                   <label class="field-label">Detected team members</label>
@@ -577,51 +566,30 @@
           <div class="panel-head">
             <div>
               <h2>Create issues</h2>
-              <p class="hint">Either upload a requirements document, or just describe your idea and let the assistant write the issue for you.</p>
+              <p class="hint">Describe what you need in the chat, or attach a requirements document — the assistant drafts the issues and you review them before anything is created.</p>
             </div>
           </div>
           <div class="panel-body">
-            <div class="mode-switch" id="linear-mode-switch">
-              <button type="button" data-mode="document" class="active">📄 From a document</button>
-              <button type="button" data-mode="chat">💬 Describe an idea</button>
-            </div>
 
-            <!-- Mode A: document -->
-            <div id="linear-mode-document">
-              <form id="linear-generate-form">
-                <div class="field-grid">
-                  <div class="field field-wide">
-                    <label for="linear-file-input">Requirements document</label>
-                    <input type="file" id="linear-file-input" accept=".md,.pdf,.txt" required>
-                    <span class="field-note">Markdown (.md), PDF or plain text.</span>
-                  </div>
-                  <div class="field">
-                    <label for="linear-project-start">Project start date</label>
-                    <input type="date" id="linear-project-start">
-                    <span class="field-note">Optional.</span>
-                  </div>
-                  <div class="field">
-                    <label for="linear-project-end">Project deadline</label>
-                    <input type="date" id="linear-project-end">
-                    <span class="field-note">Optional — deadlines are fitted inside this window.</span>
-                  </div>
-                </div>
-                <div class="btn-row">
-                  <button type="submit" class="btn-primary">Generate issues</button>
-                </div>
-              </form>
-            </div>
-
-            <!-- Mode B: chat -->
-            <div id="linear-mode-chat" hidden>
+                        <div id="linear-mode-chat">
               <div class="chat-log" id="linear-chat-log" role="log" aria-live="polite" aria-label="Conversation"></div>
 
               <div class="chat-suggestions" id="linear-chat-suggestions"></div>
 
               <form id="linear-chat-form" class="chat-compose">
                 <label class="field-label" for="linear-chat-input">Describe what you need</label>
+                <div id="linear-chat-attachment" class="chat-attachment" hidden>
+                  <span class="chat-attachment-name"></span>
+                  <button type="button" id="linear-chat-attach-clear" class="chat-attachment-clear"
+                          aria-label="Remove attachment" title="Remove">&times;</button>
+                </div>
                 <div class="chat-composer">
-                  <textarea id="linear-chat-input" rows="1" placeholder="e.g. necesito una pantalla para exportar candidatos a Excel, con filtros por estado"></textarea>
+                  <input type="file" id="linear-chat-file" accept=".md,.pdf,.txt" hidden>
+                  <button type="button" id="linear-chat-attach" class="chat-icon-btn chat-icon-attach"
+                          aria-label="Attach a requirements document" title="Attach a document">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 6.5v8a4.5 4.5 0 0 1-9 0V5.5a3 3 0 0 1 6 0v8a1.5 1.5 0 0 1-3 0V6.5H9v7a3 3 0 0 0 6 0v-8a4.5 4.5 0 0 0-9 0v9a6 6 0 0 0 12 0v-8z"/></svg>
+                  </button>
+                  <textarea id="linear-chat-input" rows="1" placeholder="Describe what you need, or attach a requirements document"></textarea>
                   <button type="button" id="linear-chat-cancel" class="chat-icon-btn chat-icon-cancel" hidden
                           aria-label="Cancel generation" title="Cancel">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
@@ -634,7 +602,7 @@
                 <div class="chat-compose-footer">
                   <span class="field-note">
                     <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line ·
-                    the more concrete you are, the better the issue
+                    attach a .md/.pdf/.txt to generate from a document
                   </span>
                   <button type="button" id="linear-chat-reset" class="chat-reset">Start over</button>
                 </div>
@@ -642,12 +610,22 @@
             </div>
 
             <details class="advanced">
-              <summary>Advanced options — numbering and team assignment</summary>
+              <summary>Advanced options — numbering, sprint dates and team assignment</summary>
               <div class="field-grid">
                 <div class="field">
                   <label for="linear-start-number">Numbering starts at</label>
                   <input type="number" id="linear-start-number" min="1" value="1">
                   <span class="field-note">Tickets are named TAS-01, TAS-02… Set this to continue an existing backlog.</span>
+                </div>
+                <div class="field">
+                  <label for="linear-project-start">Project start date</label>
+                  <input type="date" id="linear-project-start">
+                  <span class="field-note">Optional.</span>
+                </div>
+                <div class="field">
+                  <label for="linear-project-end">Project deadline</label>
+                  <input type="date" id="linear-project-end">
+                  <span class="field-note">Optional — deadlines are fitted inside this window.</span>
                 </div>
                 <div class="field field-wide">
                   <label class="field-label">Detected team members</label>

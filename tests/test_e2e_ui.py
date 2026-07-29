@@ -245,25 +245,32 @@ def test_text_that_matches_no_ticket_leaves_the_action_disabled(browser):
 
 
 # ===========================================================================
-# Module: ticket generation — document vs chat
+# Module: ticket generation — chat is the only entry point
 # ===========================================================================
 
 
-def test_document_mode_is_the_default(browser):
-    assert browser.visible("#clickup-mode-document")
-    assert not browser.visible("#clickup-mode-chat")
+@pytest.mark.parametrize("tracker", TRACKERS)
+def test_the_chat_is_shown_with_no_mode_to_choose_first(browser, tracker):
+    if tracker == "linear":
+        browser.click('.tab-button[data-tab="linear"]')
+
+    assert browser.visible(f"#{tracker}-mode-chat")
+    assert browser.eval(f"document.getElementById('{tracker}-mode-document') === null")
+    assert browser.eval(f"document.getElementById('{tracker}-mode-switch') === null")
 
 
-def test_switching_to_chat_swaps_the_panels(browser):
-    browser.click('#clickup-mode-switch button[data-mode="chat"]')
-
-    assert browser.visible("#clickup-mode-chat")
-    assert not browser.visible("#clickup-mode-document")
+def test_the_composer_attach_control_accepts_only_supported_documents(browser):
+    accept = browser.eval("document.getElementById('clickup-chat-file').accept")
+    assert ".md" in accept and ".pdf" in accept and ".txt" in accept
 
 
-def test_the_document_form_accepts_only_supported_files(browser):
-    accept = browser.eval("document.getElementById('clickup-file-input').accept")
-    assert ".md" in accept and ".pdf" in accept
+def test_the_attach_control_is_a_labelled_icon_button(browser):
+    assert browser.eval("document.getElementById('clickup-chat-attach').getAttribute('aria-label')")
+    assert browser.visible("#clickup-chat-attach svg")
+
+
+def test_no_attachment_chip_is_shown_before_a_document_is_picked(browser):
+    assert not browser.visible("#clickup-chat-attachment")
 
 
 # ===========================================================================
@@ -272,9 +279,9 @@ def test_the_document_form_accepts_only_supported_files(browser):
 
 
 def _open_chat(browser, tracker="clickup"):
+    # The chat is the generation surface now; there is no mode to switch to.
     if tracker == "linear":
         browser.click('.tab-button[data-tab="linear"]')
-    browser.click(f'#{tracker}-mode-switch button[data-mode="chat"]')
 
 
 @pytest.mark.parametrize("tracker", TRACKERS)
@@ -357,6 +364,85 @@ def test_a_failed_generation_reports_inline_with_a_retry(browser):
     )
 
     assert browser.visible("#clickup-chat-log .chat-retry"), "an error must offer a way to recover"
+
+
+def _attach_document(browser, tracker="clickup", filename="requisitos.md"):
+    browser.attach_file(f"#{tracker}-chat-file", filename)
+
+
+def test_attaching_a_document_names_it_and_enables_send_without_typing(browser):
+    # A document alone is a complete request; requiring a message too would
+    # be a made-up rule the user has to discover by being blocked.
+    _open_chat(browser)
+    _attach_document(browser, "clickup", "requisitos.md")
+
+    assert browser.visible("#clickup-chat-attachment")
+    assert "requisitos.md" in browser.eval(
+        "document.querySelector('#clickup-chat-attachment .chat-attachment-name').textContent"
+    )
+    assert not browser.eval("document.getElementById('clickup-chat-send').disabled")
+
+
+def test_removing_the_attachment_disables_send_again(browser):
+    _open_chat(browser)
+    _attach_document(browser, "clickup", "requisitos.md")
+    browser.click("#clickup-chat-attach-clear")
+
+    assert not browser.visible("#clickup-chat-attachment")
+    assert browser.eval("document.getElementById('clickup-chat-send').disabled")
+
+
+def test_a_sent_attachment_is_named_in_the_conversation(browser):
+    _open_chat(browser)
+    _attach_document(browser, "clickup", "requisitos.md")
+    browser.click("#clickup-chat-send")
+    browser.wait_for("document.querySelectorAll('#clickup-chat-log .chat-msg-user').length === 1")
+
+    assert "requisitos.md" in browser.eval(
+        "document.querySelector('#clickup-chat-log .chat-msg-user').textContent"
+    )
+    assert not browser.visible("#clickup-chat-attachment"), "the chip must clear once sent"
+
+    # The chip in the transcript proves the UI believed it sent a file; only
+    # the request body proves the file was actually sent.
+    sent = browser.eval(
+        "return fetch('/__last_post?path=/api/tickets/chat').then(r => r.json()).then(r => r.body);"
+    )
+    assert 'name="file"' in sent, "the attached document must be in the request"
+    assert "requisitos.md" in sent, "the request must carry the real filename"
+
+
+def test_a_large_batch_points_below_instead_of_flooding_the_conversation(browser, tracker="clickup"):
+    _open_chat(browser)
+    browser.type_into("#clickup-chat-input", "FORCE_OVERFLOW")
+    browser.press_enter("#clickup-chat-input")
+    browser.wait_for(
+        "document.querySelectorAll('#clickup-chat-log .chat-msg-overflow').length === 1", timeout_s=20
+    )
+
+    bubble = browser.eval("document.querySelector('#clickup-chat-log .chat-msg-overflow').textContent")
+    assert "moved below in the page" in bubble
+    assert "scroll down" in bubble
+    assert browser.eval("document.querySelectorAll('#clickup-chat-log .chat-msg-ticket').length") == 0, (
+        "an overflowing batch must not also render inside the conversation"
+    )
+
+
+def test_an_overflowing_batch_is_reviewable_below_the_chat(browser):
+    _open_chat(browser)
+    browser.type_into("#clickup-chat-input", "FORCE_OVERFLOW")
+    browser.press_enter("#clickup-chat-input")
+    browser.wait_for("document.querySelectorAll('#clickup-tickets-list .ticket-card').length === 8", timeout_s=20)
+
+    assert browser.visible("#clickup-generate-actions"), "the bulk-add controls must come with the cards"
+
+
+def test_a_small_batch_still_renders_inside_the_conversation(browser):
+    # The negative control for the overflow branch: two tickets stay put.
+    _generate_from_chat(browser)
+
+    assert browser.eval("document.querySelectorAll('#clickup-chat-log .chat-msg-overflow').length") == 0
+    assert browser.eval("document.querySelectorAll('#clickup-tickets-list .ticket-card').length") == 0
 
 
 # ===========================================================================
