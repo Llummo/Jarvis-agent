@@ -425,6 +425,35 @@ class Browser:
             "return true;"
         )
 
+    def paste(self, selector: str, *, image_b64: str = "", mime: str = "image/png", text: str = "") -> bool:
+        """Fire a real paste event carrying an image and/or text.
+
+        The bytes are rebuilt into a genuine File inside the page, and handed
+        over on a DataTransfer, so the handler under test sees exactly the
+        shape Chrome gives it for a Ctrl+V — not a hand-rolled stand-in.
+
+        Returns whether the app claimed the event (called preventDefault)."""
+        return self.eval(
+            f"const el = document.querySelector({json.dumps(selector)});"
+            "const dt = new DataTransfer();"
+            f"const b64 = {json.dumps(image_b64)};"
+            "if (b64) {"
+            "  const raw = atob(b64);"
+            "  const bytes = new Uint8Array(raw.length);"
+            "  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);"
+            f"  dt.items.add(new File([bytes], 'pasted.png', {{type: {json.dumps(mime)}}}));"
+            "}"
+            f"const text = {json.dumps(text)};"
+            "if (text) dt.setData('text/plain', text);"
+            "el.focus();"
+            "const event = new ClipboardEvent('paste', "
+            "  {clipboardData: dt, bubbles: true, cancelable: true});"
+            "el.dispatchEvent(event);"
+            # Whether the app claimed the paste. A text paste it does not
+            # claim is left for the browser to insert as usual.
+            "return event.defaultPrevented;"
+        )
+
     def press_enter(self, selector: str, *, shift: bool = False) -> None:
         self.eval(
             f"const el = document.querySelector({json.dumps(selector)});"

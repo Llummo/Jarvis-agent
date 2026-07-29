@@ -11,11 +11,17 @@ import json
 
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
+from meta_harness.image_input import (
+    ImageDescriptionError,
+    ImageInputError,
+    describe_images,
+    staged_images,
+)
 from meta_harness.linear_bridge import LinearIssueError, LinearReadError, list_linear_members
 from meta_harness.module_relevance import ClaudeNotFoundError as ModuleClaudeNotFoundError
 from meta_harness.module_relevance import (
@@ -230,6 +236,23 @@ def post_generate_from_idea(body: GenerateFromIdeaIn) -> GenerateTicketsOut:
     return GenerateTicketsOut(tickets=tickets, warnings=warnings)
 
 
+def _describe_pasted_images(
+    pasted: list[tuple[str, bytes]], *, on_step=None
+) -> str:
+    """Pasted images, rendered as text the generator can read.
+
+    Returns "" when nothing was pasted, so callers can splice it in
+    unconditionally."""
+    if not pasted:
+        return ""
+    if on_step:
+        count = len(pasted)
+        on_step(f"Reading {count} pasted image{'s' if count != 1 else ''}…")
+    with staged_images(pasted) as paths:
+        description = describe_images(paths)
+    return f"Referencias visuales adjuntas (descripción de las imágenes pegadas):\n{description}"
+
+
 @router.post("/chat", response_model=ChatGenerateOut)
 def post_chat_generate(
     idea: str = Form(""),
@@ -241,14 +264,18 @@ def post_chat_generate(
     project_end: Optional[str] = Form(None),
     progress_token: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
+    images: List[UploadFile] = File(default=[]),
 ) -> ChatGenerateOut:
     """The chat's single generation entry point: a typed idea, an attached
-    document, or both.
+    document, pasted images, or any combination.
 
-    Multipart rather than JSON because a document can come with the message.
-    A document is analyzed through the same chunked, size-budgeted generator
-    as before — which is what makes attaching one from the chat fast enough
-    to wait for.
+    Multipart rather than JSON because a document and screenshots can come
+    with the message. A document is analyzed through the same chunked,
+    size-budgeted generator as before — which is what makes attaching one
+    from the chat fast enough to wait for.
+
+    Images are turned into a text description first (see image_input), so
+    generation itself stays the same tool-free call it has always been.
     """
     parsed_start, parsed_end = _parse_project_window(project_start, project_end)
     on_step = None
@@ -261,8 +288,20 @@ def post_chat_generate(
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid conversation history: {exc}") from exc
 
-    if not idea.strip() and file is None:
-        raise HTTPException(status_code=400, detail="Send a message or attach a document.")
+    pasted = [(image.filename or "imagen", image.file.read()) for image in images if image is not None]
+    pasted = [(name, content) for name, content in pasted if content]
+
+    if not idea.strip() and file is None and not pasted:
+        raise HTTPException(
+            status_code=400, detail="Send a message, attach a document, or paste an image."
+        )
+
+    try:
+        visual_context = _describe_pasted_images(pasted, on_step=on_step)
+    except ImageInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ImageDescriptionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     try:
         if file is not None:
@@ -271,13 +310,23 @@ def post_chat_generate(
             # A message sent alongside a document steers the analysis.
             if idea.strip():
                 document = f"{document}\n\n---\nInstrucción adicional del usuario: {idea.strip()}"
+            if visual_context:
+                document = f"{document}\n\n---\n{visual_context}"
             tickets, warnings = generate_tickets_from_text(
                 document, on_step=on_step, project_start=parsed_start, project_end=parsed_end
             )
             source = file.filename or "document"
         else:
+            # Images with no words are a complete request on their own: the
+            # screenshots are the requirement.
+            prompt = idea.strip() or (
+                "Genera los tickets necesarios para construir lo que muestran "
+                "las imágenes adjuntas."
+            )
+            if visual_context:
+                prompt = f"{prompt}\n\n{visual_context}"
             tickets, warnings = generate_tickets_from_idea(
-                idea, history=[turn.model_dump() for turn in turns], on_step=on_step
+                prompt, history=[turn.model_dump() for turn in turns], on_step=on_step
             )
             source = None
     except TicketExtractionError as exc:

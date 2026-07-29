@@ -298,8 +298,27 @@ Opens a browser dashboard on `http://127.0.0.1:8877` (FastAPI + a static,
 vanilla-JS frontend — no build step). The "ClickUp" tab shows the QA
 findings dashboard (filter/report/close, same data as the CLI) alongside a
 live ClickUp ticket browser (teams → spaces → lists, hitting your real
-ClickUp account). A "Linear" tab is present but disabled — coming once
-Linear access is available.
+ClickUp account). The "Linear" tab offers the same workflows against a
+Linear workspace.
+
+### Generating tickets
+
+Ticket generation happens entirely in the chat. One message can carry any
+combination of:
+
+- **Text** — describe the feature in your own words.
+- **A document** — attach a `.md`, `.pdf` or `.txt` with the requirements.
+- **Images** — paste screenshots or mockups straight into the composer with
+  <kbd>Ctrl</kbd>+<kbd>V</kbd> (up to 6 per message).
+
+Pasted images are described in words by a separate, narrowly-scoped model
+call before generation runs, so ticket drafting itself keeps its no-tool
+access boundary (see `meta_harness/image_input.py`). That extra step costs
+roughly 40–60s on top of a normal generation, so a message with a mockup
+takes noticeably longer than one without.
+
+Drafts are always reviewed before anything is created. A batch too large to
+read inside the conversation is rendered as cards below the chat instead.
 
 ## MCP Server
 

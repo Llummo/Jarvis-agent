@@ -412,6 +412,98 @@ def test_a_sent_attachment_is_named_in_the_conversation(browser):
     assert "requisitos.md" in sent, "the request must carry the real filename"
 
 
+PNG_B64 = (
+    # A real 4x4 PNG, so the browser builds a genuine image File rather than
+    # a blob that merely claims to be one.
+    "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAB7RxjAAAAFElEQVR4nGP8//8/AzZgYsAJ"
+    "hqUkAAmpAglBpPO3AAAAAElFTkSuQmCC"
+)
+
+
+def _paste_image(browser, tracker="clickup"):
+    browser.paste(f"#{tracker}-chat-input", image_b64=PNG_B64)
+
+
+@pytest.mark.parametrize("tracker", TRACKERS)
+def test_pasting_an_image_shows_it_in_the_composer(browser, tracker):
+    _open_chat(browser, tracker)
+    _paste_image(browser, tracker)
+
+    assert browser.visible(f"#{tracker}-chat-images")
+    assert browser.eval(f"document.querySelectorAll('#{tracker}-chat-images .chat-image img').length") == 1
+
+
+def test_a_pasted_image_alone_is_enough_to_send(browser):
+    # A mockup with no words is a complete request; demanding a sentence too
+    # would be a rule the user only discovers by being blocked.
+    _open_chat(browser)
+    assert browser.eval("document.getElementById('clickup-chat-send').disabled")
+
+    _paste_image(browser)
+
+    assert not browser.eval("document.getElementById('clickup-chat-send').disabled")
+
+
+def test_pasting_several_images_keeps_all_of_them(browser):
+    _open_chat(browser)
+    _paste_image(browser)
+    _paste_image(browser)
+
+    assert browser.eval("document.querySelectorAll('#clickup-chat-images .chat-image').length") == 2
+
+
+def test_a_pasted_image_can_be_removed_again(browser):
+    _open_chat(browser)
+    _paste_image(browser)
+    browser.click("#clickup-chat-images .chat-image-remove")
+
+    assert not browser.visible("#clickup-chat-images")
+    assert browser.eval("document.getElementById('clickup-chat-send').disabled")
+
+
+def test_pasting_plain_text_is_left_to_the_browser(browser):
+    # The negative control: claiming every paste would break ordinary typing,
+    # so a text paste must come back uncancelled.
+    _open_chat(browser)
+    claimed = browser.paste("#clickup-chat-input", text="necesito exportar candidatos")
+
+    assert claimed is False, "a text paste must not be swallowed"
+    assert browser.eval("document.querySelectorAll('#clickup-chat-images .chat-image').length") == 0
+    assert not browser.visible("#clickup-chat-images")
+
+
+def test_pasting_an_image_is_claimed_by_the_app(browser):
+    _open_chat(browser)
+
+    assert browser.paste("#clickup-chat-input", image_b64=PNG_B64) is True
+
+
+def test_pasting_more_images_than_allowed_is_refused_with_a_reason(browser):
+    _open_chat(browser)
+    for _ in range(7):
+        _paste_image(browser)
+
+    assert browser.eval("document.querySelectorAll('#clickup-chat-images .chat-image').length") == 6
+    assert browser.visible("#clickup-generate-error"), "hitting the cap must say so"
+
+
+def test_a_pasted_image_reaches_the_server_and_shows_in_the_transcript(browser):
+    _open_chat(browser)
+    _paste_image(browser)
+    browser.click("#clickup-chat-send")
+    browser.wait_for("document.querySelectorAll('#clickup-chat-log .chat-msg-user').length === 1")
+
+    assert browser.eval(
+        "document.querySelectorAll('#clickup-chat-log .chat-msg-images img').length"
+    ) == 1, "the sent screenshot must stay visible in the conversation"
+    assert not browser.visible("#clickup-chat-images"), "the pending row must clear once sent"
+
+    sent = browser.eval(
+        "return fetch('/__last_post?path=/api/tickets/chat').then(r => r.json()).then(r => r.body);"
+    )
+    assert 'name="images"' in sent, "the pasted image must actually be uploaded"
+
+
 def test_a_large_batch_points_below_instead_of_flooding_the_conversation(browser, tracker="clickup"):
     _open_chat(browser)
     browser.type_into("#clickup-chat-input", "FORCE_OVERFLOW")
