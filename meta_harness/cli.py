@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Iterable, Optional
@@ -14,11 +15,39 @@ from meta_harness.archive_reader import load_run_summary
 from meta_harness.baseline import resolve_baseline_selection
 from meta_harness.benchmark_runner import BenchmarkRunResult, run_benchmark
 from meta_harness.candidate_registry import list_builtin_candidates
-from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, create_clickup_ticket
+from meta_harness.clickup_bridge import (
+    CLICKUP_PRIORITY_WORDS,
+    ClickUpReadError,
+    ClickUpTicketError,
+    create_clickup_ticket,
+    get_clickup_task,
+    list_clickup_folders,
+    list_clickup_lists,
+    list_clickup_spaces,
+    list_clickup_tasks,
+    list_clickup_teams,
+    update_clickup_task,
+    update_clickup_task_status,
+)
 from meta_harness.comparison import build_comparison_report
 from meta_harness.config import MetaHarnessConfig, parse_command_prefix
 from meta_harness.frontier import FrontierStore
 from meta_harness.hermes_compat import inspect_hermes_compatibility
+from meta_harness.linear_bridge import (
+    LINEAR_PRIORITY_WORDS,
+    LinearIssueError,
+    LinearReadError,
+    create_linear_issue,
+    get_linear_issue,
+    get_linear_viewer,
+    list_linear_issues,
+    list_linear_members,
+    list_linear_projects,
+    list_linear_states,
+    list_linear_teams,
+    update_linear_issue,
+    update_linear_issue_state,
+)
 from meta_harness.models import BenchmarkRunSpec
 from meta_harness.mutation import builtin_mutations, safe_slug
 from meta_harness.playbook import (
@@ -53,6 +82,7 @@ from meta_harness.ticket_generator import (
     apply_ticket_numbering,
     generate_tickets_from_file,
 )
+from meta_harness.trackers.config import ClickUpConfig
 
 console = Console()
 
@@ -1078,3 +1108,266 @@ def tickets_create_all_cmd(from_json_path: str, list_id: Optional[str]) -> None:
             ok_count += 1
     console.print(table)
     console.print(f"\n[bold]{ok_count}/{len(raw)} tickets created.[/bold]")
+
+
+@main.group("clickup")
+def clickup_group() -> None:
+    """Read and write ClickUp teams, lists and tasks directly."""
+
+
+def _echo_json(payload) -> None:
+    click.echo(json.dumps(payload, indent=2))
+
+
+def _tracker_command(func):
+    """Report tracker failures as a one-line CLI error, not a traceback.
+
+    A missing token or a rejected request is an expected outcome here, so it
+    reads like `meta-harness: <what went wrong>` the way the rest of the CLI
+    reports RuntimeErrors.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except (
+            ClickUpReadError,
+            ClickUpTicketError,
+            LinearIssueError,
+            LinearReadError,
+            ValueError,
+        ) as exc:
+            raise _clickify_runtime_error(exc) from exc
+
+    return wrapper
+
+
+@clickup_group.command("teams")
+@_tracker_command
+def clickup_teams_cmd() -> None:
+    """List every ClickUp team the token can see."""
+    _echo_json(list_clickup_teams())
+
+
+@clickup_group.command("spaces")
+@click.option("--team-id", default=None, help="Defaults to CLICKUP_TEAM_ID from .env.")
+@_tracker_command
+def clickup_spaces_cmd(team_id: Optional[str]) -> None:
+    """List the spaces in a team."""
+    team_id = team_id or ClickUpConfig.from_env().clickup_team_id
+    if not team_id:
+        raise click.UsageError("Provide --team-id or set CLICKUP_TEAM_ID in .env.")
+    _echo_json(list_clickup_spaces(team_id))
+
+
+@clickup_group.command("folders")
+@click.option("--space-id", required=True)
+@_tracker_command
+def clickup_folders_cmd(space_id: str) -> None:
+    """List the folders in a space."""
+    _echo_json(list_clickup_folders(space_id))
+
+
+@clickup_group.command("lists")
+@click.option("--space-id", default=None)
+@click.option("--folder-id", default=None)
+@_tracker_command
+def clickup_lists_cmd(space_id: Optional[str], folder_id: Optional[str]) -> None:
+    """List the lists in a space (folderless) or a folder."""
+    _echo_json(list_clickup_lists(space_id, folder_id=folder_id))
+
+
+@clickup_group.command("get-task")
+@click.option("--task-id", required=True)
+@_tracker_command
+def clickup_get_task_cmd(task_id: str) -> None:
+    """Fetch a single task by id."""
+    _echo_json(get_clickup_task(task_id))
+
+
+@clickup_group.command("tasks")
+@click.option("--list-id", required=True)
+@_tracker_command
+def clickup_tasks_cmd(list_id: str) -> None:
+    """List every task in a list, subtasks included."""
+    _echo_json(list_clickup_tasks(list_id))
+
+
+@clickup_group.command("create-task")
+@click.option("--list-id", default=None, help="Defaults to CLICKUP_LIST_ID from .env.")
+@click.option("--name", required=True)
+@click.option("--description", default=None)
+@click.option(
+    "--priority",
+    type=click.Choice(list(CLICKUP_PRIORITY_WORDS)),
+    default=None,
+    help="ClickUp priority: urgent, high, normal, or low.",
+)
+@click.option("--assignees", default=None, help="Comma-separated ClickUp user IDs.")
+@click.option("--due-date", default=None, type=int, help="Due date as a Unix timestamp in milliseconds.")
+@click.option("--parent", default=None, help="ClickUp task id to nest this task under as a subtask.")
+def clickup_create_task_cmd(
+    list_id: Optional[str],
+    name: str,
+    description: Optional[str],
+    priority: Optional[str],
+    assignees: Optional[str],
+    due_date: Optional[int],
+    parent: Optional[str],
+) -> None:
+    """Create a task."""
+    task_id = create_clickup_ticket(
+        name,
+        description or "",
+        list_id=list_id,
+        priority=priority,
+        assignees=[int(a) for a in assignees.split(",") if a.strip()] if assignees else None,
+        due_date_ms=due_date,
+        parent=parent,
+    )
+    _echo_json({"id": task_id})
+
+
+@clickup_group.command("set-status")
+@click.option("--task-id", required=True)
+@click.option("--status", required=True, help='A status name valid for the task\'s list, e.g. "done".')
+@_tracker_command
+def clickup_set_status_cmd(task_id: str, status: str) -> None:
+    """Move a task to a different status."""
+    _echo_json(update_clickup_task_status(task_id, status))
+
+
+@clickup_group.command("update-task")
+@click.option("--task-id", required=True)
+@click.option("--name", default=None, help="New task name. Left unchanged when omitted.")
+@click.option("--description", default=None, help="New task description. Left unchanged when omitted.")
+@_tracker_command
+def clickup_update_task_cmd(task_id: str, name: Optional[str], description: Optional[str]) -> None:
+    """Edit a task's name and/or description."""
+    if name is None and description is None:
+        raise click.UsageError("Provide --name and/or --description.")
+    _echo_json(update_clickup_task(task_id, name=name, description=description))
+
+
+@main.group("linear")
+def linear_group() -> None:
+    """Read and write Linear teams, issues and workflow states directly."""
+
+
+@linear_group.command("viewer")
+@_tracker_command
+def linear_viewer_cmd() -> None:
+    """Show the authenticated user and organization."""
+    _echo_json(get_linear_viewer())
+
+
+@linear_group.command("teams")
+@_tracker_command
+def linear_teams_cmd() -> None:
+    """List every Linear team."""
+    _echo_json(list_linear_teams())
+
+
+@linear_group.command("states")
+@click.option("--team-id", required=True)
+@_tracker_command
+def linear_states_cmd(team_id: str) -> None:
+    """List a team's workflow states."""
+    _echo_json(list_linear_states(team_id))
+
+
+@linear_group.command("members")
+@click.option("--team-id", required=True)
+@_tracker_command
+def linear_members_cmd(team_id: str) -> None:
+    """List a team's members."""
+    _echo_json(list_linear_members(team_id))
+
+
+@linear_group.command("projects")
+@click.option("--team-id", required=True)
+@_tracker_command
+def linear_projects_cmd(team_id: str) -> None:
+    """List a team's projects."""
+    _echo_json(list_linear_projects(team_id))
+
+
+@linear_group.command("issues")
+@click.option("--team-id", required=True)
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    help="Maximum issues to return. Omit to fetch every issue on the team.",
+)
+def linear_issues_cmd(team_id: str, limit: Optional[int]) -> None:
+    """List a team's issues."""
+    _echo_json(list_linear_issues(team_id, limit=limit))
+
+
+@linear_group.command("get-issue")
+@click.option("--issue-id", required=True)
+@_tracker_command
+def linear_get_issue_cmd(issue_id: str) -> None:
+    """Fetch a single issue by id."""
+    _echo_json(get_linear_issue(issue_id))
+
+
+@linear_group.command("create-issue")
+@click.option("--team-id", required=True)
+@click.option("--title", required=True)
+@click.option("--description", default=None)
+@click.option(
+    "--priority",
+    type=click.Choice(list(LINEAR_PRIORITY_WORDS)),
+    default=None,
+    help="Linear priority: urgent, high, normal, or low.",
+)
+@click.option("--assignee-id", default=None, help="Linear user id to assign the issue to.")
+@click.option("--due-date", default=None, help="Due date as an ISO date, e.g. 2026-08-24.")
+@click.option("--project-id", default=None)
+@click.option("--parent-id", default=None, help="Linear issue id to nest this issue under as a sub-issue.")
+def linear_create_issue_cmd(
+    team_id: str,
+    title: str,
+    description: Optional[str],
+    priority: Optional[str],
+    assignee_id: Optional[str],
+    due_date: Optional[str],
+    project_id: Optional[str],
+    parent_id: Optional[str],
+) -> None:
+    """Create an issue."""
+    issue_id = create_linear_issue(
+        team_id,
+        title,
+        description or "",
+        priority=priority,
+        assignee_id=assignee_id,
+        due_date=due_date,
+        project_id=project_id,
+        parent_id=parent_id,
+    )
+    _echo_json({"id": issue_id})
+
+
+@linear_group.command("set-state")
+@click.option("--issue-id", required=True)
+@click.option("--state-id", required=True, help="A workflow state id valid for the issue's team.")
+@_tracker_command
+def linear_set_state_cmd(issue_id: str, state_id: str) -> None:
+    """Move an issue to a different workflow state."""
+    _echo_json(update_linear_issue_state(issue_id, state_id))
+
+
+@linear_group.command("update-issue")
+@click.option("--issue-id", required=True)
+@click.option("--title", default=None, help="New issue title. Left unchanged when omitted.")
+@click.option("--description", default=None, help="New issue description. Left unchanged when omitted.")
+@_tracker_command
+def linear_update_issue_cmd(issue_id: str, title: Optional[str], description: Optional[str]) -> None:
+    """Edit an issue's title and/or description."""
+    if title is None and description is None:
+        raise click.UsageError("Provide --title and/or --description.")
+    _echo_json(update_linear_issue(issue_id, title=title, description=description))

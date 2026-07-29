@@ -10,7 +10,6 @@ from __future__ import annotations
 import random
 import re
 from dataclasses import replace
-from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from meta_harness.clickup_bridge import list_clickup_teams
@@ -35,10 +34,10 @@ def parse_emails(text: str) -> List[str]:
     return emails
 
 
-def list_team_members(*, project_path: Optional[Path] = None) -> List[dict]:
+def list_team_members() -> List[dict]:
     """Every real member across every ClickUp team the harness can see,
     deduplicated by user id. Each entry: {clickup_id, email, username}."""
-    teams = list_clickup_teams(project_path=project_path)
+    teams = list_clickup_teams()
     by_id: dict = {}
     for team in teams:
         for member in team.get("members", []):
@@ -56,7 +55,7 @@ def list_team_members(*, project_path: Optional[Path] = None) -> List[dict]:
 
 
 def verify_team_emails(
-    emails: Sequence[str], *, project_path: Optional[Path] = None, members: Optional[Sequence[dict]] = None
+    emails: Sequence[str], *, members: Optional[Sequence[dict]] = None
 ) -> Tuple[List[dict], List[str]]:
     """Cross-reference pasted emails against a member roster — the real
     ClickUp workspace roster by default, or an already-fetched `members`
@@ -64,7 +63,7 @@ def verify_team_emails(
     members, emails with no matching member), both in the same order as
     `emails`."""
     if members is None:
-        members = list_team_members(project_path=project_path)
+        members = list_team_members()
     members_by_email = {m["email"]: m for m in members}
     verified: List[dict] = []
     not_found: List[str] = []

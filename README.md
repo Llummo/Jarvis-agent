@@ -71,6 +71,27 @@ cd hermes-agent-metaharness
 pip install -e ".[dev]"
 ```
 
+### Tracker credentials
+
+The ClickUp and Linear features (web UI, QA flow, ticket generation, and the
+`clickup`/`linear` CLI groups) read their credentials from a `.env` in the
+repo root — gitignored, so tokens never land in a commit:
+
+```bash
+cp .env.example .env   # then fill in the tokens
+```
+
+| Variable | Needed for | Notes |
+|---|---|---|
+| `CLICKUP_API_TOKEN` | every ClickUp operation | personal token from ClickUp Settings -> Apps |
+| `CLICKUP_TEAM_ID` | optional | default for `--team-id` |
+| `CLICKUP_LIST_ID` | optional | default for `--list-id` |
+| `LINEAR_API_KEY` | every Linear operation | personal key from Linear Settings -> Security & access |
+
+Real environment variables take precedence over the file. The two trackers
+are configured independently: a missing Linear key never blocks the ClickUp
+commands, or vice versa. Hermes benchmark evaluation needs none of them.
+
 Point it at Hermes with either:
 
 - `HERMES_AGENT_REPO=/path/to/hermes-agent`
@@ -195,7 +216,7 @@ meta_harness/
 ├── benchmark_runner.py
 ├── candidate_registry.py
 ├── cli.py
-├── clickup_bridge.py
+├── clickup_bridge.py     # ClickUp operations for the QA/ticket/webapp layers
 ├── comparison.py
 ├── config.py
 ├── frontier.py
@@ -208,6 +229,7 @@ meta_harness/
 ├── run_archive.py
 ├── search.py
 ├── ticket_generator.py
+├── trackers/             # ClickUp + Linear API clients and their credentials
 ├── webapp/               # localhost UI: FastAPI + static vanilla-JS frontend
 └── __main__.py
 ```
@@ -227,15 +249,17 @@ end-to-end flow:
 
 ```bash
 meta-harness playbook list
-meta-harness playbook init clickup                      # setup only
-meta-harness playbook run clickup --subject <ticket-id>  # setup, then the complete flow
-meta-harness playbook runs clickup                       # list recorded runs
-meta-harness playbook replay clickup <run-id>             # repeat a recorded run
+meta-harness playbook init <agent>                      # setup only
+meta-harness playbook run <agent> --subject <item-id>    # setup, then the complete flow
+meta-harness playbook runs <agent>                       # list recorded runs
+meta-harness playbook replay <agent> <run-id>            # repeat a recorded run
 ```
 
 Every `run` against a subject (e.g. a ticket) is archived and replayable
 (see the next section for the actual QA flow built on this mechanism).
 
+No playbooks ship with the repo — ClickUp and Linear used to need one each
+to reach a sibling checkout that owned the API clients, and no longer do.
 See [`agents/README.md`](agents/README.md) for the config format.
 
 ## QA Findings
@@ -243,9 +267,8 @@ See [`agents/README.md`](agents/README.md) for the config format.
 A SQLite-backed QA Review layer for tracking findings (project, route,
 observation, severity, status, correction note) — the persistence/triage
 half of a deprecated internal tool ("Seyren"), reproduced here. Critical
-findings auto-escalate into a linked ClickUp correction ticket via the
-existing `clickup` playbook; a failed ClickUp call never blocks a finding
-from being saved.
+findings auto-escalate into a linked ClickUp correction ticket; a failed
+ClickUp call never blocks a finding from being saved.
 
 ```bash
 meta-harness qa report-issue --project sigo-front --route /checkout \
@@ -319,6 +342,28 @@ takes noticeably longer than one without.
 
 Drafts are always reviewed before anything is created. A batch too large to
 read inside the conversation is rendered as cards below the chat instead.
+
+## Tracker CLI
+
+ClickUp and Linear are also driven directly from the CLI — the same
+in-process clients the web UI uses, emitting JSON on stdout:
+
+```bash
+meta-harness clickup teams
+meta-harness clickup lists --folder-id <id>
+meta-harness clickup tasks --list-id <id>
+meta-harness clickup create-task --name "Fix login" --priority high --list-id <id>
+meta-harness clickup set-status --task-id <id> --status done
+
+meta-harness linear viewer                       # cheap credential check
+meta-harness linear issues --team-id <id>
+meta-harness linear create-issue --team-id <id> --title "Fix login" --priority high
+meta-harness linear set-state --issue-id <id> --state-id <id>
+```
+
+Priority is a word (`urgent`/`high`/`normal`/`low`) in both, mapped to each
+tracker's native integer field. `--parent` (ClickUp) and `--parent-id`
+(Linear) nest a new item under an existing one.
 
 ## MCP Server
 

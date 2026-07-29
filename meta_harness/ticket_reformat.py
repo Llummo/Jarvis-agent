@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Callable, Optional
 
 from meta_harness.clickup_bridge import get_clickup_task, update_clickup_task
@@ -86,11 +85,11 @@ class ReformattedTicket:
     formatted_description: str
 
 
-def _fetch(ticket_id: str, tracker: str, project_path: Optional[Path]) -> tuple:
+def _fetch(ticket_id: str, tracker: str) -> tuple:
     if tracker == "linear":
-        issue = get_linear_issue(ticket_id, project_path=project_path)
+        issue = get_linear_issue(ticket_id)
         return issue.get("title") or ticket_id, issue.get("description") or ""
-    task = get_clickup_task(ticket_id, project_path=project_path)
+    task = get_clickup_task(ticket_id)
     return task.get("name") or ticket_id, task.get("text_content") or task.get("description") or ""
 
 
@@ -103,7 +102,6 @@ def reformat_ticket(
     ticket_id: str,
     *,
     tracker: str = "clickup",
-    project_path: Optional[Path] = None,
     timeout_s: Optional[float] = None,
     max_attempts: int = MAX_ATTEMPTS,
     on_step: OnStep = None,
@@ -118,7 +116,7 @@ def reformat_ticket(
 
     label = "Linear" if tracker == "linear" else "ClickUp"
     _report(on_step, f"Fetching ticket {ticket_id} from {label}…")
-    original_title, original_description = _fetch(ticket_id, tracker, project_path)
+    original_title, original_description = _fetch(ticket_id, tracker)
     _report(on_step, f'Ticket fetched: "{original_title}".')
 
     claude_path = _find_claude()
@@ -178,7 +176,6 @@ def apply_reformatted_ticket(
     tracker: str = "clickup",
     title: Optional[str] = None,
     description: Optional[str] = None,
-    project_path: Optional[Path] = None,
     history: Optional[ReformatHistoryStore] = None,
     on_step: OnStep = None,
 ) -> dict:
@@ -198,7 +195,7 @@ def apply_reformatted_ticket(
     # else's text; the change has to be undoable.
     history = history if history is not None else ReformatHistoryStore()
     try:
-        previous_title, previous_description = _fetch(ticket_id, tracker, project_path)
+        previous_title, previous_description = _fetch(ticket_id, tracker)
         history.remember(
             ticket_id, tracker,
             title=previous_title, description=previous_description, new_title=title or previous_title,
@@ -210,11 +207,11 @@ def apply_reformatted_ticket(
     _report(on_step, f"Updating the {label}…")
     if tracker == "linear":
         updated = update_linear_issue(
-            ticket_id, title=title, description=description, project_path=project_path
+            ticket_id, title=title, description=description
         )
     else:
         updated = update_clickup_task(
-            ticket_id, name=title, description=description, project_path=project_path
+            ticket_id, name=title, description=description
         )
     _report(on_step, f"{label.capitalize()} updated.")
     return updated
@@ -228,7 +225,6 @@ def revert_ticket(
     ticket_id: str,
     *,
     tracker: str = "clickup",
-    project_path: Optional[Path] = None,
     history: Optional[ReformatHistoryStore] = None,
     on_step: OnStep = None,
 ) -> dict:
@@ -252,11 +248,11 @@ def revert_ticket(
     _report(on_step, f"Restoring the {label} to its previous version…")
     if tracker == "linear":
         updated = update_linear_issue(
-            ticket_id, title=previous["title"], description=previous["description"], project_path=project_path
+            ticket_id, title=previous["title"], description=previous["description"]
         )
     else:
         updated = update_clickup_task(
-            ticket_id, name=previous["title"], description=previous["description"], project_path=project_path
+            ticket_id, name=previous["title"], description=previous["description"]
         )
 
     history.forget(ticket_id, tracker)
