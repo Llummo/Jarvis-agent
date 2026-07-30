@@ -68,8 +68,31 @@ The current release provides:
 ```bash
 git clone https://github.com/howdymary/hermes-agent-metaharness.git
 cd hermes-agent-metaharness
-pip install -e ".[dev]"
+./run.sh
 ```
+
+`run.sh` creates the virtualenv, installs everything, runs preflight checks
+and serves the web UI on `http://127.0.0.1:8877`. It is safe to re-run — it
+only does the work still outstanding. `./run.sh --check` runs the checks and
+starts nothing; `meta-harness doctor` reports the same at any time.
+
+For a manual install, `pip install -e ".[dev]"` still works.
+
+### Shipping it to someone else
+
+```bash
+./scripts/build-release.sh          # -> dist/jarvis-agent-<version>.tar.gz
+```
+
+The archive carries the application plus every dependency as a wheel, so the
+recipient extracts it, runs `./run.sh`, and needs no network — and no `sudo`,
+since pip is bootstrapped from the bundle when the host lacks `ensurepip`
+(the default on Debian and Ubuntu without `python3-venv`).
+
+Two things cannot be bundled, and preflight reports both if absent:
+**Python 3.9+**, and the **`claude` CLI**, which installs and authenticates
+separately under your own account. Everything except ticket generation, QA
+review and module checks works without it.
 
 ### Tracker credentials
 
@@ -227,6 +250,7 @@ meta_harness/
 ├── playbook.py
 ├── qa_findings.py
 ├── run_archive.py
+├── embeddings/           # repository indexing + semantic retrieval
 ├── search.py
 ├── ticket_generator.py
 ├── trackers/             # ClickUp + Linear API clients and their credentials
@@ -364,6 +388,84 @@ meta-harness linear set-state --issue-id <id> --state-id <id>
 Priority is a word (`urgent`/`high`/`normal`/`low`) in both, mapped to each
 tracker's native integer field. `--parent` (ClickUp) and `--parent-id`
 (Linear) nest a new item under an existing one.
+
+## Repository Context (embeddings)
+
+The harness can read a codebase instead of being handed one. Point it at a
+repository once and it indexes the source; from then on it retrieves the
+relevant spans on demand.
+
+```bash
+meta-harness index build --repo ../sigo          # incremental after the first run
+meta-harness index status                        # what is indexed
+meta-harness index search "user permissions" --repo sigo
+meta-harness index drop --repo sigo
+```
+
+### Backends
+
+Default is **local**: `voyageai/voyage-4-nano`, Apache 2.0, running on your
+machine. No API key, no per-token cost, and no source code leaving the host —
+which matters when the thing being indexed is a client's codebase. Weights
+(~700 MB) download once on first use; after that indexing is fully offline.
+
+Its runtime is an opt-in extra because it pulls torch (~5 GB installed):
+
+```bash
+./run.sh --with-embeddings          # or: pip install -e ".[local-embeddings]"
+```
+
+The hosted alternative is Gemini (`gemini-embedding-001`), selected with
+`META_HARNESS_EMBEDDING_BACKEND=gemini` and a `GEMINI_API_KEY` in `.env`.
+
+**The two produce different vectors and cannot share an index.** Switching
+backends means rebuilding: `meta-harness index build --repo <path> --rebuild`.
+The store detects the mismatch and says so rather than returning meaningless
+scores.
+
+`meta-harness doctor` reports which backend is active and whether it can run.
+
+### Cost of the first index
+
+Local embedding is CPU-bound. Measured on a 16-core machine with no GPU, at
+**~1.9s per chunk**:
+
+| Repository | Chunks | First index |
+|---|---:|---:|
+| this repo | 257 | ~8 min |
+| a 2,788-file project | 4,875 | ~2.5 h |
+
+That is a one-time cost — re-indexing only touches files whose contents
+changed — but it is worth starting a large repository before you need it. A
+GPU or the Gemini backend both cut it dramatically.
+
+The index is a SQLite file under the gitignored `qa/` directory. It contains
+verbatim source and must never be committed.
+
+**What it changes.** Module relevance no longer requires a human to paste the
+module's documentation into a form field. Supply `repo` instead and the
+context is retrieved from the index, with each span labelled `file:line` so
+the resulting verdict cites evidence you can check:
+
+In the "Module check" tab, the module-context textarea becomes optional: name
+an indexed repository instead and the harness retrieves the context itself.
+The same applies to the API and the bulk sweep:
+
+```python
+analyze_module_relevance(ticket_id, module_name="People", repo="sigo")
+analyze_modules_bulk(ticket_ids, module_name="People", repo="sigo")
+```
+
+Pasted documentation still wins when both are supplied — a human who typed
+something meant it. The bulk sweep retrieves once for the whole run, so every
+ticket in it is judged against the same text.
+
+**How it indexes.** File discovery goes through `git ls-files` (tracked *and*
+uncommitted-but-not-ignored files), so a project's own `.gitignore` does the
+filtering and `node_modules`, build output and images never enter the index.
+Files are split at declaration boundaries rather than fixed windows, so a
+retrieved chunk is a whole function rather than half of two. Re-indexing is
+incremental on a content hash per file.
 
 ## MCP Server
 

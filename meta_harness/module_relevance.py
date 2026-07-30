@@ -3,8 +3,12 @@
 The real question this answers is the one a senior asks in review: "check
 whether this ticket relates to the People module". Answering it well needs
 two things the harness already knows how to get — the ticket's real text
-from the tracker, and the module's official documentation supplied as
-context — plus a judgement call, which is what the Claude CLI is for.
+from the tracker, and a description of the module — plus a judgement call,
+which is what the Claude CLI is for.
+
+The module description can be pasted documentation, or it can be retrieved
+from an embedding index of the actual repository. The second is why this
+module no longer requires a human to paste anything.
 
 Same subprocess boundary and retry-with-repair harness as qa_flow.py.
 """
@@ -21,6 +25,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from meta_harness.clickup_bridge import ClickUpReadError, get_clickup_task
+from meta_harness.embeddings import VectorStore, VectorStoreError, resolve_embedder, search_repository
 from meta_harness.linear_bridge import LinearReadError, get_linear_issue
 
 OnStep = Optional[Callable[[str], None]]
@@ -31,6 +36,10 @@ def _report(on_step: OnStep, message: str) -> None:
         on_step(message)
 
 
+class ModuleContextUnavailableError(RuntimeError):
+    """Raised when a module's context cannot be retrieved from the index."""
+
+
 TRACKERS = ("clickup", "linear")
 VERDICTS = ("related", "partially_related", "unrelated")
 
@@ -39,9 +48,16 @@ CLAUDE_TIMEOUT_ENV_VAR = "META_HARNESS_MODULE_CHECK_TIMEOUT_S"
 DEFAULT_TIMEOUT_S = 180.0
 MAX_ATTEMPTS = 3
 
+# How many retrieved spans describe a module when the context is not pasted.
+# Enough to cover a module's surface; small enough that the judgement stays
+# about the module rather than the whole repository.
+DEFAULT_CONTEXT_CHUNKS = 12
+
 PROMPT_TEMPLATE = (
     "You are reviewing whether a work ticket belongs to a specific product module. "
-    "Below you are given the official documentation describing the module, then the ticket. "
+    "Below you are given a description of the module — either its written documentation "
+    "or source code retrieved from the repository, each span labelled with its file and "
+    "line range — and then the ticket. "
     "Decide, strictly on the evidence given, whether the ticket is work on that module.\n\n"
     "Be conservative: superficially shared vocabulary is not enough. A ticket is only "
     '"related" if the functionality it asks for lives inside the module the documentation '
@@ -171,25 +187,92 @@ def fetch_ticket(ticket_id: str, tracker: str) -> Tuple[str, str]:
     return task.get("name") or ticket_id, task.get("text_content") or task.get("description") or ""
 
 
+def retrieve_module_context(
+    module_name: str,
+    *,
+    repo: str,
+    limit: int = DEFAULT_CONTEXT_CHUNKS,
+    on_step: OnStep = None,
+) -> str:
+    """Assemble a module description by retrieving source from the index.
+
+    Each retrieved span keeps its file path and line range: the judgement that
+    follows is expected to cite evidence, and a citation to `people/service.go:88`
+    is checkable in a way that an unattributed snippet is not.
+    """
+    _report(on_step, f'Retrieving "{module_name}" source from the "{repo}" index…')
+    store = VectorStore()
+    try:
+        hits = search_repository(
+            module_name,
+            repo=repo,
+            embedder=resolve_embedder(),
+            store=store,
+            limit=limit,
+        )
+    except VectorStoreError as exc:
+        # A missing or mis-shaped index is a "no context available" outcome
+        # for this caller, not a storage-layer detail to leak upward.
+        raise ModuleContextUnavailableError(str(exc)) from exc
+    finally:
+        store.close()
+
+    if not hits:
+        raise ModuleContextUnavailableError(
+            f'Nothing in the "{repo}" index matched "{module_name}". '
+            "Check the module name, or rebuild the index."
+        )
+
+    _report(
+        on_step,
+        f"Retrieved {len(hits)} span(s): " + ", ".join(hit.location for hit in hits[:5]),
+    )
+    sections = [
+        f"--- {hit.location} (relevance {hit.score:.2f})\n{hit.text}" for hit in hits
+    ]
+    return (
+        f"Source retrieved from the '{repo}' repository for the "
+        f"'{module_name}' module:\n\n" + "\n\n".join(sections)
+    )
+
+
 def analyze_module_relevance(
     ticket_id: str,
     *,
     tracker: str = "clickup",
     module_name: str,
-    module_context: str,
+    module_context: Optional[str] = None,
+    repo: Optional[str] = None,
+    context_limit: int = DEFAULT_CONTEXT_CHUNKS,
     timeout_s: Optional[float] = None,
     max_attempts: int = MAX_ATTEMPTS,
     on_step: OnStep = None,
 ) -> ModuleRelevance:
-    """Fetch the ticket from its tracker and judge it against the module docs.
+    """Fetch the ticket from its tracker and judge it against the module.
+
+    The module can be described two ways. Pass `module_context` to supply the
+    documentation directly, or pass `repo` to retrieve the relevant source
+    from an embedding index instead — the second is what removes the manual
+    paste that used to be mandatory here. Supplying both prefers the explicit
+    text, on the principle that a human who typed something meant it.
 
     Read-only: this never writes to either tracker, so it's safe to run
     against anything, including work that is already done.
     """
     if not module_name.strip():
         raise ValueError("module_name is required")
-    if not module_context.strip():
-        raise ValueError("module_context is required — paste the module's documentation")
+
+    module_context = (module_context or "").strip()
+    if not module_context:
+        if not repo:
+            raise ValueError(
+                "Describe the module either by passing module_context (its documentation) "
+                "or repo (an indexed repository to retrieve it from). "
+                "Index one with: meta-harness index build --repo <path>"
+            )
+        module_context = retrieve_module_context(
+            module_name, repo=repo, limit=context_limit, on_step=on_step
+        )
 
     _report(on_step, f"Fetching ticket {ticket_id} from {'Linear' if tracker == 'linear' else 'ClickUp'}…")
     ticket_name, ticket_description = fetch_ticket(ticket_id, tracker)
@@ -256,7 +339,9 @@ def analyze_modules_bulk(
     *,
     tracker: str = "clickup",
     module_name: str,
-    module_context: str,
+    module_context: Optional[str] = None,
+    repo: Optional[str] = None,
+    context_limit: int = DEFAULT_CONTEXT_CHUNKS,
     timeout_s: Optional[float] = None,
     on_step: OnStep = None,
 ) -> List[Tuple[str, Optional[ModuleRelevance], Optional[str]]]:
@@ -268,6 +353,16 @@ def analyze_modules_bulk(
     ticket_ids; sorting for presentation is the caller's job.
     """
     results: List[Tuple[str, Optional[ModuleRelevance], Optional[str]]] = []
+    # Resolve the module description once, not once per ticket. Retrieval is
+    # keyed on the module, so doing it inside the loop would issue N identical
+    # queries and — worse — let the description drift between tickets in the
+    # same sweep, making their verdicts incomparable.
+    resolved_context = (module_context or "").strip()
+    if not resolved_context and repo:
+        resolved_context = retrieve_module_context(
+            module_name, repo=repo, limit=context_limit, on_step=on_step
+        )
+
     total = len(ticket_ids)
     for index, ticket_id in enumerate(ticket_ids, start=1):
         _report(on_step, f"Checking {index}/{total} against “{module_name}”…")
@@ -276,7 +371,7 @@ def analyze_modules_bulk(
                 ticket_id,
                 tracker=tracker,
                 module_name=module_name,
-                module_context=module_context,
+                module_context=resolved_context,
                 timeout_s=timeout_s,
             )
             results.append((ticket_id, relevance, None))
