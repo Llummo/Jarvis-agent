@@ -22,7 +22,9 @@ from meta_harness.image_input import (
     staged_images,
 )
 from meta_harness.linear_bridge import LinearIssueError, LinearReadError, list_linear_members
+from meta_harness.embeddings import EmbeddingError, VectorStoreError
 from meta_harness.module_relevance import ClaudeNotFoundError as ModuleClaudeNotFoundError
+from meta_harness.module_relevance import ModuleContextUnavailableError
 from meta_harness.module_relevance import (
     ModuleRelevanceError,
     analyze_module_relevance,
@@ -432,8 +434,10 @@ def post_create_tickets(body: CreateTicketsIn) -> CreateTicketsOut:
 
 @router.post("/module-relevance", response_model=ModuleRelevanceOut)
 def post_module_relevance(body: ModuleRelevanceIn) -> ModuleRelevanceOut:
-    """Judge whether a real ticket belongs to a product module, given that
-    module's official documentation as context. Read-only on both trackers."""
+    """Judge whether a real ticket belongs to a product module.
+
+    The module is described either by pasted documentation or by retrieval
+    from an indexed repository. Read-only on both trackers."""
     on_step = None
     if body.progress_token:
         progress.start(body.progress_token)
@@ -444,12 +448,15 @@ def post_module_relevance(body: ModuleRelevanceIn) -> ModuleRelevanceOut:
             tracker=body.tracker,
             module_name=body.module_name,
             module_context=body.module_context,
+            repo=body.repo,
             on_step=on_step,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ModuleClaudeNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ModuleContextUnavailableError, EmbeddingError, VectorStoreError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except (ClickUpReadError, LinearReadError, ModuleRelevanceError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -468,12 +475,15 @@ def post_module_relevance_bulk(body: ModuleRelevanceBulkIn) -> ModuleRelevanceBu
             tracker=body.tracker,
             module_name=body.module_name,
             module_context=body.module_context,
+            repo=body.repo,
             on_step=on_step,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ModuleClaudeNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ModuleContextUnavailableError, EmbeddingError, VectorStoreError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     ordered = sort_by_relevance(results)
     analyzed = [rel for _tid, rel, err in ordered if rel and not err]

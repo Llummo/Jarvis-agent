@@ -31,6 +31,14 @@ from meta_harness.clickup_bridge import (
 )
 from meta_harness.comparison import build_comparison_report
 from meta_harness.config import MetaHarnessConfig, parse_command_prefix
+from meta_harness.embeddings import (
+    EmbeddingError,
+    GeminiEmbedder,
+    VectorStore,
+    VectorStoreError,
+    index_repository,
+    search_repository,
+)
 from meta_harness.frontier import FrontierStore
 from meta_harness.hermes_compat import inspect_hermes_compatibility
 from meta_harness.linear_bridge import (
@@ -1371,3 +1379,122 @@ def linear_update_issue_cmd(issue_id: str, title: Optional[str], description: Op
     if title is None and description is None:
         raise click.UsageError("Provide --title and/or --description.")
     _echo_json(update_linear_issue(issue_id, title=title, description=description))
+
+
+@main.group("index")
+def index_group() -> None:
+    """Index repositories so the harness can retrieve real context from source."""
+
+
+def _resolve_repo_name(repo: str, name: Optional[str]) -> str:
+    return name or Path(repo).expanduser().resolve().name
+
+
+@index_group.command("build")
+@click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository to index.")
+@click.option("--name", default=None, help="Name to index it under. Defaults to the directory name.")
+@click.option("--rebuild", is_flag=True, help="Discard the existing index for this repo before indexing.")
+@click.option("--db-path", type=click.Path(dir_okay=False), help="Override the index database location.")
+def index_build_cmd(repo: str, name: Optional[str], rebuild: bool, db_path: Optional[str]) -> None:
+    """Embed a repository's source into the index.
+
+    Incremental by default: files whose contents are unchanged since the last
+    run are skipped without being re-embedded.
+    """
+    repo_name = _resolve_repo_name(repo, name)
+    store = VectorStore(Path(db_path) if db_path else None)
+    try:
+        result = index_repository(
+            Path(repo),
+            embedder=GeminiEmbedder(),
+            store=store,
+            repo_name=repo_name,
+            rebuild=rebuild,
+            on_step=lambda message: console.print(f"[dim]{message}[/dim]"),
+        )
+    except (EmbeddingError, VectorStoreError, NotADirectoryError) as exc:
+        raise _clickify_runtime_error(exc) from exc
+    finally:
+        store.close()
+
+    table = Table(title=f"Indexed {result.repo}")
+    table.add_column("Metric", style="bold")
+    table.add_column("Count", justify="right")
+    table.add_row("Files scanned", str(result.files_scanned))
+    table.add_row("Files embedded", str(result.files_embedded))
+    table.add_row("Chunks embedded", str(result.chunks_embedded))
+    table.add_row("Unchanged (skipped)", str(result.files_skipped_unchanged))
+    table.add_row("Removed", str(result.files_removed))
+    console.print(table)
+
+    for message in result.errors:
+        console.print(f"[red]{message}[/red]")
+    if result.errors:
+        raise click.ClickException(f"{len(result.errors)} file(s) failed to index.")
+
+
+@index_group.command("search")
+@click.argument("query")
+@click.option("--repo", required=True, help="Name the repository was indexed under.")
+@click.option("--limit", default=10, show_default=True, type=int, help="Maximum chunks to return.")
+@click.option("--min-score", default=0.0, show_default=True, type=float, help="Drop hits below this cosine score.")
+@click.option("--full", is_flag=True, help="Print each chunk's full text rather than a preview.")
+@click.option("--db-path", type=click.Path(dir_okay=False), help="Override the index database location.")
+def index_search_cmd(
+    query: str, repo: str, limit: int, min_score: float, full: bool, db_path: Optional[str]
+) -> None:
+    """Retrieve the source most relevant to a natural-language query."""
+    store = VectorStore(Path(db_path) if db_path else None)
+    try:
+        hits = search_repository(
+            query, repo=repo, embedder=GeminiEmbedder(), store=store, limit=limit, min_score=min_score
+        )
+    except (EmbeddingError, VectorStoreError, ValueError) as exc:
+        raise _clickify_runtime_error(exc) from exc
+    finally:
+        store.close()
+
+    if not hits:
+        console.print("[yellow]No matches.[/yellow]")
+        return
+
+    for hit in hits:
+        console.print(f"\n[bold]{hit.location}[/bold]  [dim]({hit.language}, score {hit.score:.3f})[/dim]")
+        body = hit.text if full else "\n".join(hit.text.splitlines()[:12])
+        console.print(body)
+
+
+@index_group.command("status")
+@click.option("--db-path", type=click.Path(dir_okay=False), help="Override the index database location.")
+def index_status_cmd(db_path: Optional[str]) -> None:
+    """Show what is currently indexed."""
+    store = VectorStore(Path(db_path) if db_path else None)
+    try:
+        repos = store.repos()
+    finally:
+        store.close()
+
+    if not repos:
+        console.print("[yellow]Nothing indexed yet. Run: meta-harness index build --repo <path>[/yellow]")
+        return
+
+    table = Table(title="Indexed repositories")
+    table.add_column("Repository", style="bold")
+    table.add_column("Files", justify="right")
+    table.add_column("Chunks", justify="right")
+    for repo_name, files, chunks in repos:
+        table.add_row(repo_name, str(files), str(chunks))
+    console.print(table)
+
+
+@index_group.command("drop")
+@click.option("--repo", required=True, help="Name of the indexed repository to remove.")
+@click.option("--db-path", type=click.Path(dir_okay=False), help="Override the index database location.")
+def index_drop_cmd(repo: str, db_path: Optional[str]) -> None:
+    """Remove a repository from the index."""
+    store = VectorStore(Path(db_path) if db_path else None)
+    try:
+        store.clear_repo(repo)
+    finally:
+        store.close()
+    console.print(f"[green]Dropped '{repo}' from the index.[/green]")

@@ -318,7 +318,11 @@ class SetLinearStateIn(BaseModel):
 class ModuleRelevanceIn(BaseModel):
     ticket_id: str
     module_name: str
-    module_context: str
+    # Describe the module either by pasting its documentation here, or by
+    # naming an indexed repository to retrieve it from. At least one is
+    # required; the route rejects a request carrying neither.
+    module_context: str = ""
+    repo: Optional[str] = None
     tracker: str = "clickup"
     progress_token: Optional[str] = None
 
@@ -339,7 +343,8 @@ class ModuleRelevanceOut(BaseModel):
 class ModuleRelevanceBulkIn(BaseModel):
     ticket_ids: list[str]
     module_name: str
-    module_context: str
+    module_context: str = ""
+    repo: Optional[str] = None
     tracker: str = "clickup"
     progress_token: Optional[str] = None
 

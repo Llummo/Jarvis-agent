@@ -227,6 +227,7 @@ meta_harness/
 ├── playbook.py
 ├── qa_findings.py
 ├── run_archive.py
+├── embeddings/           # repository indexing + semantic retrieval (Gemini)
 ├── search.py
 ├── ticket_generator.py
 ├── trackers/             # ClickUp + Linear API clients and their credentials
@@ -364,6 +365,48 @@ meta-harness linear set-state --issue-id <id> --state-id <id>
 Priority is a word (`urgent`/`high`/`normal`/`low`) in both, mapped to each
 tracker's native integer field. `--parent` (ClickUp) and `--parent-id`
 (Linear) nest a new item under an existing one.
+
+## Repository Context (embeddings)
+
+The harness can read a codebase instead of being handed one. Point it at a
+repository once and it indexes the source; from then on it retrieves the
+relevant spans on demand.
+
+```bash
+meta-harness index build --repo ../sigo          # incremental after the first run
+meta-harness index status                        # what is indexed
+meta-harness index search "user permissions" --repo sigo
+meta-harness index drop --repo sigo
+```
+
+Embeddings come from Gemini (`gemini-embedding-001`), so `GEMINI_API_KEY` must
+be set in `.env`. The index is a SQLite file under the gitignored `qa/`
+directory — it contains verbatim source and must never be committed.
+
+**What it changes.** Module relevance no longer requires a human to paste the
+module's documentation into a form field. Supply `repo` instead and the
+context is retrieved from the index, with each span labelled `file:line` so
+the resulting verdict cites evidence you can check:
+
+In the "Module check" tab, the module-context textarea becomes optional: name
+an indexed repository instead and the harness retrieves the context itself.
+The same applies to the API and the bulk sweep:
+
+```python
+analyze_module_relevance(ticket_id, module_name="People", repo="sigo")
+analyze_modules_bulk(ticket_ids, module_name="People", repo="sigo")
+```
+
+Pasted documentation still wins when both are supplied — a human who typed
+something meant it. The bulk sweep retrieves once for the whole run, so every
+ticket in it is judged against the same text.
+
+**How it indexes.** File discovery goes through `git ls-files` (tracked *and*
+uncommitted-but-not-ignored files), so a project's own `.gitignore` does the
+filtering and `node_modules`, build output and images never enter the index.
+Files are split at declaration boundaries rather than fixed windows, so a
+retrieved chunk is a whole function rather than half of two. Re-indexing is
+incremental on a content hash per file.
 
 ## MCP Server
 
