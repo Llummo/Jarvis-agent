@@ -68,8 +68,31 @@ The current release provides:
 ```bash
 git clone https://github.com/howdymary/hermes-agent-metaharness.git
 cd hermes-agent-metaharness
-pip install -e ".[dev]"
+./run.sh
 ```
+
+`run.sh` creates the virtualenv, installs everything, runs preflight checks
+and serves the web UI on `http://127.0.0.1:8877`. It is safe to re-run — it
+only does the work still outstanding. `./run.sh --check` runs the checks and
+starts nothing; `meta-harness doctor` reports the same at any time.
+
+For a manual install, `pip install -e ".[dev]"` still works.
+
+### Shipping it to someone else
+
+```bash
+./scripts/build-release.sh          # -> dist/jarvis-agent-<version>.tar.gz
+```
+
+The archive carries the application plus every dependency as a wheel, so the
+recipient extracts it, runs `./run.sh`, and needs no network — and no `sudo`,
+since pip is bootstrapped from the bundle when the host lacks `ensurepip`
+(the default on Debian and Ubuntu without `python3-venv`).
+
+Two things cannot be bundled, and preflight reports both if absent:
+**Python 3.9+**, and the **`claude` CLI**, which installs and authenticates
+separately under your own account. Everything except ticket generation, QA
+review and module checks works without it.
 
 ### Tracker credentials
 

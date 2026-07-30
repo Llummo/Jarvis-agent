@@ -13,3 +13,5 @@ runs/
 qa/
 .env
 .venv/
+dist/
+vendor/

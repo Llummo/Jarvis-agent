@@ -31,6 +31,7 @@ from meta_harness.clickup_bridge import (
 )
 from meta_harness.comparison import build_comparison_report
 from meta_harness.config import MetaHarnessConfig, parse_command_prefix
+from meta_harness.doctor import run_all
 from meta_harness.embeddings import (
     EmbeddingError,
     GeminiEmbedder,
@@ -1498,3 +1499,35 @@ def index_drop_cmd(repo: str, db_path: Optional[str]) -> None:
     finally:
         store.close()
     console.print(f"[green]Dropped '{repo}' from the index.[/green]")
+
+
+@main.command("doctor")
+@click.option("--strict", is_flag=True, help="Exit non-zero on degraded checks too, not just blocking ones.")
+def doctor_cmd(strict: bool) -> None:
+    """Check that everything this app needs is present and configured."""
+    checks = run_all()
+
+    symbols = {"ok": "[green]OK[/green]", "degraded": "[yellow]WARN[/yellow]", "missing": "[red]FAIL[/red]"}
+    table = Table(title="Preflight")
+    table.add_column("")
+    table.add_column("Check", style="bold")
+    table.add_column("Detail")
+    for check in checks:
+        table.add_row(symbols.get(check.status, check.status), check.name, check.detail)
+    console.print(table)
+
+    needs_action = [check for check in checks if check.status != "ok"]
+    if needs_action:
+        console.print("\n[bold]To fix:[/bold]")
+        for check in needs_action:
+            if check.fix:
+                console.print(f"  [dim]{check.name}:[/dim] {check.fix}")
+
+    blocking = [check for check in checks if check.blocking]
+    if blocking:
+        raise click.ClickException(
+            f"{len(blocking)} blocking problem(s). The app will not start until these are fixed."
+        )
+    if strict and needs_action:
+        raise click.ClickException(f"{len(needs_action)} check(s) degraded (--strict).")
+    console.print("\n[green]Ready.[/green]")
