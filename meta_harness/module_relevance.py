@@ -25,8 +25,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from meta_harness.clickup_bridge import ClickUpReadError, get_clickup_task
-from meta_harness.embeddings import GeminiEmbedder, VectorStore, VectorStoreError, search_repository
-from meta_harness.embeddings.embedder import TASK_CODE_QUERY
+from meta_harness.embeddings import VectorStore, VectorStoreError, resolve_embedder, search_repository
 from meta_harness.linear_bridge import LinearReadError, get_linear_issue
 
 OnStep = Optional[Callable[[str], None]]
@@ -207,7 +206,7 @@ def retrieve_module_context(
         hits = search_repository(
             module_name,
             repo=repo,
-            embedder=GeminiEmbedder(query_task_type=TASK_CODE_QUERY),
+            embedder=resolve_embedder(),
             store=store,
             limit=limit,
         )

@@ -480,7 +480,7 @@ def test_retrieve_module_context_cites_locations(repo, store, monkeypatch):
     embedder = FakeEmbedder()
     index_repository(repo, embedder=embedder, store=store, repo_name="sample")
     monkeypatch.setattr(module_relevance, "VectorStore", lambda *a, **k: store)
-    monkeypatch.setattr(module_relevance, "GeminiEmbedder", lambda **k: embedder)
+    monkeypatch.setattr(module_relevance, "resolve_embedder", lambda **k: embedder)
 
     context = module_relevance.retrieve_module_context("employee payroll", repo="sample", limit=3)
 
@@ -492,7 +492,7 @@ def test_retrieve_module_context_reports_an_empty_index(store, monkeypatch):
     from meta_harness import module_relevance
 
     monkeypatch.setattr(module_relevance, "VectorStore", lambda *a, **k: store)
-    monkeypatch.setattr(module_relevance, "GeminiEmbedder", lambda **k: FakeEmbedder())
+    monkeypatch.setattr(module_relevance, "resolve_embedder", lambda **k: FakeEmbedder())
 
     with pytest.raises(module_relevance.ModuleContextUnavailableError):
         module_relevance.retrieve_module_context("anything", repo="never-indexed")
@@ -506,7 +506,7 @@ def test_bulk_retrieves_module_context_once(repo, store, monkeypatch):
     embedder = FakeEmbedder()
     index_repository(repo, embedder=embedder, store=store, repo_name="sample")
     monkeypatch.setattr(module_relevance, "VectorStore", lambda *a, **k: store)
-    monkeypatch.setattr(module_relevance, "GeminiEmbedder", lambda **k: embedder)
+    monkeypatch.setattr(module_relevance, "resolve_embedder", lambda **k: embedder)
 
     seen_contexts = []
 
@@ -527,3 +527,92 @@ def test_bulk_retrieves_module_context_once(repo, store, monkeypatch):
 
     assert embedder.query_calls == queries_before + 1  # one retrieval, not three
     assert len(set(seen_contexts)) == 1  # every ticket judged against the same text
+
+
+# -- backend selection ------------------------------------------------------
+
+
+def test_default_backend_is_local(monkeypatch):
+    """A fresh checkout must be able to index without anyone obtaining a key."""
+    from meta_harness.embeddings.embedder import BACKEND_ENV_VAR, LocalEmbedder, resolve_embedder
+
+    monkeypatch.delenv(BACKEND_ENV_VAR, raising=False)
+
+    assert isinstance(resolve_embedder(), LocalEmbedder)
+
+
+def test_backend_can_be_switched_to_gemini(monkeypatch):
+    from meta_harness.embeddings.embedder import BACKEND_ENV_VAR, GeminiEmbedder, resolve_embedder
+
+    monkeypatch.setenv(BACKEND_ENV_VAR, "gemini")
+
+    assert isinstance(resolve_embedder(), GeminiEmbedder)
+
+
+def test_unknown_backend_is_rejected(monkeypatch):
+    from meta_harness.embeddings.embedder import BACKEND_ENV_VAR, resolve_embedder
+
+    monkeypatch.setenv(BACKEND_ENV_VAR, "nonsense")
+
+    with pytest.raises(EmbeddingError, match="Unknown embedding backend"):
+        resolve_embedder()
+
+
+def test_local_embedder_explains_a_missing_runtime(monkeypatch):
+    """torch is an opt-in extra, so the error must name the install command
+    rather than surfacing a bare ImportError."""
+    import builtins
+
+    from meta_harness.embeddings.embedder import LocalEmbedder
+
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name.startswith("sentence_transformers"):
+            raise ImportError("no sentence_transformers")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    monkeypatch.setattr("meta_harness.embeddings.embedder._LOCAL_MODELS", {})
+
+    with pytest.raises(EmbeddingError, match="local-embeddings"):
+        LocalEmbedder()._model()
+
+
+def test_local_embedder_truncates_and_renormalizes(monkeypatch):
+    """Matryoshka truncation breaks unit length; leaving it broken would make
+    every score subtly wrong."""
+    from meta_harness.embeddings.embedder import LocalEmbedder
+
+    class StubModel:
+        def encode(self, texts, **kwargs):
+            return [[0.5] * 2048 for _ in texts]
+
+    embedder = LocalEmbedder(output_dimensions=256)
+    monkeypatch.setattr(LocalEmbedder, "_model", lambda self: StubModel())
+
+    vector = embedder.embed_query("anything")
+
+    assert len(vector) == 256
+    assert math.isclose(math.sqrt(sum(v * v for v in vector)), 1.0, rel_tol=1e-6)
+
+
+def test_local_embedder_uses_the_right_prompt_per_side(monkeypatch):
+    """Query and document must be embedded with different prompts — mixing
+    them degrades ranking silently."""
+    from meta_harness.embeddings.embedder import LocalEmbedder
+
+    seen = []
+
+    class StubModel:
+        def encode(self, texts, **kwargs):
+            seen.append(kwargs.get("prompt_name"))
+            return [[1.0] + [0.0] * 2047 for _ in texts]
+
+    embedder = LocalEmbedder()
+    monkeypatch.setattr(LocalEmbedder, "_model", lambda self: StubModel())
+
+    embedder.embed_documents(["a"])
+    embedder.embed_query("b")
+
+    assert seen == ["document", "query"]

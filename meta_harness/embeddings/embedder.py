@@ -1,13 +1,17 @@
 """Text embedding backends.
 
 `Embedder` is the seam the rest of the package depends on, so indexing and
-search can be exercised without a network or an API key. `GeminiEmbedder` is
-the real backend, built on `gemini-embedding-001`.
+search can be exercised without a network or an API key.
+
+Two backends. `LocalEmbedder` runs voyage-4-nano (Apache 2.0) on this machine
+and is the default: nothing to obtain before indexing works, and no source
+code leaves the host. `GeminiEmbedder` calls `gemini-embedding-001` instead,
+for when the hosted model is preferred.
 
 Retrieval quality depends on embedding a query and a document differently —
-the model is told which side of the comparison it is producing, via
-`task_type`. Mixing the two up silently degrades ranking rather than
-erroring, so the two methods are deliberately separate.
+each backend is told which side of the comparison it is producing. Mixing the
+two up silently degrades ranking rather than erroring, so the two methods are
+deliberately separate.
 """
 
 from __future__ import annotations
@@ -52,6 +56,26 @@ TASK_CODE_QUERY = "CODE_RETRIEVAL_QUERY"
 
 MAX_ATTEMPTS = 4
 BACKOFF_BASE_S = 1.5
+
+# --- Local backend ----------------------------------------------------------
+# voyage-4-nano is open-weight (Apache 2.0) and runs on the machine, so
+# indexing works with no API key and no data leaving the host — which matters
+# when the thing being indexed is a client's source code.
+LOCAL_MODEL_NAME = os.getenv("META_HARNESS_LOCAL_EMBED_MODEL", "voyageai/voyage-4-nano")
+
+# The model emits 2048 dimensions and supports Matryoshka truncation down to
+# 256. Storage is not a constraint at repository scale — a few thousand chunks
+# is tens of megabytes — so the default keeps the full width and loses nothing.
+LOCAL_DIMENSIONS = int(os.getenv("META_HARNESS_LOCAL_EMBED_DIMENSIONS", "2048"))
+
+# The model ships named prompts for the two sides of a retrieval pair; using
+# them is what makes query/document asymmetry work.
+LOCAL_PROMPT_DOCUMENT = "document"
+LOCAL_PROMPT_QUERY = "query"
+
+BACKEND_ENV_VAR = "META_HARNESS_EMBEDDING_BACKEND"
+BACKEND_LOCAL = "local"
+BACKEND_GEMINI = "gemini"
 
 
 class EmbeddingError(RuntimeError):
@@ -199,4 +223,96 @@ def _is_retryable(exc: Exception) -> bool:
     return any(
         marker in text
         for marker in ("429", "rate limit", "resource_exhausted", "unavailable", "timeout", "503", "500")
+    )
+
+
+# Loading the model costs ~30s and hundreds of megabytes of RAM, so one
+# process holds one instance. Keyed by name so an override still works.
+_LOCAL_MODELS: dict = {}
+
+
+@dataclass
+class LocalEmbedder:
+    """Embeddings from voyage-4-nano, running on this machine.
+
+    The default backend: no API key, no per-token cost, and no source code
+    leaving the host. Weights are Apache 2.0 and download once (~700 MB) on
+    first use, after which indexing works entirely offline.
+    """
+
+    model_name: str = LOCAL_MODEL_NAME
+    output_dimensions: int = LOCAL_DIMENSIONS
+    batch_size: int = 16
+
+    @property
+    def dimensions(self) -> int:
+        return self.output_dimensions
+
+    def _model(self):
+        cached = _LOCAL_MODELS.get(self.model_name)
+        if cached is not None:
+            return cached
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise EmbeddingError(
+                "Local embeddings need sentence-transformers. Install with:\n"
+                '  pip install -e ".[local-embeddings]"\n'
+                f"Or use the hosted backend instead: {BACKEND_ENV_VAR}=gemini"
+            ) from exc
+        try:
+            # trust_remote_code: the model is a bidirectional Qwen3 variant and
+            # ships its own modelling code, which is how it is distributed.
+            model = SentenceTransformer(self.model_name, trust_remote_code=True)
+        except Exception as exc:
+            raise EmbeddingError(f"Could not load '{self.model_name}': {exc}") from exc
+        _LOCAL_MODELS[self.model_name] = model
+        return model
+
+    def _encode(self, texts: Sequence[str], prompt_name: str) -> List[List[float]]:
+        if not texts:
+            return []
+        model = self._model()
+        try:
+            vectors = model.encode(
+                list(texts),
+                prompt_name=prompt_name,
+                batch_size=self.batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+        except Exception as exc:
+            raise EmbeddingError(f"Local embedding failed: {exc}") from exc
+
+        result: List[List[float]] = []
+        for vector in vectors:
+            values = [float(value) for value in vector]
+            if self.output_dimensions < len(values):
+                # Matryoshka: the leading dimensions are a usable embedding on
+                # their own, but truncating breaks unit length, so renormalize.
+                values = _normalize(values[: self.output_dimensions])
+            result.append(values)
+        return result
+
+    def embed_documents(self, texts: Sequence[str]) -> List[List[float]]:
+        return self._encode(texts, LOCAL_PROMPT_DOCUMENT)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._encode([text], LOCAL_PROMPT_QUERY)[0]
+
+
+def resolve_embedder(backend: Optional[str] = None, **kwargs) -> Embedder:
+    """Pick an embedding backend.
+
+    Defaults to the local model so a fresh checkout can index a repository
+    without anyone obtaining a key first. Set META_HARNESS_EMBEDDING_BACKEND
+    to `gemini` for the hosted alternative.
+    """
+    choice = (backend or os.getenv(BACKEND_ENV_VAR) or BACKEND_LOCAL).strip().lower()
+    if choice == BACKEND_LOCAL:
+        return LocalEmbedder(**kwargs)
+    if choice == BACKEND_GEMINI:
+        return GeminiEmbedder(**kwargs)
+    raise EmbeddingError(
+        f"Unknown embedding backend {choice!r}. Use '{BACKEND_LOCAL}' or '{BACKEND_GEMINI}'."
     )

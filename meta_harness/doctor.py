@@ -32,7 +32,6 @@ REQUIRED_PACKAGES = [
     ("requests", "ClickUp and Linear"),
     ("dotenv", "reading .env"),
     ("numpy", "embedding search"),
-    ("google.genai", "repository embeddings"),
     ("pypdf", "reading PDF requirements documents"),
     ("fpdf", "PDF QA reports"),
 ]
@@ -172,7 +171,7 @@ def check_credentials() -> List[Check]:
     return [
         _env_check("ClickUp", "CLICKUP_API_TOKEN", "the ClickUp tab and ticket creation"),
         _env_check("Linear", "LINEAR_API_KEY", "the Linear tab"),
-        _env_check("Gemini", "GEMINI_API_KEY", "repository indexing and retrieval"),
+        _env_check("Gemini", "GEMINI_API_KEY", "the hosted embedding backend (optional — the default runs locally)"),
     ]
 
 
@@ -207,6 +206,53 @@ def check_writable_state() -> Check:
             "Fix the directory permissions, or run from a writable location.",
         )
     return Check("Writable state directory", OK, str(target))
+
+
+def check_embedding_backend() -> Check:
+    """Which backend will be used, and whether it is usable.
+
+    The default runs locally and needs no key, but its dependencies are an
+    opt-in extra because they pull torch. Saying which of those two situations
+    you are in is more useful than a bare present/absent.
+    """
+    from meta_harness.embeddings.embedder import (
+        BACKEND_ENV_VAR,
+        BACKEND_GEMINI,
+        BACKEND_LOCAL,
+        LOCAL_MODEL_NAME,
+    )
+
+    choice = (os.getenv(BACKEND_ENV_VAR) or BACKEND_LOCAL).strip().lower()
+
+    if choice == BACKEND_LOCAL:
+        try:
+            importlib.import_module("sentence_transformers")
+        except ImportError:
+            return Check(
+                "Embedding backend",
+                DEGRADED,
+                f"local ({LOCAL_MODEL_NAME}) selected, but sentence-transformers is not installed",
+                'Run: pip install -e ".[local-embeddings]"  (or ./run.sh --with-embeddings)',
+            )
+        return Check("Embedding backend", OK, f"local — {LOCAL_MODEL_NAME}, no API key needed")
+
+    if choice == BACKEND_GEMINI:
+        if not any(os.getenv(name) for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY")):
+            return Check(
+                "Embedding backend",
+                DEGRADED,
+                "gemini selected but no API key is set",
+                "Set GEMINI_API_KEY in .env, or unset "
+                f"{BACKEND_ENV_VAR} to use the local model.",
+            )
+        return Check("Embedding backend", OK, "gemini — gemini-embedding-001")
+
+    return Check(
+        "Embedding backend",
+        DEGRADED,
+        f"unknown backend {choice!r}",
+        f"Set {BACKEND_ENV_VAR} to 'local' or 'gemini'.",
+    )
 
 
 def check_embedding_index() -> Check:
@@ -250,6 +296,7 @@ def run_all() -> List[Check]:
     checks.append(check_claude_cli())
     checks.append(check_git())
     checks.extend(check_credentials())
+    checks.append(check_embedding_backend())
     checks.append(check_embedding_index())
     return checks
 

@@ -250,7 +250,7 @@ meta_harness/
 ├── playbook.py
 ├── qa_findings.py
 ├── run_archive.py
-├── embeddings/           # repository indexing + semantic retrieval (Gemini)
+├── embeddings/           # repository indexing + semantic retrieval
 ├── search.py
 ├── ticket_generator.py
 ├── trackers/             # ClickUp + Linear API clients and their credentials
@@ -402,9 +402,45 @@ meta-harness index search "user permissions" --repo sigo
 meta-harness index drop --repo sigo
 ```
 
-Embeddings come from Gemini (`gemini-embedding-001`), so `GEMINI_API_KEY` must
-be set in `.env`. The index is a SQLite file under the gitignored `qa/`
-directory — it contains verbatim source and must never be committed.
+### Backends
+
+Default is **local**: `voyageai/voyage-4-nano`, Apache 2.0, running on your
+machine. No API key, no per-token cost, and no source code leaving the host —
+which matters when the thing being indexed is a client's codebase. Weights
+(~700 MB) download once on first use; after that indexing is fully offline.
+
+Its runtime is an opt-in extra because it pulls torch (~5 GB installed):
+
+```bash
+./run.sh --with-embeddings          # or: pip install -e ".[local-embeddings]"
+```
+
+The hosted alternative is Gemini (`gemini-embedding-001`), selected with
+`META_HARNESS_EMBEDDING_BACKEND=gemini` and a `GEMINI_API_KEY` in `.env`.
+
+**The two produce different vectors and cannot share an index.** Switching
+backends means rebuilding: `meta-harness index build --repo <path> --rebuild`.
+The store detects the mismatch and says so rather than returning meaningless
+scores.
+
+`meta-harness doctor` reports which backend is active and whether it can run.
+
+### Cost of the first index
+
+Local embedding is CPU-bound. Measured on a 16-core machine with no GPU, at
+**~1.9s per chunk**:
+
+| Repository | Chunks | First index |
+|---|---:|---:|
+| this repo | 257 | ~8 min |
+| a 2,788-file project | 4,875 | ~2.5 h |
+
+That is a one-time cost — re-indexing only touches files whose contents
+changed — but it is worth starting a large repository before you need it. A
+GPU or the Gemini backend both cut it dramatically.
+
+The index is a SQLite file under the gitignored `qa/` directory. It contains
+verbatim source and must never be committed.
 
 **What it changes.** Module relevance no longer requires a human to paste the
 module's documentation into a form field. Supply `repo` instead and the

@@ -5,6 +5,9 @@
 #   ./run.sh              install if necessary, preflight, then serve the UI
 #   ./run.sh --check      preflight only, change nothing
 #   ./run.sh --reinstall  rebuild the virtualenv from scratch
+#   ./run.sh --with-embeddings
+#                         also install the local embedding model's runtime
+#                         (~5 GB: torch). Only repository indexing needs it.
 #
 # Dependencies install from ./vendor when a release archive ships wheels, so a
 # packaged copy needs no network. Otherwise they come from PyPI.
@@ -19,6 +22,7 @@ PY="$VENV/bin/python"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8877}"
 MIN_PYTHON="3.9"
+EXTRAS="${EXTRAS:-}"
 
 say()  { printf '\033[1m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33m warn\033[0m %s\n' "$1"; }
@@ -29,7 +33,8 @@ for arg in "$@"; do
   case "$arg" in
     --check)     mode="check" ;;
     --reinstall) mode="reinstall" ;;
-    -h|--help)   sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --with-embeddings) EXTRAS="[local-embeddings]" ;;
+    -h|--help)   sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)           die "Unknown option: $arg (try --help)" ;;
   esac
 done
@@ -81,7 +86,7 @@ fi
 # The marker records the dependency spec the venv was last built from, so an
 # edited pyproject reinstalls and an unchanged one does not.
 STAMP="$VENV/.dependency-stamp"
-SPEC_HASH="$("$PY" - <<'EOF'
+SPEC_HASH="$EXTRAS:$("$PY" - <<'EOF'
 import hashlib, pathlib
 parts = []
 for name in ("pyproject.toml", "requirements.lock"):
@@ -95,14 +100,14 @@ EOF
 if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$SPEC_HASH" ]; then
   if [ -d "$HERE/vendor" ] && [ -n "$(ls -A "$HERE/vendor" 2>/dev/null)" ]; then
     say "Installing dependencies from the bundled vendor/ directory (offline)…"
-    "$PY" -m pip install --quiet --upgrade --no-index --find-links "$HERE/vendor" -e .
+    "$PY" -m pip install --quiet --upgrade --no-index --find-links "$HERE/vendor" -e ".$EXTRAS"
   else
     say "Installing dependencies from PyPI…"
     "$PY" -m pip install --quiet --upgrade pip
     if [ -f "$HERE/requirements.lock" ]; then
       "$PY" -m pip install --quiet -r "$HERE/requirements.lock"
     fi
-    "$PY" -m pip install --quiet -e .
+    "$PY" -m pip install --quiet -e ".$EXTRAS"
   fi
   printf '%s' "$SPEC_HASH" > "$STAMP"
 else

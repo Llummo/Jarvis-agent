@@ -34,10 +34,10 @@ from meta_harness.config import MetaHarnessConfig, parse_command_prefix
 from meta_harness.doctor import run_all
 from meta_harness.embeddings import (
     EmbeddingError,
-    GeminiEmbedder,
     VectorStore,
     VectorStoreError,
     index_repository,
+    resolve_embedder,
     search_repository,
 )
 from meta_harness.frontier import FrontierStore
@@ -1407,7 +1407,7 @@ def index_build_cmd(repo: str, name: Optional[str], rebuild: bool, db_path: Opti
     try:
         result = index_repository(
             Path(repo),
-            embedder=GeminiEmbedder(),
+            embedder=resolve_embedder(),
             store=store,
             repo_name=repo_name,
             rebuild=rebuild,
@@ -1448,7 +1448,7 @@ def index_search_cmd(
     store = VectorStore(Path(db_path) if db_path else None)
     try:
         hits = search_repository(
-            query, repo=repo, embedder=GeminiEmbedder(), store=store, limit=limit, min_score=min_score
+            query, repo=repo, embedder=resolve_embedder(), store=store, limit=limit, min_score=min_score
         )
     except (EmbeddingError, VectorStoreError, ValueError) as exc:
         raise _clickify_runtime_error(exc) from exc

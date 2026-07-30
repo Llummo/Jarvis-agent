@@ -51,6 +51,15 @@ dev = [
     "pytest>=7.0",
     "responses>=0.25",
 ]
+# Runs voyage-4-nano on this machine: no API key, no per-token cost, and no
+# source code leaving the host. Optional because it pulls torch (~5 GB
+# installed) and only repository indexing needs it.
+# transformers is pinned below 5 because the model ships its own modelling
+# code written against the 4.x registration API.
+local-embeddings = [
+    "sentence-transformers>=5.0",
+    "transformers>=4.51,<5",
+]
 
 [project.scripts]
 meta-harness = "meta_harness.cli:main"

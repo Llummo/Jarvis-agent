@@ -9,10 +9,13 @@ context is produced by the harness rather than supplied to it.
 from meta_harness.embeddings.chunking import Chunk, chunk_file, chunk_text, language_for
 from meta_harness.embeddings.embedder import (
     DEFAULT_DIMENSIONS,
+    LOCAL_MODEL_NAME,
     MODEL_NAME,
     Embedder,
     EmbeddingError,
     GeminiEmbedder,
+    LocalEmbedder,
+    resolve_embedder,
 )
 from meta_harness.embeddings.indexer import (
     IndexResult,
@@ -28,6 +31,8 @@ __all__ = [
     "Embedder",
     "EmbeddingError",
     "GeminiEmbedder",
+    "LOCAL_MODEL_NAME",
+    "LocalEmbedder",
     "IndexResult",
     "MODEL_NAME",
     "SearchHit",
@@ -39,5 +44,6 @@ __all__ = [
     "discover_files",
     "index_repository",
     "language_for",
+    "resolve_embedder",
     "search_repository",
 ]
