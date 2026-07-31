@@ -19,9 +19,14 @@ from meta_harness.embeddings.embedder import (
 )
 from meta_harness.embeddings.indexer import (
     IndexResult,
+    SourceIngestError,
+    clone_github,
     discover_files,
     hybrid_search,
+    index_document,
     index_repository,
+    name_from_github_url,
+    read_document,
     search_repository,
     source_status,
     verify_hits,
@@ -34,6 +39,10 @@ from meta_harness.embeddings.lexical import (
 )
 from meta_harness.embeddings.sources import (
     DRIFTED,
+    KIND_DOCUMENT,
+    KIND_GITHUB,
+    KIND_REPOSITORY,
+    KINDS,
     MISSING,
     UNCHECKED,
     VERIFIED,
@@ -46,6 +55,15 @@ from meta_harness.embeddings.store import SearchHit, VectorStore, VectorStoreErr
 
 __all__ = [
     "Chunk",
+    "KINDS",
+    "KIND_DOCUMENT",
+    "KIND_GITHUB",
+    "KIND_REPOSITORY",
+    "SourceIngestError",
+    "clone_github",
+    "index_document",
+    "name_from_github_url",
+    "read_document",
     "DRIFTED",
     "LexicalHit",
     "MISSING",

@@ -20,8 +20,17 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException
 
+import re
+
 from meta_harness.embeddings import (
+    KIND_DOCUMENT,
+    KIND_GITHUB,
+    KIND_REPOSITORY,
+    KINDS,
     EmbeddingError,
+    clone_github,
+    index_document,
+    name_from_github_url,
     SourceError,
     VectorStore,
     VectorStoreError,
@@ -60,6 +69,7 @@ def _describe(store: VectorStore, name: str, chunks: dict) -> SourceOut:
         name=source.name,
         root=str(source.root),
         kind=source.kind,
+        origin=source.display_origin,
         revision=(source.revision or "")[:8],
         indexed=source.indexed_at is not None,
         status=status.summary() if status else "unknown",
@@ -91,27 +101,49 @@ def list_sources() -> SourcesOut:
     )
 
 
-def _index_in_background(path: Path, name: str, rebuild: bool, token: str) -> None:
-    """Run one indexing job to completion, reporting through `token`.
+def _ingest_in_background(kind: str, target: str, name: str, rebuild: bool, token: str) -> None:
+    """Fetch and index one source, reporting through `token`.
 
     Owns its own store: the request that started this has already returned,
-    and a SQLite connection must not be shared across threads.
+    and a SQLite connection must not be shared across threads. Cloning happens
+    here too — it is slow enough that doing it in the request would defeat the
+    point of a background job.
     """
     store = VectorStore()
+    step = lambda message: progress.push(token, message)  # noqa: E731
     try:
+        if kind == KIND_DOCUMENT:
+            index_document(
+                Path(target), embedder=resolve_embedder(), store=store,
+                source_name=name, on_step=step,
+            )
+            progress.finish(token)
+            return
+
+        root = Path(target)
+        origin = None
+        if kind == KIND_GITHUB:
+            root = clone_github(target, name=name, on_step=step)
+            origin = target
+
+        store.sources.register(name, root, kind=kind, origin=origin)
         result = index_repository(
-            path,
+            root,
             embedder=resolve_embedder(),
             store=store,
             repo_name=name,
             rebuild=rebuild,
-            on_step=lambda message: progress.push(token, message),
+            on_step=step,
         )
+        # Indexing re-registers as a plain repository; restore the real kind
+        # and origin so a clone is not mistaken for a local directory.
+        store.sources.register(name, root, kind=kind, origin=origin)
+        store.sources.mark_indexed(name)
         if result.errors:
             progress.push(token, f"{len(result.errors)} file(s) failed: {result.errors[0]}")
         progress.finish(token)
     except Exception as exc:  # a background thread has nowhere else to report
-        progress.push(token, f"Indexing failed: {exc}")
+        progress.push(token, f"Failed: {exc}")
         progress.finish(token, error=str(exc))
     finally:
         store.close()
@@ -119,34 +151,49 @@ def _index_in_background(path: Path, name: str, rebuild: bool, token: str) -> No
 
 @router.post("", response_model=AddSourceOut)
 def add_source(body: AddSourceIn) -> AddSourceOut:
-    """Register a repository and start indexing it."""
-    path = Path(body.path).expanduser()
-    if not path.is_dir():
-        raise HTTPException(status_code=400, detail=f"Not a directory: {path}")
+    """Register a source and start ingesting it.
 
-    name = (body.name or path.resolve().name).strip()
-    store = VectorStore()
-    try:
-        source = store.sources.register(name, path)
-    except SourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        store.close()
+    Validation that can be done instantly happens here so a typo comes back as
+    an error on the request; anything slow (cloning, reading, embedding) moves
+    to the background job.
+    """
+    target = body.target.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="Give a path or a repository URL.")
+    if body.kind not in KINDS:
+        raise HTTPException(status_code=400, detail=f"Unknown source kind: {body.kind}")
 
-    if not body.index:
-        return AddSourceOut(name=source.name, root=str(source.root))
+    if body.kind == KIND_GITHUB:
+        if not re.match(r"^(https?://|git@)", target):
+            raise HTTPException(
+                status_code=400,
+                detail="A repository URL should start with https:// or git@.",
+            )
+        default_name = name_from_github_url(target)
+    else:
+        path = Path(target).expanduser()
+        if body.kind == KIND_DOCUMENT and not path.is_file():
+            raise HTTPException(status_code=400, detail=f"No such file: {path}")
+        if body.kind == KIND_REPOSITORY and not path.is_dir():
+            raise HTTPException(status_code=400, detail=f"No such directory: {path}")
+        target = str(path)
+        default_name = path.resolve().stem if body.kind == KIND_DOCUMENT else path.resolve().name
+
+    name = (body.name or default_name).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the source a name.")
 
     token = body.progress_token or uuid.uuid4().hex
     progress.start(token)
-    progress.push(token, f"Indexing {source.root}…")
+    progress.push(token, f"Starting on {target}…")
     threading.Thread(
-        target=_index_in_background,
-        args=(path, name, body.rebuild, token),
+        target=_ingest_in_background,
+        args=(body.kind, target, name, body.rebuild, token),
         daemon=True,
     ).start()
 
     return AddSourceOut(
-        name=source.name, root=str(source.root), indexing=True, progress_token=token
+        name=name, kind=body.kind, origin=target, indexing=True, progress_token=token
     )
 
 

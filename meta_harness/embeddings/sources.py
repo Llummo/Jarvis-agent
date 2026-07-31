@@ -30,7 +30,16 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 """
 
-KIND_REPOSITORY = "repository"
+# `origin` arrived after the first databases were written, and
+# CREATE TABLE IF NOT EXISTS will not add a column to an existing table.
+SOURCE_MIGRATIONS = ("ALTER TABLE sources ADD COLUMN origin TEXT",)
+
+# What a source is, which decides how it gets indexed.
+KIND_REPOSITORY = "repository"   # a directory on this machine
+KIND_GITHUB = "github"           # a remote repo, cloned into a local cache
+KIND_DOCUMENT = "document"       # a single file: markdown, text or PDF
+
+KINDS = (KIND_REPOSITORY, KIND_GITHUB, KIND_DOCUMENT)
 
 # Verification outcomes for a single retrieved span.
 VERIFIED = "verified"
@@ -53,10 +62,18 @@ class Source:
     revision: Optional[str]
     registered_at: str
     indexed_at: Optional[str]
+    # Where it came from, when that differs from where it now lives: the clone
+    # URL for a GitHub source, the original path for a document. Kept so the
+    # citation can name the real origin rather than a cache directory.
+    origin: Optional[str] = None
 
     @property
     def exists(self) -> bool:
-        return self.root.is_dir()
+        return self.root.is_dir() if self.kind != KIND_DOCUMENT else self.root.is_file()
+
+    @property
+    def display_origin(self) -> str:
+        return self.origin or str(self.root)
 
 
 @dataclass(frozen=True)
@@ -107,6 +124,13 @@ class SourceRegistry:
     def __init__(self, connection):
         self._connection = connection
         self._connection.executescript(SOURCE_SCHEMA)
+        for statement in SOURCE_MIGRATIONS:
+            try:
+                self._connection.execute(statement)
+            except Exception:
+                # Already applied. SQLite has no ADD COLUMN IF NOT EXISTS, and
+                # checking pragma output first is more code for the same result.
+                pass
         self._connection.commit()
 
     def register(
@@ -116,22 +140,30 @@ class SourceRegistry:
         *,
         kind: str = KIND_REPOSITORY,
         revision: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> Source:
         """Declare a source as trusted. Re-registering updates it in place."""
+        if kind not in KINDS:
+            raise SourceError(f"Unknown source kind {kind!r}; must be one of {KINDS}")
         root = Path(root).expanduser().resolve()
-        if not root.is_dir():
+        if kind == KIND_DOCUMENT:
+            if not root.is_file():
+                raise SourceError(f"Not a file: {root}")
+        elif not root.is_dir():
             raise SourceError(f"Not a directory: {root}")
         if not name.strip():
             raise SourceError("A source needs a name")
 
-        resolved_revision = revision if revision is not None else git_revision(root)
+        search_root = root if kind != KIND_DOCUMENT else root.parent
+        resolved_revision = revision if revision is not None else git_revision(search_root)
         with self._connection:
             self._connection.execute(
-                "INSERT INTO sources (name, kind, root, revision, registered_at, indexed_at) "
-                "VALUES (?, ?, ?, ?, ?, NULL) "
+                "INSERT INTO sources (name, kind, root, revision, registered_at, indexed_at, origin) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?) "
                 "ON CONFLICT(name) DO UPDATE SET "
-                "kind = excluded.kind, root = excluded.root, revision = excluded.revision",
-                (name.strip(), kind, str(root), resolved_revision, _now()),
+                "kind = excluded.kind, root = excluded.root, revision = excluded.revision, "
+                "origin = excluded.origin",
+                (name.strip(), kind, str(root), resolved_revision, _now(), origin),
             )
         return self.get(name.strip())
 
@@ -150,7 +182,7 @@ class SourceRegistry:
 
     def get(self, name: str) -> Source:
         row = self._connection.execute(
-            "SELECT name, kind, root, revision, registered_at, indexed_at FROM sources WHERE name = ?",
+            "SELECT name, kind, root, revision, registered_at, indexed_at, origin FROM sources WHERE name = ?",
             (name,),
         ).fetchone()
         if row is None:
@@ -165,6 +197,7 @@ class SourceRegistry:
             revision=row["revision"],
             registered_at=row["registered_at"],
             indexed_at=row["indexed_at"],
+            origin=row["origin"],
         )
 
     def find(self, name: str) -> Optional[Source]:
@@ -175,7 +208,7 @@ class SourceRegistry:
 
     def list_sources(self) -> List[Source]:
         rows = self._connection.execute(
-            "SELECT name, kind, root, revision, registered_at, indexed_at FROM sources ORDER BY name"
+            "SELECT name, kind, root, revision, registered_at, indexed_at, origin FROM sources ORDER BY name"
         ).fetchall()
         return [
             Source(
@@ -185,6 +218,7 @@ class SourceRegistry:
                 revision=row["revision"],
                 registered_at=row["registered_at"],
                 indexed_at=row["indexed_at"],
+                origin=row["origin"],
             )
             for row in rows
         ]
@@ -195,6 +229,18 @@ class SourceRegistry:
         return cursor.rowcount > 0
 
 
+def resolve_file(source: Source, relative: str) -> Path:
+    """The file on disk that an indexed path refers to.
+
+    A repository's root is a directory and indexed paths hang off it. A
+    document's root is the file itself, so joining would look for the file
+    inside itself and report every span as missing.
+    """
+    if source.kind == KIND_DOCUMENT:
+        return source.root
+    return source.root / relative
+
+
 def check_span(source: Source, path: str, start_line: int, end_line: int, text: str) -> SpanCheck:
     """Confirm a retrieved span still matches the file on disk.
 
@@ -202,7 +248,7 @@ def check_span(source: Source, path: str, start_line: int, end_line: int, text: 
     stripped of surrounding blank lines, and re-reading by line range picks up
     whitespace that was never a difference worth reporting.
     """
-    target = source.root / path
+    target = resolve_file(source, path)
     try:
         if not target.is_file():
             return SpanCheck(MISSING, f"{path} no longer exists in {source.name}")

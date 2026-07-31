@@ -19,11 +19,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
-from meta_harness.embeddings.chunking import Chunk, chunk_file, language_for
+from meta_harness.embeddings.chunking import Chunk, chunk_file, chunk_text, language_for
 from meta_harness.embeddings.embedder import Embedder
+from meta_harness.embeddings.sources import KIND_DOCUMENT
 from meta_harness.embeddings.store import VectorStore
 
 OnStep = Optional[Callable[[str], None]]
+
+
+class SourceIngestError(RuntimeError):
+    """Raised when a source cannot be fetched or read."""
 
 # Directories to skip when the target isn't a git repo and there's no
 # .gitignore to lean on.
@@ -240,7 +245,7 @@ def source_status(store: VectorStore, name: str):
     is now, which catches edits the git revision alone would miss — an
     uncommitted change moves no commit but does invalidate the index.
     """
-    from meta_harness.embeddings.sources import SourceStatus, git_revision
+    from meta_harness.embeddings.sources import SourceStatus, git_revision, resolve_file
 
     source = store.sources.get(name)
     known = store.file_hashes(name)
@@ -250,7 +255,7 @@ def source_status(store: VectorStore, name: str):
 
     changed = removed = 0
     for relative, digest in known.items():
-        target = source.root / relative
+        target = resolve_file(source, relative)
         try:
             if not target.is_file():
                 removed += 1
@@ -406,3 +411,115 @@ def hybrid_search(
 
     results = _fuse(semantic, lexical_hits, store, repo, limit) if lexical_hits else semantic[:limit]
     return verify_hits(store, results) if verify else results
+
+
+# --- source kinds -----------------------------------------------------------
+
+# Where remote repositories are cloned to. Under the gitignored state
+# directory, because a clone is derived data and holds someone else's source.
+def clone_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "qa" / "clones"
+
+
+def name_from_github_url(url: str) -> str:
+    """The repository name in a clone URL, for use as a default source name."""
+    trimmed = url.strip().rstrip("/")
+    if trimmed.endswith(".git"):
+        trimmed = trimmed[:-4]
+    return trimmed.rsplit("/", 1)[-1] or "repository"
+
+
+def clone_github(url: str, *, name: str, on_step: OnStep = None) -> Path:
+    """Clone (or refresh) a remote repository into the local cache.
+
+    Shallow, because indexing reads the working tree and never the history —
+    fetching years of commits to embed the current files is pure cost.
+    """
+    target = clone_root() / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if (target / ".git").is_dir():
+        _report(on_step, f"Updating the existing clone of {url}…")
+        command = ["git", "-C", str(target), "pull", "--ff-only", "--depth", "1"]
+    else:
+        _report(on_step, f"Cloning {url}…")
+        command = ["git", "clone", "--depth", "1", url, str(target)]
+
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SourceIngestError(f"Could not clone {url}: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise SourceIngestError(
+            f"git failed on {url}: {detail[-1] if detail else 'unknown error'}"
+        )
+    return target
+
+
+def read_document(path: Path) -> str:
+    """A document's text, whatever its format.
+
+    PDFs go through the same extractor the ticket generator uses, so a
+    requirements document behaves identically whether it is read here or
+    uploaded there.
+    """
+    if path.suffix.lower() == ".pdf":
+        from meta_harness.ticket_generator import _extract_pdf_text
+
+        return _extract_pdf_text(path.read_bytes())
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise SourceIngestError(
+            f"{path.name} is not readable as text. Supported: .md, .txt, .pdf and source files."
+        ) from exc
+
+
+def index_document(
+    path: Path,
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    source_name: str,
+    on_step: OnStep = None,
+) -> IndexResult:
+    """Index a single document as its own source.
+
+    A document has no repository around it, so the whole file is one indexed
+    path and drift is judged on that file alone.
+    """
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise SourceIngestError(f"Not a file: {path}")
+
+    result = IndexResult(repo=source_name, files_scanned=1)
+    store.sources.register(source_name, path, kind=KIND_DOCUMENT, origin=str(path))
+
+    _report(on_step, f"Reading {path.name}…")
+    text = read_document(path)
+    if not text.strip():
+        raise SourceIngestError(f"{path.name} has no extractable text.")
+
+    digest = content_hash(text)
+    if store.file_hashes(source_name).get(path.name) == digest:
+        result.files_skipped_unchanged = 1
+        _report(on_step, "Unchanged since the last index.")
+        store.sources.mark_indexed(source_name)
+        return result
+
+    # Documents are prose, so they chunk on headings like markdown rather than
+    # on the declaration boundaries used for code.
+    chunks = chunk_text(text, path=path.name, language="markdown")
+    if not chunks:
+        raise SourceIngestError(f"{path.name} produced nothing indexable.")
+
+    _report(on_step, f"Embedding {len(chunks)} chunk(s)…")
+    vectors = embedder.embed_documents([chunk.embed_text() for chunk in chunks])
+    store.replace_file(source_name, path.name, digest, chunks, vectors)
+    store.sources.mark_indexed(source_name)
+
+    result.files_embedded = 1
+    result.chunks_embedded = len(chunks)
+    _report(on_step, f"Done: {result.summary()}")
+    return result

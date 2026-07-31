@@ -370,3 +370,58 @@ def test_lexical_only_hits_are_not_labelled_hybrid(indexed, store):
             # A hybrid hit must carry a real semantic score; a lexically
             # recovered chunk has none.
             assert hit.score > 0.0, f"{hit.location} claims hybrid with no semantic score"
+
+
+# -- document sources -------------------------------------------------------
+
+
+def test_document_source_indexes_and_verifies(tmp_path, store):
+    """A document's root is the file itself, not a directory containing it —
+    joining a relative path onto it would look for the file inside itself."""
+    from meta_harness.embeddings import index_document
+
+    doc = tmp_path / "requirements.md"
+    doc.write_text(
+        "# Payroll\n\n" + ("The system must calculate monthly payroll for each employee. " * 20),
+        encoding="utf-8",
+    )
+
+    result = index_document(doc, embedder=FakeEmbedder(), store=store, source_name="reqs")
+
+    assert result.chunks_embedded >= 1
+    assert source_status(store, "reqs").current, "a freshly indexed document is not stale"
+
+
+def test_document_source_detects_an_edit(tmp_path, store):
+    from meta_harness.embeddings import index_document
+
+    doc = tmp_path / "requirements.md"
+    doc.write_text("# Payroll\n\n" + ("Original requirement text. " * 30), encoding="utf-8")
+    index_document(doc, embedder=FakeEmbedder(), store=store, source_name="reqs")
+
+    doc.write_text("# Payroll\n\n" + ("Rewritten requirement text. " * 30), encoding="utf-8")
+
+    assert not source_status(store, "reqs").current
+
+
+def test_document_source_rejects_an_empty_file(tmp_path, store):
+    from meta_harness.embeddings import SourceIngestError, index_document
+
+    empty = tmp_path / "blank.md"
+    empty.write_text("   \n", encoding="utf-8")
+
+    with pytest.raises(SourceIngestError, match="no extractable text"):
+        index_document(empty, embedder=FakeEmbedder(), store=store, source_name="blank")
+
+
+def test_github_url_naming():
+    from meta_harness.embeddings import name_from_github_url
+
+    assert name_from_github_url("https://github.com/owner/repo.git") == "repo"
+    assert name_from_github_url("https://github.com/owner/repo/") == "repo"
+    assert name_from_github_url("git@github.com:owner/repo.git") == "repo"
+
+
+def test_unknown_kind_is_rejected(repo, store):
+    with pytest.raises(SourceError, match="Unknown source kind"):
+        store.sources.register("x", repo, kind="nonsense")
