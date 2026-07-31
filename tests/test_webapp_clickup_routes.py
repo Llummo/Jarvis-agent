@@ -114,3 +114,21 @@ def test_clickup_read_error_returns_502(monkeypatch):
 
     assert response.status_code == 502
     assert "p-harness CLI unavailable" in response.json()["detail"]
+
+
+def test_static_assets_must_be_revalidated():
+    """StaticFiles sends ETag but no Cache-Control, leaving browsers free to
+    heuristically cache. Here that produces a page whose JS and markup are from
+    different revisions — controls that silently do nothing, with no error
+    anywhere to explain it."""
+    from fastapi.testclient import TestClient
+
+    from meta_harness.webapp.app import create_app
+
+    with TestClient(create_app()) as client:
+        response = client.get("/app.js")
+
+    assert response.status_code == 200
+    assert "no-cache" in response.headers.get("cache-control", "")
+    # Revalidation, not re-download: an unchanged asset must still 304.
+    assert response.headers.get("etag")
