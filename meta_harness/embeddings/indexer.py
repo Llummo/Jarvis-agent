@@ -14,16 +14,34 @@ one `git ls-files` and a hash per file.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
+
+from filelock import FileLock, Timeout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
-from meta_harness.embeddings.chunking import Chunk, chunk_file, language_for
+from meta_harness.embeddings.chunking import (
+    Chunk,
+    chunk_file,
+    chunk_file_skeleton,
+    chunk_text,
+    language_for,
+)
 from meta_harness.embeddings.embedder import Embedder
-from meta_harness.embeddings.store import VectorStore
+from meta_harness.embeddings.sources import KIND_DOCUMENT
+from meta_harness.embeddings.store import MODE_FULL, MODE_SKELETON, VectorStore
 
 OnStep = Optional[Callable[[str], None]]
+
+
+class SourceIngestError(RuntimeError):
+    """Raised when a source cannot be fetched or read."""
+
+
+class IndexInProgressError(RuntimeError):
+    """Raised when another process is already indexing the same source."""
 
 # Directories to skip when the target isn't a git repo and there's no
 # .gitignore to lean on.
@@ -99,14 +117,19 @@ def _git_tracked_files(repo_root: Path) -> Optional[List[Path]]:
 
 
 def _walked_files(repo_root: Path) -> List[Path]:
-    """Every candidate file, skipping known-generated directories."""
+    """Every candidate file, never descending into generated directories.
+
+    Pruning during the walk rather than filtering after it is the whole point.
+    `rglob` visits every entry before anything can reject it, so on a project
+    with a 3 GB `node_modules` it spends twenty seconds enumerating files only
+    to discard them. Removing a directory from `dirnames` in place tells
+    os.walk not to enter it at all.
+    """
     found: List[Path] = []
-    for path in repo_root.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in FALLBACK_EXCLUDES for part in path.relative_to(repo_root).parts):
-            continue
-        found.append(path)
+    for current, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in FALLBACK_EXCLUDES]
+        base = Path(current)
+        found.extend(base / name for name in filenames)
     return found
 
 
@@ -136,18 +159,69 @@ def index_repository(
     store: VectorStore,
     repo_name: Optional[str] = None,
     rebuild: bool = False,
+    mode: str = MODE_SKELETON,
     on_step: OnStep = None,
 ) -> IndexResult:
     """Embed a repository's source into `store`.
 
+    `mode` decides what gets embedded. In `skeleton` — the default — only what
+    each file declares is indexed: signatures, type definitions, and the
+    comments describing them. Measured across a 2,788-file project those are
+    15% of the text, because a function body is mostly control flow that costs
+    tokens without making the function easier to find. The real code is read
+    from disk when a chunk is actually retrieved, so nothing is lost from the
+    answer, only from the index.
+
+    Use `full` when the bodies themselves need to be searchable — matching on
+    an implementation detail rather than on what a thing is.
+
     One file's failure never stops the run — a single undecodable or oversized
     file in a 2,000-file repo should cost that file, not the index.
     """
+    if mode not in (MODE_FULL, MODE_SKELETON):
+        raise ValueError(f"mode must be '{MODE_FULL}' or '{MODE_SKELETON}', got {mode!r}")
     repo_root = Path(repo_root).expanduser().resolve()
     if not repo_root.is_dir():
         raise NotADirectoryError(f"Not a directory: {repo_root}")
 
     name = repo_name or repo_root.name
+
+    # One writer per source. Two jobs indexing the same name concurrently —
+    # a CLI run and the web UI, say — interleave their writes and leave an
+    # index built by two different backends, which then fails to load at all.
+    lock_path = store.db_path.parent / f".index-{_safe_lock_name(name)}.lock"
+    try:
+        lock = FileLock(str(lock_path), timeout=1)
+        lock.acquire()
+    except Timeout as exc:
+        raise IndexInProgressError(
+            f"'{name}' is already being indexed by another process. "
+            "Wait for it to finish, or index under a different name."
+        ) from exc
+
+    try:
+        return _index_repository_locked(
+            repo_root, embedder=embedder, store=store, name=name,
+            rebuild=rebuild, mode=mode, on_step=on_step,
+        )
+    finally:
+        lock.release()
+
+
+def _safe_lock_name(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:64]
+
+
+def _index_repository_locked(
+    repo_root: Path,
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    name: str,
+    rebuild: bool,
+    mode: str,
+    on_step: OnStep,
+) -> IndexResult:
     result = IndexResult(repo=name)
 
     # Indexing is what makes something a context source, so registration
@@ -182,11 +256,15 @@ def index_repository(
             result.files_skipped_unchanged += 1
             continue
 
-        chunks: List[Chunk] = chunk_file(path, repo_root=repo_root)
+        chunks: List[Chunk] = (
+            chunk_file_skeleton(path, repo_root=repo_root)
+            if mode == MODE_SKELETON
+            else chunk_file(path, repo_root=repo_root)
+        )
         if not chunks:
             # An empty or comment-only file still gets its hash recorded, so
             # the next run doesn't re-read it every time.
-            store.replace_file(name, relative, digest, [], [])
+            store.replace_file(name, relative, digest, [], [], mode=mode)
             continue
 
         _report(
@@ -199,7 +277,7 @@ def index_repository(
             result.errors.append(f"{relative}: {exc}")
             continue
 
-        store.replace_file(name, relative, digest, chunks, vectors)
+        store.replace_file(name, relative, digest, chunks, vectors, mode=mode)
         result.files_embedded += 1
         result.chunks_embedded += len(chunks)
 
@@ -240,7 +318,7 @@ def source_status(store: VectorStore, name: str):
     is now, which catches edits the git revision alone would miss — an
     uncommitted change moves no commit but does invalidate the index.
     """
-    from meta_harness.embeddings.sources import SourceStatus, git_revision
+    from meta_harness.embeddings.sources import SourceStatus, git_revision, resolve_file
 
     source = store.sources.get(name)
     known = store.file_hashes(name)
@@ -250,7 +328,7 @@ def source_status(store: VectorStore, name: str):
 
     changed = removed = 0
     for relative, digest in known.items():
-        target = source.root / relative
+        target = resolve_file(source, relative)
         try:
             if not target.is_file():
                 removed += 1
@@ -270,6 +348,59 @@ def source_status(store: VectorStore, name: str):
     )
 
 
+# How much real code to return around a skeleton match. A declaration alone is
+# enough to *find* something and not enough to reason about it — but a skeleton
+# chunk spans from a file's first declaration to its last, so expanding to the
+# chunk's own range hands back the entire file. Twelve of those is thousands of
+# lines in one prompt, which buries the answer it was meant to supply.
+SKELETON_EXPANSION_LINES = 120
+
+
+def expand_skeleton_hits(store: VectorStore, hits: Sequence) -> List:
+    """Replace declaration text with the real code it stands for.
+
+    A skeleton chunk is an index entry, not an answer: it holds signatures so
+    the corpus stays small, but a caller asking what a module does needs the
+    code. Reading it back from the file at retrieval time keeps the index
+    cheap while the answer stays complete — and, because it comes off the
+    working tree, current by construction.
+    """
+    from dataclasses import replace
+
+    from meta_harness.embeddings.sources import VERIFIED, resolve_file
+    from meta_harness.embeddings.store import MODE_SKELETON
+
+    expanded = []
+    for hit in hits:
+        if hit.mode != MODE_SKELETON:
+            expanded.append(hit)
+            continue
+        source = store.sources.find(hit.repo) if hit.repo else None
+        if source is None:
+            expanded.append(hit)
+            continue
+        try:
+            lines = resolve_file(source, hit.path).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            expanded.append(hit)
+            continue
+
+        start = max(1, hit.start_line)
+        end = min(len(lines), start + SKELETON_EXPANSION_LINES - 1)
+        expanded.append(
+            replace(
+                hit,
+                text="\n".join(lines[start - 1 : end]),
+                start_line=start,
+                end_line=end,
+                # Read straight from the working tree, so it matches by
+                # construction — there is no stored copy to have drifted.
+                verification=VERIFIED,
+            )
+        )
+    return expanded
+
+
 def verify_hits(store: VectorStore, hits: Sequence) -> List:
     """Re-read each hit from disk and record whether it still matches.
 
@@ -279,9 +410,14 @@ def verify_hits(store: VectorStore, hits: Sequence) -> List:
     from dataclasses import replace
 
     from meta_harness.embeddings.sources import UNCHECKED, check_span
+    from meta_harness.embeddings.store import MODE_SKELETON
 
     checked = []
     for hit in hits:
+        if hit.mode == MODE_SKELETON:
+            # Already read from the working tree by expand_skeleton_hits.
+            checked.append(hit)
+            continue
         source = store.sources.find(hit.repo) if hit.repo else None
         if source is None:
             checked.append(replace(hit, verification=UNCHECKED))
@@ -392,17 +528,207 @@ def hybrid_search(
     nothing, and paying for that on every query is waste.
     """
     from meta_harness.embeddings.lexical import find_symbol, looks_like_symbol
+    from meta_harness.embeddings.store import VectorStoreError
 
-    semantic = search_repository(
-        query, repo=repo, embedder=embedder, store=store, limit=max(limit * 2, limit), min_score=min_score
-    )
+    source = store.sources.find(repo)
 
-    use_lexical = looks_like_symbol(query) if lexical is None else lexical
+    # A registered source is searchable the moment it exists, before anything
+    # has been embedded. Lexical search reads the working tree directly, so it
+    # needs no index — which is what lets adding a source be instant and
+    # useful, with embeddings improving the answers as they arrive rather than
+    # gating them.
+    semantic: List = []
+    try:
+        semantic = search_repository(
+            query, repo=repo, embedder=embedder, store=store,
+            limit=max(limit * 2, limit), min_score=min_score,
+        )
+    except VectorStoreError:
+        if source is None:
+            raise  # genuinely unknown source — the caller should hear about it
+        indexed = False
+    else:
+        indexed = True
+
+    # With no embeddings to lean on, run the text search for every query
+    # rather than only for identifier-shaped ones: a partial word match is a
+    # far better answer than nothing.
+    if lexical is None:
+        use_lexical = looks_like_symbol(query) if indexed else True
+    else:
+        use_lexical = lexical
+
     lexical_hits: List = []
-    if use_lexical:
-        source = store.sources.find(repo)
-        if source is not None and source.exists:
-            lexical_hits = find_symbol(query, root=source.root, limit=limit * 2)
+    if use_lexical and source is not None and source.exists:
+        lexical_hits = find_symbol(query, root=source.root, limit=limit * 2)
+        if not lexical_hits and not indexed:
+            # Nothing matched the phrase as written; the individual words may
+            # still land, which is the common case for a natural-language ask
+            # against a corpus that has not been embedded yet.
+            for word in sorted(set(query.split()), key=len, reverse=True)[:3]:
+                if len(word) < 4:
+                    continue
+                lexical_hits = find_symbol(word, root=source.root, limit=limit * 2, whole_word=False)
+                if lexical_hits:
+                    break
 
-    results = _fuse(semantic, lexical_hits, store, repo, limit) if lexical_hits else semantic[:limit]
+    if not indexed:
+        results = _lexical_only(source, lexical_hits, limit)
+    elif lexical_hits:
+        results = _fuse(semantic, lexical_hits, store, repo, limit)
+    else:
+        results = semantic[:limit]
+
+    results = expand_skeleton_hits(store, results)
     return verify_hits(store, results) if verify else results
+
+
+def _lexical_only(source, lexical_hits: Sequence, limit: int) -> List:
+    """Build results from text matches alone, reading context from disk.
+
+    Used when a source is registered but not yet embedded. The lines come
+    straight from the working tree, so these results cannot be stale — there
+    is no copy to go out of date.
+    """
+    from meta_harness.embeddings.store import SearchHit
+
+    CONTEXT = 6
+    results: List = []
+    seen = set()
+    for hit in lexical_hits[:limit]:
+        key = (hit.path, hit.line // 20)  # collapse hits clustered in one area
+        if key in seen:
+            continue
+        seen.add(key)
+        target = source.root / hit.path
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        start = max(1, hit.line - CONTEXT)
+        end = min(len(lines), hit.line + CONTEXT)
+        results.append(
+            SearchHit(
+                path=hit.path,
+                language="",
+                start_line=start,
+                end_line=end,
+                text="\n".join(lines[start - 1 : end]),
+                score=0.0,
+                repo=source.name,
+                retrieval="lexical",
+            )
+        )
+    return results
+
+
+# --- source kinds -----------------------------------------------------------
+
+# Where remote repositories are cloned to. Under the gitignored state
+# directory, because a clone is derived data and holds someone else's source.
+def clone_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "qa" / "clones"
+
+
+def name_from_github_url(url: str) -> str:
+    """The repository name in a clone URL, for use as a default source name."""
+    trimmed = url.strip().rstrip("/")
+    if trimmed.endswith(".git"):
+        trimmed = trimmed[:-4]
+    return trimmed.rsplit("/", 1)[-1] or "repository"
+
+
+def clone_github(url: str, *, name: str, on_step: OnStep = None) -> Path:
+    """Clone (or refresh) a remote repository into the local cache.
+
+    Shallow, because indexing reads the working tree and never the history —
+    fetching years of commits to embed the current files is pure cost.
+    """
+    target = clone_root() / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if (target / ".git").is_dir():
+        _report(on_step, f"Updating the existing clone of {url}…")
+        command = ["git", "-C", str(target), "pull", "--ff-only", "--depth", "1"]
+    else:
+        _report(on_step, f"Cloning {url}…")
+        command = ["git", "clone", "--depth", "1", url, str(target)]
+
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SourceIngestError(f"Could not clone {url}: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise SourceIngestError(
+            f"git failed on {url}: {detail[-1] if detail else 'unknown error'}"
+        )
+    return target
+
+
+def read_document(path: Path) -> str:
+    """A document's text, whatever its format.
+
+    PDFs go through the same extractor the ticket generator uses, so a
+    requirements document behaves identically whether it is read here or
+    uploaded there.
+    """
+    if path.suffix.lower() == ".pdf":
+        from meta_harness.ticket_generator import _extract_pdf_text
+
+        return _extract_pdf_text(path.read_bytes())
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise SourceIngestError(
+            f"{path.name} is not readable as text. Supported: .md, .txt, .pdf and source files."
+        ) from exc
+
+
+def index_document(
+    path: Path,
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    source_name: str,
+    on_step: OnStep = None,
+) -> IndexResult:
+    """Index a single document as its own source.
+
+    A document has no repository around it, so the whole file is one indexed
+    path and drift is judged on that file alone.
+    """
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise SourceIngestError(f"Not a file: {path}")
+
+    result = IndexResult(repo=source_name, files_scanned=1)
+    store.sources.register(source_name, path, kind=KIND_DOCUMENT, origin=str(path))
+
+    _report(on_step, f"Reading {path.name}…")
+    text = read_document(path)
+    if not text.strip():
+        raise SourceIngestError(f"{path.name} has no extractable text.")
+
+    digest = content_hash(text)
+    if store.file_hashes(source_name).get(path.name) == digest:
+        result.files_skipped_unchanged = 1
+        _report(on_step, "Unchanged since the last index.")
+        store.sources.mark_indexed(source_name)
+        return result
+
+    # Documents are prose, so they chunk on headings like markdown rather than
+    # on the declaration boundaries used for code.
+    chunks = chunk_text(text, path=path.name, language="markdown")
+    if not chunks:
+        raise SourceIngestError(f"{path.name} produced nothing indexable.")
+
+    _report(on_step, f"Embedding {len(chunks)} chunk(s)…")
+    vectors = embedder.embed_documents([chunk.embed_text() for chunk in chunks])
+    store.replace_file(source_name, path.name, digest, chunks, vectors)
+    store.sources.mark_indexed(source_name)
+
+    result.files_embedded = 1
+    result.chunks_embedded = len(chunks)
+    _report(on_step, f"Done: {result.summary()}")
+    return result

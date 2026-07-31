@@ -370,3 +370,228 @@ def test_lexical_only_hits_are_not_labelled_hybrid(indexed, store):
             # A hybrid hit must carry a real semantic score; a lexically
             # recovered chunk has none.
             assert hit.score > 0.0, f"{hit.location} claims hybrid with no semantic score"
+
+
+# -- document sources -------------------------------------------------------
+
+
+def test_document_source_indexes_and_verifies(tmp_path, store):
+    """A document's root is the file itself, not a directory containing it —
+    joining a relative path onto it would look for the file inside itself."""
+    from meta_harness.embeddings import index_document
+
+    doc = tmp_path / "requirements.md"
+    doc.write_text(
+        "# Payroll\n\n" + ("The system must calculate monthly payroll for each employee. " * 20),
+        encoding="utf-8",
+    )
+
+    result = index_document(doc, embedder=FakeEmbedder(), store=store, source_name="reqs")
+
+    assert result.chunks_embedded >= 1
+    assert source_status(store, "reqs").current, "a freshly indexed document is not stale"
+
+
+def test_document_source_detects_an_edit(tmp_path, store):
+    from meta_harness.embeddings import index_document
+
+    doc = tmp_path / "requirements.md"
+    doc.write_text("# Payroll\n\n" + ("Original requirement text. " * 30), encoding="utf-8")
+    index_document(doc, embedder=FakeEmbedder(), store=store, source_name="reqs")
+
+    doc.write_text("# Payroll\n\n" + ("Rewritten requirement text. " * 30), encoding="utf-8")
+
+    assert not source_status(store, "reqs").current
+
+
+def test_document_source_rejects_an_empty_file(tmp_path, store):
+    from meta_harness.embeddings import SourceIngestError, index_document
+
+    empty = tmp_path / "blank.md"
+    empty.write_text("   \n", encoding="utf-8")
+
+    with pytest.raises(SourceIngestError, match="no extractable text"):
+        index_document(empty, embedder=FakeEmbedder(), store=store, source_name="blank")
+
+
+def test_github_url_naming():
+    from meta_harness.embeddings import name_from_github_url
+
+    assert name_from_github_url("https://github.com/owner/repo.git") == "repo"
+    assert name_from_github_url("https://github.com/owner/repo/") == "repo"
+    assert name_from_github_url("git@github.com:owner/repo.git") == "repo"
+
+
+def test_unknown_kind_is_rejected(repo, store):
+    with pytest.raises(SourceError, match="Unknown source kind"):
+        store.sources.register("x", repo, kind="nonsense")
+
+
+# -- usable before indexing -------------------------------------------------
+
+
+def test_a_registered_source_is_searchable_before_anything_is_embedded(repo, store):
+    """Adding a source is instant; embedding is not. Retrieval must work from
+    the moment a source exists, or "add" is only nominally fast."""
+    store.sources.register("project", repo)
+
+    hits = hybrid_search("CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=3)
+
+    assert hits, "an unembedded source must still return text matches"
+    assert all(hit.retrieval == "lexical" for hit in hits)
+    assert any("people.go" in hit.path for hit in hits)
+
+
+def test_unembedded_results_carry_real_context_from_disk(repo, store):
+    """There is no index to read from, so the surrounding lines come straight
+    off the working tree — which also means they cannot be stale."""
+    store.sources.register("project", repo)
+
+    hit = hybrid_search("CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=1)[0]
+
+    assert "CreateEmployee" in hit.text
+    assert hit.end_line > hit.start_line, "context lines should surround the match"
+
+
+def test_unknown_source_still_raises(store):
+    """Falling back to text search must not paper over a genuinely wrong name."""
+    from meta_harness.embeddings import VectorStoreError
+
+    with pytest.raises(VectorStoreError):
+        hybrid_search("anything", repo="never-registered", embedder=FakeEmbedder(), store=store)
+
+
+def test_lexical_falls_back_to_scanning_without_git_or_ripgrep(tmp_path, monkeypatch):
+    """git grep needs an actual repository. On a plain directory it fails
+    outright, which would leave text search unavailable rather than slow."""
+    from meta_harness.embeddings import lexical
+
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    (plain / "service.go").write_text("package svc\n\nfunc CreateEmployee() {}\n", encoding="utf-8")
+    monkeypatch.setattr(lexical, "ripgrep_path", lambda: None)
+
+    assert lexical.available_backend(plain) == lexical.BACKEND_SCAN
+    hits = lexical.find_symbol("CreateEmployee", root=plain)
+    assert [h.path for h in hits] == ["service.go"]
+
+
+def test_skeleton_indexes_declarations_not_bodies():
+    """Bodies are most of the text and little of the meaning — measured at
+    ~15% of a real project, which is the difference between an hour of
+    indexing and minutes."""
+    from meta_harness.embeddings.chunking import chunk_skeleton
+
+    source = (
+        "// CreateEmployee adds a person to the payroll.\n"
+        "func CreateEmployee(name string) error {\n"
+        + "\tdoSomethingVerbose()\n" * 200
+        + "}\n"
+    )
+    chunks = chunk_skeleton(source, path="people.go", language="go")
+
+    assert len(chunks) == 1
+    body = chunks[0].text
+    assert "CreateEmployee" in body
+    assert "adds a person to the payroll" in body, "the doc comment carries the meaning"
+    assert "doSomethingVerbose" not in body, "the body is what we are dropping"
+    assert len(body) < len(source) / 10
+
+
+# -- skeleton indexing end to end -------------------------------------------
+
+
+def test_skeleton_index_expands_to_real_code_on_retrieval(repo, store):
+    """The index holds declarations; the answer must hold code. Otherwise the
+    saving comes out of the caller's context rather than the index."""
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="project", mode="skeleton")
+
+    hits = hybrid_search("CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=2)
+
+    match = next(h for h in hits if "people.go" in h.path)
+    assert match.mode == "skeleton"
+    assert "return &Employee{Name: name}" in match.text, "the body must be read back from disk"
+
+
+def test_skeleton_hits_are_verified_by_construction(repo, store):
+    """Expansion reads the working tree, so there is no stored copy that could
+    have drifted — reporting anything else would be misleading."""
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="project", mode="skeleton")
+
+    hits = hybrid_search(
+        "CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=1, verify=True
+    )
+
+    assert hits[0].verification == VERIFIED
+
+
+def test_skeleton_expansion_is_bounded(tmp_path, store):
+    """A skeleton chunk spans a file's first declaration to its last, so
+    expanding to its own range returns the whole file — and a dozen of those
+    buries the answer they were meant to supply."""
+    from meta_harness.embeddings.indexer import SKELETON_EXPANSION_LINES
+
+    root = tmp_path / "big"
+    root.mkdir()
+    (root / "huge.go").write_text(
+        "package huge\n\n" + "".join(f"func Thing{i}() {{\n\treturn\n}}\n\n" for i in range(400)),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    index_repository(root, embedder=FakeEmbedder(), store=store, repo_name="big", mode="skeleton")
+
+    hits = hybrid_search("Thing", repo="big", embedder=FakeEmbedder(), store=store, limit=1)
+
+    assert hits
+    assert len(hits[0].text.splitlines()) <= SKELETON_EXPANSION_LINES
+
+
+def test_skeleton_indexes_far_less_than_full(repo, store):
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="skel", mode="skeleton")
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="full", mode="full")
+
+    sizes = {name: chunks for name, _files, chunks in store.repos()}
+    skel_text = store._connection.execute(
+        "SELECT SUM(LENGTH(text)) FROM chunks WHERE repo='skel'"
+    ).fetchone()[0]
+    full_text = store._connection.execute(
+        "SELECT SUM(LENGTH(text)) FROM chunks WHERE repo='full'"
+    ).fetchone()[0]
+
+    assert skel_text < full_text, "declarations must be smaller than bodies"
+    assert sizes["skel"] > 0
+
+
+def test_index_rejects_an_unknown_mode(repo, store):
+    with pytest.raises(ValueError, match="mode must be"):
+        index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="x", mode="nonsense")
+
+
+def test_mixed_width_index_is_reported_clearly(repo, store):
+    """Two backends writing one source produces vectors of different widths.
+    Reshaping blind turns that into an opaque numpy error far from the cause."""
+    from meta_harness.embeddings import VectorStoreError
+    from meta_harness.embeddings.chunking import Chunk
+
+    chunk = Chunk(path="a.go", language="go", start_line=1, end_line=2, text="x")
+    store.replace_file("mixed", "a.go", "h1", [chunk], [[0.1] * DIMS])
+    store.replace_file("mixed", "b.go", "h2", [chunk], [[0.1] * (DIMS * 2)])
+
+    with pytest.raises(VectorStoreError, match="different widths"):
+        store.search("mixed", [0.1] * DIMS)
+
+
+def test_concurrent_indexing_of_one_source_is_refused(repo, store):
+    """Two jobs writing the same source interleave and leave an index built by
+    two backends, which then fails to load at all."""
+    from filelock import FileLock
+
+    from meta_harness.embeddings.indexer import IndexInProgressError, _safe_lock_name
+
+    held = FileLock(str(store.db_path.parent / f".index-{_safe_lock_name('project')}.lock"))
+    held.acquire()
+    try:
+        with pytest.raises(IndexInProgressError, match="already being indexed"):
+            index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="project")
+    finally:
+        held.release()

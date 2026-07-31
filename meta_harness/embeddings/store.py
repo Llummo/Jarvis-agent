@@ -50,6 +50,13 @@ CREATE INDEX IF NOT EXISTS idx_chunks_repo_path ON chunks(repo, path);
 
 DEFAULT_DB_NAME = "embeddings.db"
 
+# Added after the first databases were written; SQLite has no
+# ADD COLUMN IF NOT EXISTS, so this is applied defensively on open.
+CHUNK_MIGRATIONS = ("ALTER TABLE chunks ADD COLUMN mode TEXT DEFAULT 'full'",)
+
+MODE_FULL = "full"
+MODE_SKELETON = "skeleton"
+
 
 class VectorStoreError(RuntimeError):
     """Raised when the store cannot satisfy a request."""
@@ -71,6 +78,9 @@ class SearchHit:
     # is opt-in rather than silently assumed.
     retrieval: str = "semantic"
     verification: str = "unchecked"
+    # How the chunk was indexed. A `skeleton` chunk holds declarations only,
+    # and is expanded back to the real code from disk before it is returned.
+    mode: str = MODE_FULL
 
     @property
     def location(self) -> str:
@@ -101,6 +111,11 @@ class VectorStore:
         self._connection = sqlite3.connect(str(self.db_path))
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(SCHEMA)
+        for statement in CHUNK_MIGRATIONS:
+            try:
+                self._connection.execute(statement)
+            except Exception:
+                pass  # already applied
         self._connection.commit()
         # Registered origins for everything in this database. Sharing the
         # connection keeps chunks and their provenance in one transaction
@@ -127,7 +142,13 @@ class VectorStore:
         return {row["path"]: row["content_hash"] for row in rows}
 
     def replace_file(
-        self, repo: str, path: str, content_hash: str, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]
+        self,
+        repo: str,
+        path: str,
+        content_hash: str,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]],
+        mode: str = MODE_FULL,
     ) -> None:
         """Swap in a file's chunks atomically.
 
@@ -145,8 +166,8 @@ class VectorStore:
                 "DELETE FROM chunks WHERE repo = ? AND path = ?", (repo, path)
             )
             self._connection.executemany(
-                "INSERT INTO chunks (repo, path, language, start_line, end_line, text, dimensions, vector) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO chunks (repo, path, language, start_line, end_line, text, dimensions, vector, mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         repo,
@@ -157,6 +178,7 @@ class VectorStore:
                         chunk.text,
                         len(vector),
                         np.asarray(vector, dtype=np.float32).tobytes(),
+                        mode,
                     )
                     for chunk, vector in zip(chunks, vectors)
                 ],
@@ -206,8 +228,8 @@ class VectorStore:
 
     def _load_matrix(self, repo: str, dimensions: int) -> Tuple[np.ndarray, List[sqlite3.Row]]:
         rows = self._connection.execute(
-            "SELECT path, language, start_line, end_line, text, dimensions, vector "
-            "FROM chunks WHERE repo = ?",
+            "SELECT path, language, start_line, end_line, text, dimensions, vector, "
+            "COALESCE(mode, 'full') AS mode FROM chunks WHERE repo = ?",
             (repo,),
         ).fetchall()
         if not rows:
@@ -215,7 +237,22 @@ class VectorStore:
                 f"Nothing indexed for repo '{repo}'. Run: meta-harness index build --repo <path>"
             )
 
-        stored_dimensions = rows[0]["dimensions"]
+        # Every row must share a width. Trusting the first one and reshaping
+        # blind turns a mixed index into an opaque numpy error hundreds of
+        # lines from the cause — and an index does get mixed in practice, by
+        # two jobs writing the same source with different settings.
+        widths = {row["dimensions"] for row in rows}
+        if len(widths) > 1:
+            counts = ", ".join(
+                f"{w}d x{sum(1 for r in rows if r['dimensions'] == w)}" for w in sorted(widths)
+            )
+            raise VectorStoreError(
+                f"Index for '{repo}' holds vectors of different widths ({counts}), which means "
+                "it was written by more than one embedding backend. Rebuild it with: "
+                "meta-harness index build --repo <path> --rebuild"
+            )
+
+        stored_dimensions = widths.pop()
         if stored_dimensions != dimensions:
             raise VectorStoreError(
                 f"Index for '{repo}' holds {stored_dimensions}-dimensional vectors but the "
@@ -267,6 +304,7 @@ class VectorStore:
                     text=row["text"],
                     score=score,
                     repo=repo,
+                    mode=row["mode"],
                 )
             )
         return hits

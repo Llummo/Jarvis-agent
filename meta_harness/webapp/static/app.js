@@ -2266,16 +2266,78 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 // ===========================================================================
-// Sources — the repositories the harness may read context from.
+// Sources — what the harness is allowed to read context from.
 //
-// Indexing outlives its HTTP request (minutes on a small project, hours on a
-// large one), so adding a source starts a background job and this polls the
-// progress token until it reports done.
+// Two things shape this. Ingestion outlives its HTTP request (cloning, then
+// minutes to hours of embedding), so adding a source starts a background job
+// and this polls it. And because the work is slow and invisible, every action
+// says something immediately — a button that silently starts a 20-minute job
+// is indistinguishable from a broken one.
 // ===========================================================================
 
 const sourcesUI = (() => {
   const byId = (id) => document.getElementById(id);
   let sources = [];
+
+  // What each source kind wants in the target field.
+  const KIND_HINTS = {
+    repository: {
+      label: "Folder path",
+      placeholder: "/home/you/projects/sigo",
+      note: "An absolute path to a checkout on this machine.",
+    },
+    github: {
+      label: "Repository URL",
+      placeholder: "https://github.com/owner/repo",
+      note: "Cloned shallowly into a local cache, then indexed. Private repos need your git credentials to already work.",
+    },
+    document: {
+      label: "Document path",
+      placeholder: "/home/you/docs/requirements.pdf",
+      note: "A single .md, .txt or .pdf file. PDF text is extracted automatically.",
+    },
+  };
+
+  function feedback(kind, message) {
+    const error = byId("source-error");
+    const success = byId("source-success");
+    if (!error || !success) return;
+    error.hidden = true;
+    success.hidden = true;
+    if (!message) return;
+    const node = kind === "error" ? error : success;
+    node.textContent = message;
+    node.hidden = false;
+  }
+
+  function busy(on, message) {
+    const box = byId("source-thinking");
+    if (!box) return;
+    box.hidden = !on;
+    if (on && message) box.querySelector(".thinking-text").textContent = message;
+    if (!on) byId("source-phase-log").innerHTML = "";
+  }
+
+  function logStep(message) {
+    const log = byId("source-phase-log");
+    const text = byId("source-thinking");
+    if (text) text.querySelector(".thinking-text").textContent = message;
+    if (!log) return;
+    const item = document.createElement("li");
+    item.textContent = message;
+    log.appendChild(item);
+    // Only the tail is useful; a 2,000-file index would otherwise grow a
+    // list nobody scrolls.
+    while (log.children.length > 6) log.removeChild(log.firstChild);
+  }
+
+  function applyKind() {
+    const kind = byId("source-kind").value;
+    const hint = KIND_HINTS[kind] || KIND_HINTS.repository;
+    byId("source-target-label").textContent = hint.label;
+    byId("source-target").placeholder = hint.placeholder;
+    byId("source-target-note").textContent = hint.note;
+  }
 
   function verificationTag(status) {
     if (status === "verified") return '<span class="pill pill-ok">verified</span>';
@@ -2284,24 +2346,14 @@ const sourcesUI = (() => {
     return "";
   }
 
-  function status(message, isError) {
-    const node = byId("source-status");
-    if (!node) return;
-    if (!message) {
-      node.hidden = true;
-      return;
-    }
-    node.hidden = false;
-    node.textContent = message;
-    node.classList.toggle("status-error", Boolean(isError));
-  }
+  const KIND_LABELS = { repository: "folder", github: "clone", document: "document" };
 
   function renderList() {
     const host = byId("source-list");
     if (!host) return;
     if (!sources.length) {
       host.innerHTML =
-        '<p class="empty-note">No sources yet. Add a repository above to let the harness read its code.</p>';
+        '<p class="hint">Nothing registered yet. Add a folder, a repository URL or a document above.</p>';
       return;
     }
     host.innerHTML = sources
@@ -2313,11 +2365,13 @@ const sourcesUI = (() => {
           <div class="source-card">
             <div class="source-head">
               <strong>${escapeHtml(source.name)}</strong>
+              <span class="pill">${escapeHtml(KIND_LABELS[source.kind] || source.kind)}</span>
               ${state}
-              <span class="field-note">${escapeHtml(source.revision || "")}</span>
             </div>
-            <div class="field-note">${escapeHtml(source.root)}</div>
-            <div class="field-note">${escapeHtml(source.status)} · ${source.chunks} chunk(s)</div>
+            <div class="field-note">${escapeHtml(source.origin || source.root)}</div>
+            <div class="field-note">${escapeHtml(source.status)} · ${source.chunks} chunk(s)${
+              source.revision ? ` · ${escapeHtml(source.revision)}` : ""
+            }</div>
             <div class="btn-row">
               <button type="button" data-verify="${escapeHtml(source.name)}">Verify</button>
               <button type="button" data-reindex="${escapeHtml(source.name)}">Re-index</button>
@@ -2332,20 +2386,25 @@ const sourcesUI = (() => {
     });
     host.querySelectorAll("[data-reindex]").forEach((button) => {
       const source = sources.find((item) => item.name === button.dataset.reindex);
-      button.addEventListener("click", () => add(source.root, source.name, true));
+      button.addEventListener("click", () => ingest(source.kind, source.origin || source.root, source.name, true));
     });
     host.querySelectorAll("[data-remove]").forEach((button) => {
       button.addEventListener("click", () => remove(button.dataset.remove));
     });
   }
 
-  // Every place a source can be chosen: the search box here, and the module
-  // check panel on each tracker. Kept in one function so a newly added source
-  // appears everywhere at once.
+  // Every place a source can be chosen: the preview box here, and Module check
+  // on each tracker. One function so a new source appears everywhere at once.
   function renderPickers() {
-    const options = sources.map((s) => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`);
+    const options = sources.map(
+      (s) => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`,
+    );
     const search = byId("source-search-repo");
-    if (search) search.innerHTML = options.join("");
+    if (search) {
+      const previous = search.value;
+      search.innerHTML = options.join("");
+      if (previous && sources.some((s) => s.name === previous)) search.value = previous;
+    }
 
     ["clickup", "linear"].forEach((tracker) => {
       const select = byId(`${tracker}-module-source`);
@@ -2358,7 +2417,7 @@ const sourcesUI = (() => {
     });
   }
 
-  // Choosing a source makes the paste box redundant; saying so beats leaving
+  // Choosing a source makes the paste box redundant; hiding it beats leaving
   // two inputs that look equally required.
   function applyModuleSourceMode(tracker) {
     const select = byId(`${tracker}-module-source`);
@@ -2370,7 +2429,7 @@ const sourcesUI = (() => {
     if (note) {
       note.textContent = chosen
         ? `The harness will read ${chosen} itself and verify every span against the working tree.`
-        : "Choose a registered repository to read the module's real code instead of pasting. Add one in the Sources tab.";
+        : "Choose a registered source to read the module's real code instead of pasting. Add one in the Sources tab.";
     }
   }
 
@@ -2380,46 +2439,56 @@ const sourcesUI = (() => {
       sources = data.sources || [];
       renderList();
       renderPickers();
+      return true;
     } catch (err) {
-      status(err.message, true);
+      feedback("error", `Could not load sources: ${err.message}`);
+      return false;
     }
   }
 
   async function verify(name) {
-    status(`Verifying ${name}…`);
+    feedback(null);
+    busy(true, `Verifying ${name} against the working tree…`);
     try {
       const updated = await fetchJson(`/api/sources/${encodeURIComponent(name)}/verify`, {
         method: "POST",
       });
       sources = sources.map((s) => (s.name === name ? updated : s));
       renderList();
-      status(`${name}: ${updated.status}`);
+      feedback(updated.current ? "success" : "error", `${name}: ${updated.status}`);
     } catch (err) {
-      status(err.message, true);
+      feedback("error", err.message);
+    } finally {
+      busy(false);
     }
   }
 
   async function remove(name) {
-    status(`Removing ${name}…`);
+    feedback(null);
+    busy(true, `Removing ${name}…`);
     try {
       const data = await fetchJson(`/api/sources/${encodeURIComponent(name)}`, { method: "DELETE" });
       sources = data.sources || [];
       renderList();
       renderPickers();
-      status(`Removed ${name}.`);
+      feedback("success", `Removed ${name} and everything indexed from it.`);
     } catch (err) {
-      status(err.message, true);
+      feedback("error", err.message);
+    } finally {
+      busy(false);
     }
   }
 
-  // Poll until the background job reports terminal. Failures to poll are
-  // ignored per tick — a dropped request must not abandon a running index.
+  // Poll until the background job reports terminal. A failed poll is ignored
+  // per tick — a dropped request must not abandon a job that is still running.
   function followJob(token, onStep) {
     return new Promise((resolve) => {
+      let lastSeen = 0;
       const tick = async () => {
         try {
           const data = await fetchJson(`/api/progress/${encodeURIComponent(token)}`);
-          if (data.steps && data.steps.length) onStep(data.steps[data.steps.length - 1]);
+          (data.steps || []).slice(lastSeen).forEach(onStep);
+          lastSeen = (data.steps || []).length;
           if (data.done) {
             resolve(data.error || "");
             return;
@@ -2433,44 +2502,51 @@ const sourcesUI = (() => {
     });
   }
 
-  async function add(path, name, rebuild) {
-    const target = (path || byId("source-path").value || "").trim();
-    if (!target) {
-      status("Give the path to a repository on this machine.", true);
+  async function ingest(kind, target, name, rebuild) {
+    const resolvedKind = kind || byId("source-kind").value;
+    const resolvedTarget = (target || byId("source-target").value || "").trim();
+    if (!resolvedTarget) {
+      feedback("error", `Give the ${KIND_HINTS[resolvedKind].label.toLowerCase()} first.`);
       return;
     }
+
     const button = byId("source-add-btn");
-    const spinner = byId("source-thinking");
-    const step = byId("source-thinking-step");
     button.disabled = true;
-    status(null);
+    feedback(null);
+    busy(true, rebuild ? `Re-indexing ${name}…` : `Adding ${resolvedTarget}…`);
+
     try {
       const started = await fetchJson("/api/sources", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          path: target,
+          kind: resolvedKind,
+          target: resolvedTarget,
           name: (name || byId("source-name").value || "").trim() || null,
           rebuild: Boolean(rebuild),
         }),
       });
+
+      logStep(`Started. This can take a while on a large repository.`);
+      const error = await followJob(started.progress_token, logStep);
       await load();
-      if (!started.indexing) {
-        status(`Registered ${started.name}.`);
-        return;
+      if (error) {
+        feedback("error", `${started.name} failed: ${error}`);
+      } else {
+        const source = sources.find((s) => s.name === started.name);
+        feedback(
+          "success",
+          `${started.name} is ready — ${source ? source.chunks : 0} chunk(s) indexed and available in Module check.`,
+        );
+        if (!name) {
+          byId("source-target").value = "";
+          byId("source-name").value = "";
+        }
       }
-      spinner.hidden = false;
-      if (step) step.textContent = "Starting…";
-      const error = await followJob(started.progress_token, (message) => {
-        if (step) step.textContent = message;
-      });
-      spinner.hidden = true;
-      status(error ? `Indexing failed: ${error}` : `Indexed ${started.name}.`, Boolean(error));
-      await load();
     } catch (err) {
-      spinner.hidden = true;
-      status(err.message, true);
+      feedback("error", err.message);
     } finally {
+      busy(false);
       button.disabled = false;
     }
   }
@@ -2479,11 +2555,19 @@ const sourcesUI = (() => {
     const repo = byId("source-search-repo").value;
     const query = byId("source-search-query").value.trim();
     const host = byId("source-search-results");
-    if (!repo || !query) {
-      status("Pick a source and type something to search for.", true);
+    const error = byId("source-search-error");
+    error.hidden = true;
+    if (!repo) {
+      error.textContent = "Add a source first — there is nothing to search.";
+      error.hidden = false;
       return;
     }
-    host.innerHTML = '<p class="empty-note">Searching…</p>';
+    if (!query) {
+      error.textContent = "Type something to search for.";
+      error.hidden = false;
+      return;
+    }
+    host.innerHTML = '<p class="hint">Searching…</p>';
     try {
       const data = await fetchJson("/api/sources/search", {
         method: "POST",
@@ -2491,7 +2575,7 @@ const sourcesUI = (() => {
         body: JSON.stringify({ query, repo, limit: 8, verify: true }),
       });
       if (!data.hits.length) {
-        host.innerHTML = '<p class="empty-note">Nothing matched.</p>';
+        host.innerHTML = '<p class="hint">Nothing matched. Try different wording, or re-index.</p>';
         return;
       }
       host.innerHTML = data.hits
@@ -2510,26 +2594,34 @@ const sourcesUI = (() => {
             </div>`,
         )
         .join("");
-      status(null);
     } catch (err) {
       host.innerHTML = "";
-      status(err.message, true);
+      error.textContent = err.message;
+      error.hidden = false;
     }
   }
 
   function init() {
     const addBtn = byId("source-add-btn");
     if (!addBtn) return;
-    addBtn.addEventListener("click", () => add());
-    byId("source-refresh-btn").addEventListener("click", load);
+    addBtn.addEventListener("click", () => ingest());
+    byId("source-refresh-btn").addEventListener("click", async () => {
+      feedback(null);
+      if (await load()) feedback("success", `${sources.length} source(s) registered.`);
+    });
+    byId("source-kind").addEventListener("change", applyKind);
     byId("source-search-btn").addEventListener("click", search);
     byId("source-search-query").addEventListener("keydown", (event) => {
       if (event.key === "Enter") search();
+    });
+    byId("source-target").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") ingest();
     });
     ["clickup", "linear"].forEach((tracker) => {
       const select = byId(`${tracker}-module-source`);
       if (select) select.addEventListener("change", () => applyModuleSourceMode(tracker));
     });
+    applyKind();
     load();
   }
 

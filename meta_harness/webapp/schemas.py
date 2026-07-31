@@ -224,6 +224,7 @@ class SourceOut(BaseModel):
     name: str
     root: str
     kind: str
+    origin: str = ""
     revision: str = ""
     indexed: bool = False
     status: str = ""
@@ -241,18 +242,23 @@ class SourcesOut(BaseModel):
 
 
 class AddSourceIn(BaseModel):
-    """Register a repository, and by default index it straight away."""
+    """Register a context source and index it.
 
-    path: str
+    `kind` decides what `target` means: a directory on this machine, a clone
+    URL, or a path to a single document.
+    """
+
+    target: str
+    kind: str = "repository"
     name: Optional[str] = None
-    index: bool = True
     rebuild: bool = False
     progress_token: Optional[str] = None
 
 
 class AddSourceOut(BaseModel):
     name: str
-    root: str
+    kind: str = "repository"
+    origin: str = ""
     indexing: bool = False
     progress_token: str = ""
 

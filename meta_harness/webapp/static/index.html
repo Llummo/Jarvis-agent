@@ -994,65 +994,117 @@
          context from. Registering one is what makes its code available to
          the Module check workflow on both trackers.
          =================================================================== -->
+    <!-- ===================================================================
+         Sources tab. A source is something the harness is allowed to read
+         context from: a checkout on this machine, a repository to clone, or a
+         single document. The same source feeds Module check on both trackers.
+         =================================================================== -->
+    <!-- ===================================================================
+         Sources tab. A source is something the harness is allowed to read
+         context from: a checkout on this machine, a repository to clone, or a
+         single document. The same source feeds Module check on both trackers.
+
+         Structured as panels like every other tab: .panel carries no padding
+         of its own, so content must sit inside .panel-head / .panel-body.
+         =================================================================== -->
     <section id="tab-sources" class="tab-panel" data-tracker="sources" hidden>
-      <div class="panel">
-        <h2>Trusted context sources</h2>
-        <p class="panel-intro">
-          A source is a repository the harness may read from. Its code is indexed once,
-          and every span retrieved from it is re-read from disk before use — so the
-          context behind a verdict is the code as it is now, with a file and line you
-          can open.
-        </p>
-
-        <div class="field-grid">
-          <div class="field field-wide">
-            <label for="source-path">Repository path</label>
-            <input type="text" id="source-path" placeholder="/home/you/projects/sigo" autocomplete="off">
-            <span class="field-note">An absolute path to a checkout on this machine.</span>
-          </div>
-          <div class="field">
-            <label for="source-name">Name (optional)</label>
-            <input type="text" id="source-name" placeholder="defaults to the folder name" autocomplete="off">
-          </div>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-badge">Start here</span>
+            <div>
+              <h2>Add a source</h2>
+              <p class="hint">
+                Code and documents the harness may read. Everything retrieved is re-read
+                from disk before use, so a verdict cites a file and line you can open —
+                not a copy that may have gone stale.
+              </p>
+            </div>
         </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field">
+                <label for="source-kind">Type</label>
+                <select id="source-kind">
+                  <option value="repository">Folder on this machine</option>
+                  <option value="github">Repository URL (clone)</option>
+                  <option value="document">Document (.md, .txt, .pdf)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="source-name">Name</label>
+                <input type="text" id="source-name" placeholder="optional" autocomplete="off">
+                <span class="field-note">Defaults to the folder, repo or file name.</span>
+              </div>
+              <div class="field field-wide">
+                <label for="source-target" id="source-target-label">Folder path</label>
+                <input type="text" id="source-target" placeholder="/home/you/projects/sigo" autocomplete="off">
+                <span class="field-note" id="source-target-note">An absolute path to a checkout on this machine.</span>
+              </div>
+            </div>
 
-        <div class="btn-row">
-          <button type="button" id="source-add-btn" class="btn-primary">Add and index</button>
-          <button type="button" id="source-refresh-btn">Refresh</button>
+            <div class="btn-row">
+              <button type="button" id="source-add-btn" class="btn-primary">Add source</button>
+              <button type="button" id="source-refresh-btn">Refresh list</button>
+            </div>
+
+            <div id="source-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="source-phase-log"></ul>
+              </div>
+            </div>
+            <div id="source-error" class="error-banner" hidden></div>
+            <div id="source-success" class="success-banner" hidden></div>
         </div>
-
-        <div id="source-thinking" class="thinking-indicator" hidden>
-          <span class="spinner"></span>
-          <div>
-            <strong>Indexing…</strong>
-            <span id="source-thinking-step"></span>
-            <span class="field-note">A large repository can take a while. You can leave this tab open.</span>
-          </div>
         </div>
+      </section>
 
-        <p id="source-status" class="status-line" hidden></p>
-
-        <div id="source-list"></div>
-
-        <h3>Try a retrieval</h3>
-        <p class="panel-intro">
-          Check what a source actually returns before trusting it to drive a verdict.
-        </p>
-        <div class="field-grid">
-          <div class="field">
-            <label for="source-search-repo">Source</label>
-            <select id="source-search-repo"></select>
-          </div>
-          <div class="field field-wide">
-            <label for="source-search-query">Query</label>
-            <input type="text" id="source-search-query" placeholder="employee payroll — or an exact symbol like CreateEmployee" autocomplete="off">
-          </div>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Registered sources</h2>
+              <p class="hint">What the harness may read, and whether each index still matches its files.</p>
+            </div>
         </div>
-        <div class="btn-row">
-          <button type="button" id="source-search-btn">Search</button>
+          <div class="panel-body">
+            <div id="source-list"></div>
         </div>
-        <div id="source-search-results"></div>
-      </div>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Preview what a source returns</h2>
+              <p class="hint">
+                Check the context before trusting it to drive a verdict. Natural language
+                finds concepts; an exact identifier also runs a symbol search.
+              </p>
+            </div>
+        </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field">
+                <label for="source-search-repo">Source</label>
+                <select id="source-search-repo"></select>
+              </div>
+              <div class="field field-wide">
+                <label for="source-search-query">Query</label>
+                <input type="text" id="source-search-query" placeholder="employee payroll — or CreateEmployee" autocomplete="off">
+              </div>
+            </div>
+            <div class="btn-row">
+              <button type="button" id="source-search-btn">Search</button>
+            </div>
+            <div id="source-search-error" class="error-banner" hidden></div>
+            <div id="source-search-results"></div>
+        </div>
+        </div>
+      </section>
     </section>
   </main>
 

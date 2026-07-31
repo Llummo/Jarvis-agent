@@ -616,3 +616,90 @@ def test_local_embedder_uses_the_right_prompt_per_side(monkeypatch):
     embedder.embed_query("b")
 
     assert seen == ["document", "query"]
+
+
+# -- hosted backend batching ------------------------------------------------
+
+
+class RecordingGeminiClient:
+    """Stands in for google-genai, returning a vector that encodes its input.
+
+    Lets the batching and ordering logic be exercised without a network or a
+    quota, which is the only way to test it repeatably.
+    """
+
+    def __init__(self):
+        self.models = self
+        self.calls = []
+
+    def embed_content(self, *, model, contents, config):
+        self.calls.append(list(contents))
+
+        class Embedding:
+            def __init__(self, value):
+                # First component identifies the input; the rest pads to width.
+                self.values = [float(value)] + [1.0] * 15
+
+        return type("R", (), {"embeddings": [Embedding(int(c)) for c in contents]})()
+
+
+def _gemini_with(client, **kwargs):
+    from meta_harness.embeddings.embedder import GeminiEmbedder
+
+    embedder = GeminiEmbedder(output_dimensions=16, requests_per_minute=0, **kwargs)
+    embedder._client = client
+    return embedder
+
+
+def test_hosted_batching_preserves_input_order():
+    """Chunks are stored against their own line ranges. A reordering here
+    silently attaches every vector to the wrong span."""
+    client = RecordingGeminiClient()
+    embedder = _gemini_with(client, max_batch=4, concurrency=3)
+
+    vectors = embedder.embed_documents([str(i) for i in range(20)])
+
+    assert len(vectors) == 20
+    # The identifying component survives normalization's sign, so compare ranks.
+    recovered = [round(v[0] / v[1]) for v in vectors]
+    assert recovered == list(range(20))
+
+
+def test_hosted_batching_respects_max_batch():
+    """The hosted quota is measured in tokens, so batch size is the lever that
+    keeps a request under it."""
+    client = RecordingGeminiClient()
+    embedder = _gemini_with(client, max_batch=4, concurrency=1)
+
+    embedder.embed_documents([str(i) for i in range(10)])
+
+    assert [len(call) for call in client.calls] == [4, 4, 2]
+
+
+def test_hosted_batch_failure_falls_back_to_individual_items():
+    """One over-long input must cost that input, not the batch it landed in."""
+    from meta_harness.embeddings.embedder import EmbeddingError
+
+    class OneBadInput(RecordingGeminiClient):
+        def embed_content(self, *, model, contents, config):
+            if len(contents) > 1 and "2" in contents:
+                raise RuntimeError("400 input too long")
+            if contents == ["2"]:
+                raise RuntimeError("400 input too long")
+            return super().embed_content(model=model, contents=contents, config=config)
+
+    embedder = _gemini_with(OneBadInput(), max_batch=4, concurrency=1)
+
+    with pytest.raises(EmbeddingError):
+        embedder.embed_documents([str(i) for i in range(4)])
+
+
+def test_rate_limit_is_distinguished_from_other_failures():
+    """A 429 needs a long wait; a 500 needs a short one. Treating them alike
+    either wastes a minute or gets rejected again immediately."""
+    from meta_harness.embeddings.embedder import _is_rate_limited
+
+    assert _is_rate_limited(Exception("429 RESOURCE_EXHAUSTED quota"))
+    assert _is_rate_limited(Exception("You exceeded your current quota"))
+    assert not _is_rate_limited(Exception("503 service unavailable"))
+    assert not _is_rate_limited(Exception("400 invalid argument"))
