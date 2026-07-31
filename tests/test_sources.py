@@ -354,3 +354,19 @@ def test_hits_carry_a_followable_citation(indexed, store):
 
     assert hits[0].citation.startswith("project/")
     assert ":" in hits[0].citation
+
+
+def test_lexical_only_hits_are_not_labelled_hybrid(indexed, store):
+    """"hybrid" must mean both methods found it. A chunk recovered by lexical
+    search, then matched again by a second lexical hit, was still only ever
+    found one way."""
+    hits = hybrid_search(
+        "CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store,
+        limit=5, lexical=True,
+    )
+
+    for hit in hits:
+        if hit.retrieval == "hybrid":
+            # A hybrid hit must carry a real semantic score; a lexically
+            # recovered chunk has none.
+            assert hit.score > 0.0, f"{hit.location} claims hybrid with no semantic score"

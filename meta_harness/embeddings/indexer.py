@@ -311,11 +311,17 @@ def _fuse(semantic: Sequence, lexical: Sequence, store: VectorStore, repo: str, 
 
     scores: dict = {}
     hits: dict = {}
+    # Which chunks the semantic pass actually returned. Needed because
+    # `hits` grows as lexical matches recover chunks semantics missed, and
+    # without this a second lexical match landing in one of those would label
+    # it "hybrid" — claiming both methods found it when only one did.
+    from_semantic: set = set()
 
     for rank, hit in enumerate(semantic):
         key = (hit.path, hit.start_line)
         scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
         hits[key] = hit
+        from_semantic.add(key)
 
     for rank, lexical_hit in enumerate(lexical):
         contribution = 1.0 / (RRF_K + rank + 1)
@@ -327,7 +333,8 @@ def _fuse(semantic: Sequence, lexical: Sequence, store: VectorStore, repo: str, 
         if containing:
             for key in containing:
                 scores[key] += contribution
-                hits[key] = replace(hits[key], retrieval="hybrid")
+                if key in from_semantic:
+                    hits[key] = replace(hits[key], retrieval="hybrid")
             continue
 
         # A match in a chunk the semantic pass did not return still belongs in
