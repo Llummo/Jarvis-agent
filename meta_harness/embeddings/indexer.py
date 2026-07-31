@@ -14,6 +14,7 @@ one `git ls-files` and a hash per file.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,14 +105,19 @@ def _git_tracked_files(repo_root: Path) -> Optional[List[Path]]:
 
 
 def _walked_files(repo_root: Path) -> List[Path]:
-    """Every candidate file, skipping known-generated directories."""
+    """Every candidate file, never descending into generated directories.
+
+    Pruning during the walk rather than filtering after it is the whole point.
+    `rglob` visits every entry before anything can reject it, so on a project
+    with a 3 GB `node_modules` it spends twenty seconds enumerating files only
+    to discard them. Removing a directory from `dirnames` in place tells
+    os.walk not to enter it at all.
+    """
     found: List[Path] = []
-    for path in repo_root.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in FALLBACK_EXCLUDES for part in path.relative_to(repo_root).parts):
-            continue
-        found.append(path)
+    for current, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in FALLBACK_EXCLUDES]
+        base = Path(current)
+        found.extend(base / name for name in filenames)
     return found
 
 
@@ -397,20 +403,96 @@ def hybrid_search(
     nothing, and paying for that on every query is waste.
     """
     from meta_harness.embeddings.lexical import find_symbol, looks_like_symbol
+    from meta_harness.embeddings.store import VectorStoreError
 
-    semantic = search_repository(
-        query, repo=repo, embedder=embedder, store=store, limit=max(limit * 2, limit), min_score=min_score
-    )
+    source = store.sources.find(repo)
 
-    use_lexical = looks_like_symbol(query) if lexical is None else lexical
+    # A registered source is searchable the moment it exists, before anything
+    # has been embedded. Lexical search reads the working tree directly, so it
+    # needs no index — which is what lets adding a source be instant and
+    # useful, with embeddings improving the answers as they arrive rather than
+    # gating them.
+    semantic: List = []
+    try:
+        semantic = search_repository(
+            query, repo=repo, embedder=embedder, store=store,
+            limit=max(limit * 2, limit), min_score=min_score,
+        )
+    except VectorStoreError:
+        if source is None:
+            raise  # genuinely unknown source — the caller should hear about it
+        indexed = False
+    else:
+        indexed = True
+
+    # With no embeddings to lean on, run the text search for every query
+    # rather than only for identifier-shaped ones: a partial word match is a
+    # far better answer than nothing.
+    if lexical is None:
+        use_lexical = looks_like_symbol(query) if indexed else True
+    else:
+        use_lexical = lexical
+
     lexical_hits: List = []
-    if use_lexical:
-        source = store.sources.find(repo)
-        if source is not None and source.exists:
-            lexical_hits = find_symbol(query, root=source.root, limit=limit * 2)
+    if use_lexical and source is not None and source.exists:
+        lexical_hits = find_symbol(query, root=source.root, limit=limit * 2)
+        if not lexical_hits and not indexed:
+            # Nothing matched the phrase as written; the individual words may
+            # still land, which is the common case for a natural-language ask
+            # against a corpus that has not been embedded yet.
+            for word in sorted(set(query.split()), key=len, reverse=True)[:3]:
+                if len(word) < 4:
+                    continue
+                lexical_hits = find_symbol(word, root=source.root, limit=limit * 2, whole_word=False)
+                if lexical_hits:
+                    break
 
-    results = _fuse(semantic, lexical_hits, store, repo, limit) if lexical_hits else semantic[:limit]
+    if not indexed:
+        results = _lexical_only(source, lexical_hits, limit)
+    elif lexical_hits:
+        results = _fuse(semantic, lexical_hits, store, repo, limit)
+    else:
+        results = semantic[:limit]
     return verify_hits(store, results) if verify else results
+
+
+def _lexical_only(source, lexical_hits: Sequence, limit: int) -> List:
+    """Build results from text matches alone, reading context from disk.
+
+    Used when a source is registered but not yet embedded. The lines come
+    straight from the working tree, so these results cannot be stale — there
+    is no copy to go out of date.
+    """
+    from meta_harness.embeddings.store import SearchHit
+
+    CONTEXT = 6
+    results: List = []
+    seen = set()
+    for hit in lexical_hits[:limit]:
+        key = (hit.path, hit.line // 20)  # collapse hits clustered in one area
+        if key in seen:
+            continue
+        seen.add(key)
+        target = source.root / hit.path
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        start = max(1, hit.line - CONTEXT)
+        end = min(len(lines), hit.line + CONTEXT)
+        results.append(
+            SearchHit(
+                path=hit.path,
+                language="",
+                start_line=start,
+                end_line=end,
+                text="\n".join(lines[start - 1 : end]),
+                score=0.0,
+                repo=source.name,
+                retrieval="lexical",
+            )
+        )
+    return results
 
 
 # --- source kinds -----------------------------------------------------------

@@ -30,6 +30,7 @@ SEARCH_TIMEOUT_S = 30.0
 
 BACKEND_RIPGREP = "ripgrep"
 BACKEND_GIT_GREP = "git-grep"
+BACKEND_SCAN = "python-scan"
 BACKEND_NONE = "none"
 
 
@@ -56,13 +57,19 @@ def ripgrep_path() -> Optional[str]:
     return shutil.which("rg")
 
 
-def available_backend() -> str:
-    """Which lexical backend will actually be used."""
+def available_backend(root: Optional[Path] = None) -> str:
+    """Which lexical backend will actually be used.
+
+    `git grep` needs an actual git repository — it fails outright on a plain
+    directory, which is easy to miss because most checkouts are repositories.
+    When `root` is given this reports what will really run there.
+    """
     if ripgrep_path():
         return BACKEND_RIPGREP
     if shutil.which("git"):
-        return BACKEND_GIT_GREP
-    return BACKEND_NONE
+        if root is None or (Path(root) / ".git").exists():
+            return BACKEND_GIT_GREP
+    return BACKEND_SCAN
 
 
 def _run(command: Sequence[str], cwd: Path) -> Optional[str]:
@@ -116,6 +123,8 @@ def _ripgrep(symbol: str, root: Path, limit: int, whole_word: bool) -> Optional[
 def _git_grep(symbol: str, root: Path, limit: int, whole_word: bool) -> Optional[List[LexicalHit]]:
     """Fallback search. Covers tracked and untracked-but-not-ignored files,
     matching what the indexer considers part of the repository."""
+    if not (root / ".git").exists():
+        return None
     command = ["git", "grep", "-n", "-I", "--fixed-strings", "--untracked"]
     if whole_word:
         command.append("-w")
@@ -134,6 +143,41 @@ def _git_grep(symbol: str, root: Path, limit: int, whole_word: bool) -> Optional
         hits.append(LexicalHit(path=parts[0], line=int(parts[1]), text=parts[2]))
         if len(hits) >= limit:
             break
+    return hits
+
+
+def _python_scan(
+    symbol: str, root: Path, limit: int, whole_word: bool
+) -> List[LexicalHit]:
+    """Search by reading the files, when no external tool can.
+
+    The last resort, and the only one that works on a directory that is not a
+    git repository and has no ripgrep available — which would otherwise leave
+    text search completely unavailable, not merely slow.
+    """
+    from meta_harness.embeddings.indexer import discover_files
+
+    needle = symbol.lower()
+    pattern = re.compile(rf"\b{re.escape(symbol)}\b") if whole_word else None
+
+    hits: List[LexicalHit] = []
+    for path in discover_files(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if needle not in text.lower():
+            continue  # cheap reject before paying for a line split
+        relative = path.relative_to(root).as_posix()
+        for number, line in enumerate(text.splitlines(), start=1):
+            if pattern is not None:
+                if not pattern.search(line):
+                    continue
+            elif symbol not in line:
+                continue
+            hits.append(LexicalHit(path=relative, line=number, text=line.rstrip()))
+            if len(hits) >= limit:
+                return hits
     return hits
 
 
@@ -160,7 +204,7 @@ def find_symbol(
     if hits is None:
         hits = _git_grep(symbol, root, limit, whole_word)
     if hits is None:
-        return []
+        hits = _python_scan(symbol, root, limit, whole_word)
 
     if indexable_only:
         # Keep lexical and semantic results drawn from the same universe of

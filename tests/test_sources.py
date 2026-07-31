@@ -425,3 +425,74 @@ def test_github_url_naming():
 def test_unknown_kind_is_rejected(repo, store):
     with pytest.raises(SourceError, match="Unknown source kind"):
         store.sources.register("x", repo, kind="nonsense")
+
+
+# -- usable before indexing -------------------------------------------------
+
+
+def test_a_registered_source_is_searchable_before_anything_is_embedded(repo, store):
+    """Adding a source is instant; embedding is not. Retrieval must work from
+    the moment a source exists, or "add" is only nominally fast."""
+    store.sources.register("project", repo)
+
+    hits = hybrid_search("CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=3)
+
+    assert hits, "an unembedded source must still return text matches"
+    assert all(hit.retrieval == "lexical" for hit in hits)
+    assert any("people.go" in hit.path for hit in hits)
+
+
+def test_unembedded_results_carry_real_context_from_disk(repo, store):
+    """There is no index to read from, so the surrounding lines come straight
+    off the working tree — which also means they cannot be stale."""
+    store.sources.register("project", repo)
+
+    hit = hybrid_search("CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=1)[0]
+
+    assert "CreateEmployee" in hit.text
+    assert hit.end_line > hit.start_line, "context lines should surround the match"
+
+
+def test_unknown_source_still_raises(store):
+    """Falling back to text search must not paper over a genuinely wrong name."""
+    from meta_harness.embeddings import VectorStoreError
+
+    with pytest.raises(VectorStoreError):
+        hybrid_search("anything", repo="never-registered", embedder=FakeEmbedder(), store=store)
+
+
+def test_lexical_falls_back_to_scanning_without_git_or_ripgrep(tmp_path, monkeypatch):
+    """git grep needs an actual repository. On a plain directory it fails
+    outright, which would leave text search unavailable rather than slow."""
+    from meta_harness.embeddings import lexical
+
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    (plain / "service.go").write_text("package svc\n\nfunc CreateEmployee() {}\n", encoding="utf-8")
+    monkeypatch.setattr(lexical, "ripgrep_path", lambda: None)
+
+    assert lexical.available_backend(plain) == lexical.BACKEND_SCAN
+    hits = lexical.find_symbol("CreateEmployee", root=plain)
+    assert [h.path for h in hits] == ["service.go"]
+
+
+def test_skeleton_indexes_declarations_not_bodies():
+    """Bodies are most of the text and little of the meaning — measured at
+    ~15% of a real project, which is the difference between an hour of
+    indexing and minutes."""
+    from meta_harness.embeddings.chunking import chunk_skeleton
+
+    source = (
+        "// CreateEmployee adds a person to the payroll.\n"
+        "func CreateEmployee(name string) error {\n"
+        + "\tdoSomethingVerbose()\n" * 200
+        + "}\n"
+    )
+    chunks = chunk_skeleton(source, path="people.go", language="go")
+
+    assert len(chunks) == 1
+    body = chunks[0].text
+    assert "CreateEmployee" in body
+    assert "adds a person to the payroll" in body, "the doc comment carries the meaning"
+    assert "doSomethingVerbose" not in body, "the body is what we are dropping"
+    assert len(body) < len(source) / 10

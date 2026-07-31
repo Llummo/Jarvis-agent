@@ -17,9 +17,21 @@ deliberately separate.
 from __future__ import annotations
 
 import os
+import threading
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Protocol, Sequence
+
+from dotenv import load_dotenv
+
+# Read the repo-root .env before any setting below is resolved. Without this,
+# the backend choice and API key are only visible when something else has
+# already imported the tracker config — so the CLI worked by accident and a
+# direct `from meta_harness.embeddings import ...` silently fell back to the
+# local model. Real environment variables still win over the file.
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=False)
 
 # --- Model limits -----------------------------------------------------------
 # These describe gemini-embedding-001 and are the first thing to check if the
@@ -33,10 +45,17 @@ MODEL_NAME = "gemini-embedding-001"
 # model's tokenizer.
 MAX_INPUT_TOKENS = int(os.getenv("META_HARNESS_EMBED_MAX_INPUT_TOKENS", "2048"))
 
-# Texts per request. Kept conservative: an oversized batch fails the whole
-# request, and the throughput difference above ~32 is small next to the
-# network round trip.
-MAX_BATCH = int(os.getenv("META_HARNESS_EMBED_MAX_BATCH", "32"))
+# Texts per request. Small on purpose: the hosted quota is measured in tokens,
+# not requests, so a batch of 32 real code chunks trips it and collapses
+# throughput to a third of what small batches achieve (measured). Four is the
+# size that stays under the limit while still amortising the round trip.
+MAX_BATCH = int(os.getenv("META_HARNESS_EMBED_MAX_BATCH", "4"))
+
+# Requests are latency-bound rather than rate-bound — each takes seconds, and
+# the quota permits far more per minute than one-at-a-time can use. Issuing
+# several at once is the difference between an hour and ten minutes on a large
+# repository. Kept modest so a burst does not trip the per-minute quota.
+MAX_CONCURRENCY = int(os.getenv("META_HARNESS_EMBED_CONCURRENCY", "3"))
 
 # gemini-embedding-001 emits 3072 dimensions and supports Matryoshka
 # truncation to shorter vectors. 1536 halves storage and index-scan cost for
@@ -54,8 +73,18 @@ TASK_QUERY = "RETRIEVAL_QUERY"
 # asymmetry is the point, so this pairs with TASK_DOCUMENT on the corpus side.
 TASK_CODE_QUERY = "CODE_RETRIEVAL_QUERY"
 
-MAX_ATTEMPTS = 4
+MAX_ATTEMPTS = 6
 BACKOFF_BASE_S = 1.5
+
+# Hosted quotas are per minute, so a burst of batches trips them even when the
+# daily allowance is untouched. Pacing requests is the difference between an
+# index that completes and one that dies a third of the way in. Free tiers are
+# far tighter than paid ones, so this is deliberately conservative and tunable.
+REQUESTS_PER_MINUTE = int(os.getenv("META_HARNESS_EMBED_RPM", "60"))
+
+# A 429 means the window is full; waiting a couple of seconds cannot help.
+# Back off to something on the order of the window itself.
+RATE_LIMIT_BACKOFF_S = float(os.getenv("META_HARNESS_EMBED_RATE_LIMIT_WAIT_S", "20"))
 
 # --- Local backend ----------------------------------------------------------
 # voyage-4-nano is open-weight (Apache 2.0) and runs on the machine, so
@@ -127,7 +156,11 @@ class GeminiEmbedder:
     api_key: Optional[str] = None
     query_task_type: str = TASK_QUERY
     max_batch: int = MAX_BATCH
+    requests_per_minute: int = REQUESTS_PER_MINUTE
+    concurrency: int = MAX_CONCURRENCY
     _client: object = None
+    _last_request_at: float = 0.0
+    _pace_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def dimensions(self) -> int:
@@ -163,28 +196,79 @@ class GeminiEmbedder:
         from google.genai import types
 
         client = self._get_client()
+        # No auto_truncate: it exists only in the Vertex/Enterprise surface
+        # and is rejected outright by the Developer API. Chunking already
+        # targets the input limit, and `_embed_individually` below is the net
+        # for anything that slips through.
         config = types.EmbedContentConfig(
             task_type=task_type,
             output_dimensionality=self.output_dimensions,
-            # A single over-long chunk shouldn't fail the batch it happens to
-            # land in. Chunking already targets the limit; this is the net.
-            auto_truncate=True,
         )
 
-        vectors: List[List[float]] = []
-        for start in range(0, len(texts), self.max_batch):
-            batch = list(texts[start : start + self.max_batch])
+        batches = [
+            list(texts[start : start + self.max_batch])
+            for start in range(0, len(texts), self.max_batch)
+        ]
+        if len(batches) == 1 or self.concurrency <= 1:
+            return [v for batch in batches for v in self._embed_batch(client, batch, config)]
+
+        # Results must come back in the caller's order — chunks are stored
+        # against their own line ranges, so a reordering would attach every
+        # vector to the wrong span.
+        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+            results = list(pool.map(lambda b: self._embed_batch(client, b, config), batches))
+        return [vector for batch_result in results for vector in batch_result]
+
+    def _embed_batch(self, client, batch: List[str], config) -> List[List[float]]:
+        try:
             response = self._call_with_retry(client, batch, config)
-            embeddings = response.embeddings or []
-            if len(embeddings) != len(batch):
-                raise EmbeddingError(
-                    f"Gemini returned {len(embeddings)} embeddings for {len(batch)} inputs"
-                )
-            for embedding in embeddings:
-                if not embedding.values:
-                    raise EmbeddingError("Gemini returned an embedding with no values")
-                vectors.append(_normalize(embedding.values))
+        except EmbeddingError:
+            # One malformed or over-long input rejects the whole request.
+            # Retrying item by item costs that item rather than the innocent
+            # ones it happened to be batched with.
+            if len(batch) == 1:
+                raise
+            return self._embed_individually(client, batch, config)
+
+        embeddings = response.embeddings or []
+        if len(embeddings) != len(batch):
+            raise EmbeddingError(
+                f"Gemini returned {len(embeddings)} embeddings for {len(batch)} inputs"
+            )
+        vectors: List[List[float]] = []
+        for embedding in embeddings:
+            if not embedding.values:
+                raise EmbeddingError("Gemini returned an embedding with no values")
+            vectors.append(_normalize(embedding.values))
         return vectors
+
+    def _embed_individually(self, client, batch: List[str], config) -> List[List[float]]:
+        """Embed one at a time after a batch failed, isolating the bad input."""
+        vectors: List[List[float]] = []
+        for text in batch:
+            response = self._call_with_retry(client, [text], config)
+            embedding = (response.embeddings or [None])[0]
+            if embedding is None or not embedding.values:
+                raise EmbeddingError("Gemini returned an embedding with no values")
+            vectors.append(_normalize(embedding.values))
+        return vectors
+
+    def _pace(self) -> None:  # noqa: D401 - see docstring
+        """Hold the request rate under the configured ceiling.
+
+        Cheaper than discovering the ceiling by being rejected: a 429 costs a
+        round trip plus a long wait, while spacing costs only the difference.
+        """
+        if self.requests_per_minute <= 0:
+            return
+        minimum_gap = 60.0 / self.requests_per_minute
+        # Held across the sleep so concurrent workers queue behind each other
+        # rather than all reading the same stale timestamp and firing together.
+        with self._pace_lock:
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < minimum_gap:
+                time.sleep(minimum_gap - elapsed)
+            self._last_request_at = time.monotonic()
 
     def _call_with_retry(self, client, batch: List[str], config):
         """Retry transient failures; surface bad requests immediately.
@@ -196,6 +280,7 @@ class GeminiEmbedder:
         last_error: Optional[Exception] = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
+                self._pace()
                 return client.models.embed_content(
                     model=self.model, contents=batch, config=config
                 )
@@ -203,7 +288,12 @@ class GeminiEmbedder:
                 if not _is_retryable(exc) or attempt == MAX_ATTEMPTS:
                     raise EmbeddingError(f"Gemini embedding request failed: {exc}") from exc
                 last_error = exc
-                time.sleep(BACKOFF_BASE_S * (2 ** (attempt - 1)))
+                if _is_rate_limited(exc):
+                    # The quota window is full. Seconds of exponential backoff
+                    # will just be rejected again — wait out the window.
+                    time.sleep(RATE_LIMIT_BACKOFF_S * attempt)
+                else:
+                    time.sleep(BACKOFF_BASE_S * (2 ** (attempt - 1)))
         raise EmbeddingError(f"Gemini embedding request failed: {last_error}")
 
     def embed_documents(self, texts: Sequence[str]) -> List[List[float]]:
@@ -212,6 +302,15 @@ class GeminiEmbedder:
     def embed_query(self, text: str) -> List[float]:
         vectors = self._embed([text], self.query_task_type)
         return vectors[0]
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """A quota rejection, as opposed to a transient server fault."""
+    status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+    text = str(exc).lower()
+    return "429" in text or "resource_exhausted" in text or "quota" in text
 
 
 def _is_retryable(exc: Exception) -> bool:
