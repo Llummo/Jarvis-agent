@@ -54,11 +54,22 @@ def test_shell_shows_the_metrica_jarvis_identity(browser):
     assert browser.visible(".brand-mark"), "the logo must render"
 
 
-def test_shell_exposes_both_trackers(browser):
+def test_shell_exposes_the_trackers_and_sources(browser):
+    """Sources sits alongside the trackers rather than inside one: a source is
+    a repository, and the same one feeds the module check on both."""
     assert browser.eval("[...document.querySelectorAll('.tab-button')].map(b => b.textContent)") == [
         "ClickUp",
         "Linear",
+        "Sources",
     ]
+
+
+def test_sources_tab_opens_and_offers_registration(browser):
+    browser.click('.tab-button[data-tab="sources"]')
+
+    assert browser.visible("#tab-sources"), "the Sources panel must open"
+    assert browser.visible("#source-path"), "a repository path field is the point of the tab"
+    assert browser.visible("#source-add-btn")
 
 
 # ===========================================================================

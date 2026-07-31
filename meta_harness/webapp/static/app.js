@@ -1888,18 +1888,25 @@ function createTrackerPanel(tracker) {
     el("module-bulk-results").hidden = false;
   }
 
+  // A module is described either by pasted documentation or by a registered
+  // source the harness reads itself. Exactly one is required; a source wins
+  // when both are present, because picking one is the more deliberate act.
   function moduleInputs() {
     const moduleName = el("module-name").value.trim();
     const moduleContext = el("module-context").value.trim();
+    const repo = (el("module-source") && el("module-source").value) || "";
     if (!moduleName) {
       banner("module-error", "Give the module a name.");
       return null;
     }
-    if (!moduleContext) {
-      banner("module-error", "Paste the module's documentation — the verdict is based on it.");
+    if (!repo && !moduleContext) {
+      banner(
+        "module-error",
+        "Describe the module: choose a source repository, or paste its documentation.",
+      );
       return null;
     }
-    return { moduleName, moduleContext };
+    return { moduleName, moduleContext: repo ? "" : moduleContext, repo };
   }
 
   async function onCheckAllModule() {
@@ -1930,6 +1937,7 @@ function createTrackerPanel(tracker) {
           tracker: tracker.key,
           module_name: inputs.moduleName,
           module_context: inputs.moduleContext,
+          repo: inputs.repo || null,
           progress_token: token,
         }),
       });
@@ -1946,21 +1954,14 @@ function createTrackerPanel(tracker) {
 
   async function onCheckModule() {
     const ticketId = pickerValue(el("module-ticket"));
-    const moduleName = el("module-name").value.trim();
-    const moduleContext = el("module-context").value.trim();
     banner("module-error", null);
     if (!ticketId) {
       banner("module-error", `Pick a ${tracker.noun} to check.`);
       return;
     }
-    if (!moduleName) {
-      banner("module-error", "Give the module a name.");
-      return;
-    }
-    if (!moduleContext) {
-      banner("module-error", "Paste the module's documentation — the verdict is based on it.");
-      return;
-    }
+    const inputs = moduleInputs();
+    if (!inputs) return;
+    const { moduleName, moduleContext, repo } = inputs;
     el("module-result").hidden = true;
     clearModuleBulk();
     const button = el("module-check-btn");
@@ -1980,6 +1981,7 @@ function createTrackerPanel(tracker) {
           tracker: tracker.key,
           module_name: moduleName,
           module_context: moduleContext,
+          repo: repo || null,
           progress_token: token,
         }),
       });
@@ -2262,3 +2264,276 @@ document.addEventListener("DOMContentLoaded", async () => {
     createTrackerPanel(tracker).init();
   }
 });
+
+// ===========================================================================
+// Sources — the repositories the harness may read context from.
+//
+// Indexing outlives its HTTP request (minutes on a small project, hours on a
+// large one), so adding a source starts a background job and this polls the
+// progress token until it reports done.
+// ===========================================================================
+
+const sourcesUI = (() => {
+  const byId = (id) => document.getElementById(id);
+  let sources = [];
+
+  function verificationTag(status) {
+    if (status === "verified") return '<span class="pill pill-ok">verified</span>';
+    if (status === "drifted") return '<span class="pill pill-warn">drifted</span>';
+    if (status === "missing") return '<span class="pill pill-bad">missing</span>';
+    return "";
+  }
+
+  function status(message, isError) {
+    const node = byId("source-status");
+    if (!node) return;
+    if (!message) {
+      node.hidden = true;
+      return;
+    }
+    node.hidden = false;
+    node.textContent = message;
+    node.classList.toggle("status-error", Boolean(isError));
+  }
+
+  function renderList() {
+    const host = byId("source-list");
+    if (!host) return;
+    if (!sources.length) {
+      host.innerHTML =
+        '<p class="empty-note">No sources yet. Add a repository above to let the harness read its code.</p>';
+      return;
+    }
+    host.innerHTML = sources
+      .map((source) => {
+        const state = source.current
+          ? '<span class="pill pill-ok">current</span>'
+          : '<span class="pill pill-warn">stale</span>';
+        return `
+          <div class="source-card">
+            <div class="source-head">
+              <strong>${escapeHtml(source.name)}</strong>
+              ${state}
+              <span class="field-note">${escapeHtml(source.revision || "")}</span>
+            </div>
+            <div class="field-note">${escapeHtml(source.root)}</div>
+            <div class="field-note">${escapeHtml(source.status)} · ${source.chunks} chunk(s)</div>
+            <div class="btn-row">
+              <button type="button" data-verify="${escapeHtml(source.name)}">Verify</button>
+              <button type="button" data-reindex="${escapeHtml(source.name)}">Re-index</button>
+              <button type="button" data-remove="${escapeHtml(source.name)}">Remove</button>
+            </div>
+          </div>`;
+      })
+      .join("");
+
+    host.querySelectorAll("[data-verify]").forEach((button) => {
+      button.addEventListener("click", () => verify(button.dataset.verify));
+    });
+    host.querySelectorAll("[data-reindex]").forEach((button) => {
+      const source = sources.find((item) => item.name === button.dataset.reindex);
+      button.addEventListener("click", () => add(source.root, source.name, true));
+    });
+    host.querySelectorAll("[data-remove]").forEach((button) => {
+      button.addEventListener("click", () => remove(button.dataset.remove));
+    });
+  }
+
+  // Every place a source can be chosen: the search box here, and the module
+  // check panel on each tracker. Kept in one function so a newly added source
+  // appears everywhere at once.
+  function renderPickers() {
+    const options = sources.map((s) => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`);
+    const search = byId("source-search-repo");
+    if (search) search.innerHTML = options.join("");
+
+    ["clickup", "linear"].forEach((tracker) => {
+      const select = byId(`${tracker}-module-source`);
+      if (!select) return;
+      const previous = select.value;
+      select.innerHTML =
+        '<option value="">Paste the documentation below</option>' + options.join("");
+      if (previous && sources.some((s) => s.name === previous)) select.value = previous;
+      applyModuleSourceMode(tracker);
+    });
+  }
+
+  // Choosing a source makes the paste box redundant; saying so beats leaving
+  // two inputs that look equally required.
+  function applyModuleSourceMode(tracker) {
+    const select = byId(`${tracker}-module-source`);
+    const field = byId(`${tracker}-module-context-field`);
+    const note = byId(`${tracker}-module-source-note`);
+    if (!select || !field) return;
+    const chosen = select.value;
+    field.hidden = Boolean(chosen);
+    if (note) {
+      note.textContent = chosen
+        ? `The harness will read ${chosen} itself and verify every span against the working tree.`
+        : "Choose a registered repository to read the module's real code instead of pasting. Add one in the Sources tab.";
+    }
+  }
+
+  async function load() {
+    try {
+      const data = await fetchJson("/api/sources");
+      sources = data.sources || [];
+      renderList();
+      renderPickers();
+    } catch (err) {
+      status(err.message, true);
+    }
+  }
+
+  async function verify(name) {
+    status(`Verifying ${name}…`);
+    try {
+      const updated = await fetchJson(`/api/sources/${encodeURIComponent(name)}/verify`, {
+        method: "POST",
+      });
+      sources = sources.map((s) => (s.name === name ? updated : s));
+      renderList();
+      status(`${name}: ${updated.status}`);
+    } catch (err) {
+      status(err.message, true);
+    }
+  }
+
+  async function remove(name) {
+    status(`Removing ${name}…`);
+    try {
+      const data = await fetchJson(`/api/sources/${encodeURIComponent(name)}`, { method: "DELETE" });
+      sources = data.sources || [];
+      renderList();
+      renderPickers();
+      status(`Removed ${name}.`);
+    } catch (err) {
+      status(err.message, true);
+    }
+  }
+
+  // Poll until the background job reports terminal. Failures to poll are
+  // ignored per tick — a dropped request must not abandon a running index.
+  function followJob(token, onStep) {
+    return new Promise((resolve) => {
+      const tick = async () => {
+        try {
+          const data = await fetchJson(`/api/progress/${encodeURIComponent(token)}`);
+          if (data.steps && data.steps.length) onStep(data.steps[data.steps.length - 1]);
+          if (data.done) {
+            resolve(data.error || "");
+            return;
+          }
+        } catch (err) {
+          /* keep polling */
+        }
+        setTimeout(tick, 1000);
+      };
+      tick();
+    });
+  }
+
+  async function add(path, name, rebuild) {
+    const target = (path || byId("source-path").value || "").trim();
+    if (!target) {
+      status("Give the path to a repository on this machine.", true);
+      return;
+    }
+    const button = byId("source-add-btn");
+    const spinner = byId("source-thinking");
+    const step = byId("source-thinking-step");
+    button.disabled = true;
+    status(null);
+    try {
+      const started = await fetchJson("/api/sources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: target,
+          name: (name || byId("source-name").value || "").trim() || null,
+          rebuild: Boolean(rebuild),
+        }),
+      });
+      await load();
+      if (!started.indexing) {
+        status(`Registered ${started.name}.`);
+        return;
+      }
+      spinner.hidden = false;
+      if (step) step.textContent = "Starting…";
+      const error = await followJob(started.progress_token, (message) => {
+        if (step) step.textContent = message;
+      });
+      spinner.hidden = true;
+      status(error ? `Indexing failed: ${error}` : `Indexed ${started.name}.`, Boolean(error));
+      await load();
+    } catch (err) {
+      spinner.hidden = true;
+      status(err.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function search() {
+    const repo = byId("source-search-repo").value;
+    const query = byId("source-search-query").value.trim();
+    const host = byId("source-search-results");
+    if (!repo || !query) {
+      status("Pick a source and type something to search for.", true);
+      return;
+    }
+    host.innerHTML = '<p class="empty-note">Searching…</p>';
+    try {
+      const data = await fetchJson("/api/sources/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, repo, limit: 8, verify: true }),
+      });
+      if (!data.hits.length) {
+        host.innerHTML = '<p class="empty-note">Nothing matched.</p>';
+        return;
+      }
+      host.innerHTML = data.hits
+        .map(
+          (hit) => `
+            <div class="source-hit">
+              <div class="source-head">
+                <strong>${escapeHtml(hit.citation)}</strong>
+                <span class="pill">${escapeHtml(hit.retrieval)}</span>
+                ${verificationTag(hit.verification)}
+                <span class="field-note">${
+                  hit.retrieval === "lexical" ? "exact match" : hit.score.toFixed(3)
+                }</span>
+              </div>
+              <pre>${escapeHtml(hit.text.split("\n").slice(0, 14).join("\n"))}</pre>
+            </div>`,
+        )
+        .join("");
+      status(null);
+    } catch (err) {
+      host.innerHTML = "";
+      status(err.message, true);
+    }
+  }
+
+  function init() {
+    const addBtn = byId("source-add-btn");
+    if (!addBtn) return;
+    addBtn.addEventListener("click", () => add());
+    byId("source-refresh-btn").addEventListener("click", load);
+    byId("source-search-btn").addEventListener("click", search);
+    byId("source-search-query").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") search();
+    });
+    ["clickup", "linear"].forEach((tracker) => {
+      const select = byId(`${tracker}-module-source`);
+      if (select) select.addEventListener("change", () => applyModuleSourceMode(tracker));
+    });
+    load();
+  }
+
+  return { init, load };
+})();
+
+document.addEventListener("DOMContentLoaded", () => sourcesUI.init());

@@ -1284,3 +1284,55 @@ kbd {
   border: 1px solid rgba(255, 255, 255, 0.25);
   display: block;
 }
+
+/* --- Sources -------------------------------------------------------------
+   A source card is scanned, not read: the pill carries whether the index is
+   current, so state reads at a glance before any of the text does. */
+.source-card,
+.source-hit {
+  border: 1px solid var(--border, #d5d8dd);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.source-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.pill {
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.pill-ok { color: #2e7d5b; }
+.pill-warn { color: #b07a17; }
+.pill-bad { color: #a5443b; }
+
+.source-hit pre {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  background: var(--code-bg, rgba(127, 127, 127, 0.09));
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.empty-note {
+  color: var(--muted, #6b7280);
+  font-style: italic;
+}
+
+.status-line.status-error { color: #a5443b; }

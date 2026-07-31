@@ -419,6 +419,21 @@ This matters because an index is a copy, and a copy goes stale silently — a
 file edited after indexing still returns its old contents, and nothing about
 the result looks wrong.
 
+### In the web UI
+
+The **Sources** tab registers repositories, shows whether each index is
+current or stale, and re-indexes or removes them. It also has a retrieval
+preview, so you can see what a source actually returns before trusting it to
+drive a verdict — each result carries its citation, how it was found
+(semantic / lexical / hybrid) and whether it still matches the working tree.
+
+Indexing runs as a background job because it outlives an HTTP request; the
+tab polls it and reports progress.
+
+In **Module check** on either tracker, the documentation textarea is now
+optional: pick a registered source instead and the harness reads the module's
+real code itself.
+
 ### Symbol search
 
 Embeddings are weakest at exactly what a symbol name is: an exact string.
