@@ -17,7 +17,7 @@ import hashlib
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Sequence
 
 from meta_harness.embeddings.chunking import Chunk, chunk_file, language_for
 from meta_harness.embeddings.embedder import Embedder
@@ -150,6 +150,13 @@ def index_repository(
     name = repo_name or repo_root.name
     result = IndexResult(repo=name)
 
+    # Indexing is what makes something a context source, so registration
+    # happens here rather than being a separate step someone can forget.
+    from meta_harness.embeddings.sources import git_revision
+
+    revision = git_revision(repo_root)
+    store.sources.register(name, repo_root, revision=revision)
+
     if rebuild:
         _report(on_step, f"Clearing the existing index for '{name}'…")
         store.clear_repo(name)
@@ -202,6 +209,7 @@ def index_repository(
         result.files_removed = store.forget_paths(name, stale)
         _report(on_step, f"Dropped {result.files_removed} file(s) no longer in the repo.")
 
+    store.sources.mark_indexed(name, revision=revision)
     _report(on_step, f"Done: {result.summary()}")
     return result
 
@@ -220,3 +228,174 @@ def search_repository(
         raise ValueError("query is required")
     vector = embedder.embed_query(query.strip())
     return store.search(repo, vector, limit=limit, min_score=min_score)
+
+
+# --- provenance -------------------------------------------------------------
+
+
+def source_status(store: VectorStore, name: str):
+    """How far an indexed source has drifted from its working tree.
+
+    Compares the hash recorded for every indexed file against the file as it
+    is now, which catches edits the git revision alone would miss — an
+    uncommitted change moves no commit but does invalidate the index.
+    """
+    from meta_harness.embeddings.sources import SourceStatus, git_revision
+
+    source = store.sources.get(name)
+    known = store.file_hashes(name)
+
+    if not source.exists:
+        return SourceStatus(source, source.revision, None, len(known), 0, 0)
+
+    changed = removed = 0
+    for relative, digest in known.items():
+        target = source.root / relative
+        try:
+            if not target.is_file():
+                removed += 1
+                continue
+            if content_hash(target.read_text(encoding="utf-8")) != digest:
+                changed += 1
+        except (OSError, UnicodeDecodeError):
+            removed += 1
+
+    return SourceStatus(
+        source=source,
+        indexed_revision=source.revision,
+        current_revision=git_revision(source.root),
+        files_indexed=len(known),
+        files_changed=changed,
+        files_removed=removed,
+    )
+
+
+def verify_hits(store: VectorStore, hits: Sequence) -> List:
+    """Re-read each hit from disk and record whether it still matches.
+
+    This is what makes retrieved context checkable rather than merely stored:
+    an index is a copy, and a copy goes stale without looking wrong.
+    """
+    from dataclasses import replace
+
+    from meta_harness.embeddings.sources import UNCHECKED, check_span
+
+    checked = []
+    for hit in hits:
+        source = store.sources.find(hit.repo) if hit.repo else None
+        if source is None:
+            checked.append(replace(hit, verification=UNCHECKED))
+            continue
+        result = check_span(source, hit.path, hit.start_line, hit.end_line, hit.text)
+        checked.append(replace(hit, verification=result.status))
+    return checked
+
+
+# --- hybrid retrieval -------------------------------------------------------
+
+# Reciprocal rank fusion. The constant damps the influence of top ranks so one
+# list cannot dominate the other; 60 is the value from the original paper and
+# behaves sensibly without per-corpus tuning.
+RRF_K = 60
+
+
+def _fuse(semantic: Sequence, lexical: Sequence, store: VectorStore, repo: str, limit: int) -> List:
+    """Merge two ranked lists into one.
+
+    A lexical hit and a semantic chunk are different shapes: one is a line,
+    the other a span. They are joined by containment — a matching line inside
+    a chunk is evidence for that chunk — so an exact symbol match promotes the
+    span that declares it rather than competing with it.
+    """
+    from dataclasses import replace
+
+    scores: dict = {}
+    hits: dict = {}
+
+    for rank, hit in enumerate(semantic):
+        key = (hit.path, hit.start_line)
+        scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
+        hits[key] = hit
+
+    for rank, lexical_hit in enumerate(lexical):
+        contribution = 1.0 / (RRF_K + rank + 1)
+        containing = [
+            key
+            for key, hit in hits.items()
+            if hit.path == lexical_hit.path and hit.start_line <= lexical_hit.line <= hit.end_line
+        ]
+        if containing:
+            for key in containing:
+                scores[key] += contribution
+                hits[key] = replace(hits[key], retrieval="hybrid")
+            continue
+
+        # A match in a chunk the semantic pass did not return still belongs in
+        # the results — it is the case lexical search exists to cover.
+        recovered = _chunk_at(store, repo, lexical_hit.path, lexical_hit.line)
+        if recovered is None:
+            continue
+        key = (recovered.path, recovered.start_line)
+        if key not in hits:
+            hits[key] = replace(recovered, retrieval="lexical", score=0.0)
+            scores[key] = 0.0
+        scores[key] += contribution
+
+    ordered = sorted(scores.items(), key=lambda item: -item[1])
+    return [hits[key] for key, _ in ordered[:limit]]
+
+
+def _chunk_at(store: VectorStore, repo: str, path: str, line: int):
+    """The indexed chunk containing a given line, if there is one."""
+    row = store._connection.execute(
+        "SELECT path, language, start_line, end_line, text FROM chunks "
+        "WHERE repo = ? AND path = ? AND start_line <= ? AND end_line >= ? LIMIT 1",
+        (repo, path, line, line),
+    ).fetchone()
+    if row is None:
+        return None
+    from meta_harness.embeddings.store import SearchHit
+
+    return SearchHit(
+        path=row["path"],
+        language=row["language"],
+        start_line=row["start_line"],
+        end_line=row["end_line"],
+        text=row["text"],
+        score=0.0,
+        repo=repo,
+    )
+
+
+def hybrid_search(
+    query: str,
+    *,
+    repo: str,
+    embedder: Embedder,
+    store: VectorStore,
+    limit: int = 10,
+    min_score: float = 0.0,
+    lexical: Optional[bool] = None,
+    verify: bool = False,
+) -> List:
+    """Search a source semantically, with an exact-symbol pass when it helps.
+
+    `lexical` defaults to running only when the query looks like an
+    identifier: a natural-language question searched literally returns
+    nothing, and paying for that on every query is waste.
+    """
+    from meta_harness.embeddings.lexical import find_symbol, looks_like_symbol
+
+    semantic = search_repository(
+        query, repo=repo, embedder=embedder, store=store, limit=max(limit * 2, limit), min_score=min_score
+    )
+
+    use_lexical = looks_like_symbol(query) if lexical is None else lexical
+    lexical_hits: List = []
+    if use_lexical:
+        source = store.sources.find(repo)
+        if source is not None and source.exists:
+            lexical_hits = find_symbol(query, root=source.root, limit=limit * 2)
+
+    results = _fuse(semantic, lexical_hits, store, repo, limit) if lexical_hits else semantic[:limit]
+    return verify_hits(store, results) if verify else results
