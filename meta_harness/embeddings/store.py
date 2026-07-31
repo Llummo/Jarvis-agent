@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from meta_harness.embeddings.chunking import Chunk
+from meta_harness.embeddings.sources import SourceRegistry
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS indexed_files (
@@ -56,7 +57,7 @@ class VectorStoreError(RuntimeError):
 
 @dataclass(frozen=True)
 class SearchHit:
-    """One retrieved chunk and how well it matched."""
+    """One retrieved chunk, where it came from, and how well it matched."""
 
     path: str
     language: str
@@ -64,11 +65,22 @@ class SearchHit:
     end_line: int
     text: str
     score: float
+    repo: str = ""
+    # How the chunk was found, and whether it still matches the file on disk.
+    # `unchecked` is the honest default: verification costs a file read, so it
+    # is opt-in rather than silently assumed.
+    retrieval: str = "semantic"
+    verification: str = "unchecked"
 
     @property
     def location(self) -> str:
         """`path:line` — clickable in most terminals and editors."""
         return f"{self.path}:{self.start_line}"
+
+    @property
+    def citation(self) -> str:
+        """A reference a reader can follow back to the source."""
+        return f"{self.repo}/{self.path}:{self.start_line}-{self.end_line}" if self.repo else self.location
 
 
 def default_db_path() -> Path:
@@ -90,6 +102,11 @@ class VectorStore:
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(SCHEMA)
         self._connection.commit()
+        # Registered origins for everything in this database. Sharing the
+        # connection keeps chunks and their provenance in one transaction
+        # boundary — deleting one without the other would leave either
+        # orphaned vectors or results that cannot be attributed.
+        self.sources = SourceRegistry(self._connection)
 
     def close(self) -> None:
         self._connection.close()
@@ -249,6 +266,7 @@ class VectorStore:
                     end_line=row["end_line"],
                     text=row["text"],
                     score=score,
+                    repo=repo,
                 )
             )
         return hits

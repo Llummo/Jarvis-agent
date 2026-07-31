@@ -255,6 +255,33 @@ def check_embedding_backend() -> Check:
     )
 
 
+def check_lexical_backend() -> Check:
+    """Exact-symbol search backend.
+
+    ripgrep is faster but is not installed by default anywhere and cannot be
+    bundled; git grep covers the same ground, and git is already required.
+    So this is never blocking — it reports which one you get.
+    """
+    from meta_harness.embeddings.lexical import BACKEND_NONE, BACKEND_RIPGREP, available_backend
+
+    backend = available_backend()
+    if backend == BACKEND_RIPGREP:
+        return Check("Symbol search", OK, "ripgrep")
+    if backend == BACKEND_NONE:
+        return Check(
+            "Symbol search",
+            DEGRADED,
+            "neither ripgrep nor git found — search will be semantic only, "
+            "which is weak at exact identifiers",
+            "Install ripgrep (or git).",
+        )
+    return Check(
+        "Symbol search",
+        OK,
+        "git grep (install ripgrep for a faster exact-symbol pass)",
+    )
+
+
 def check_embedding_index() -> Check:
     from meta_harness.embeddings.store import default_db_path
 
@@ -297,6 +324,7 @@ def run_all() -> List[Check]:
     checks.append(check_git())
     checks.extend(check_credentials())
     checks.append(check_embedding_backend())
+    checks.append(check_lexical_backend())
     checks.append(check_embedding_index())
     return checks
 

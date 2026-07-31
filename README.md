@@ -396,11 +396,51 @@ repository once and it indexes the source; from then on it retrieves the
 relevant spans on demand.
 
 ```bash
-meta-harness index build --repo ../sigo          # incremental after the first run
-meta-harness index status                        # what is indexed
-meta-harness index search "user permissions" --repo sigo
-meta-harness index drop --repo sigo
+meta-harness source add --repo ../sigo           # register + index in one step
+meta-harness source list                         # what is trusted, and is it current
+meta-harness source verify                       # has anything drifted since indexing
+meta-harness index search "user permissions" --repo sigo --verify
 ```
+
+### Trusted sources
+
+A source is a repository the harness is *allowed* to draw context from. It is
+registered by name, with the git revision it was indexed at, and every
+retrieved span carries a citation back to it — `sigo/internal/people.go:88-140`.
+
+That provenance is only worth something if it can be checked, so
+`--verify` re-reads each span from disk and compares it to what the index
+holds. Three outcomes: `verified` (matches the working tree), `drifted` (the
+file changed since indexing), `missing` (it is gone). Module-relevance
+retrieval **drops anything that is not verified**, so the context the model
+judges against is the code as it is now, not a stale copy.
+
+This matters because an index is a copy, and a copy goes stale silently — a
+file edited after indexing still returns its old contents, and nothing about
+the result looks wrong.
+
+### Symbol search
+
+Embeddings are weakest at exactly what a symbol name is: an exact string.
+Searching `_call_with_retry` semantically returns files *about* retrying;
+searching it lexically returns the declaration.
+
+So search runs both and fuses them by reciprocal rank. A lexical match inside
+an indexed span is evidence *for* that span, so an exact hit promotes the
+chunk that declares it rather than competing with it:
+
+```
+_call_with_retry
+  semantic only  ->  test_ticket_generator.py, ticket_generator.py   (all wrong)
+  hybrid         ->  embeddings/embedder.py:136   [hybrid, verified]  (the definition)
+```
+
+The lexical pass runs automatically when the query looks like an identifier,
+and is skipped for prose — searching a sentence literally finds nothing.
+Force it either way with `--lexical` / `--no-lexical`.
+
+ripgrep is used when installed; otherwise `git grep`, which is always present
+because indexing already needs git. `meta-harness doctor` reports which.
 
 ### Backends
 
