@@ -16,20 +16,32 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+
+from filelock import FileLock, Timeout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
-from meta_harness.embeddings.chunking import Chunk, chunk_file, chunk_text, language_for
+from meta_harness.embeddings.chunking import (
+    Chunk,
+    chunk_file,
+    chunk_file_skeleton,
+    chunk_text,
+    language_for,
+)
 from meta_harness.embeddings.embedder import Embedder
 from meta_harness.embeddings.sources import KIND_DOCUMENT
-from meta_harness.embeddings.store import VectorStore
+from meta_harness.embeddings.store import MODE_FULL, MODE_SKELETON, VectorStore
 
 OnStep = Optional[Callable[[str], None]]
 
 
 class SourceIngestError(RuntimeError):
     """Raised when a source cannot be fetched or read."""
+
+
+class IndexInProgressError(RuntimeError):
+    """Raised when another process is already indexing the same source."""
 
 # Directories to skip when the target isn't a git repo and there's no
 # .gitignore to lean on.
@@ -147,18 +159,69 @@ def index_repository(
     store: VectorStore,
     repo_name: Optional[str] = None,
     rebuild: bool = False,
+    mode: str = MODE_SKELETON,
     on_step: OnStep = None,
 ) -> IndexResult:
     """Embed a repository's source into `store`.
 
+    `mode` decides what gets embedded. In `skeleton` — the default — only what
+    each file declares is indexed: signatures, type definitions, and the
+    comments describing them. Measured across a 2,788-file project those are
+    15% of the text, because a function body is mostly control flow that costs
+    tokens without making the function easier to find. The real code is read
+    from disk when a chunk is actually retrieved, so nothing is lost from the
+    answer, only from the index.
+
+    Use `full` when the bodies themselves need to be searchable — matching on
+    an implementation detail rather than on what a thing is.
+
     One file's failure never stops the run — a single undecodable or oversized
     file in a 2,000-file repo should cost that file, not the index.
     """
+    if mode not in (MODE_FULL, MODE_SKELETON):
+        raise ValueError(f"mode must be '{MODE_FULL}' or '{MODE_SKELETON}', got {mode!r}")
     repo_root = Path(repo_root).expanduser().resolve()
     if not repo_root.is_dir():
         raise NotADirectoryError(f"Not a directory: {repo_root}")
 
     name = repo_name or repo_root.name
+
+    # One writer per source. Two jobs indexing the same name concurrently —
+    # a CLI run and the web UI, say — interleave their writes and leave an
+    # index built by two different backends, which then fails to load at all.
+    lock_path = store.db_path.parent / f".index-{_safe_lock_name(name)}.lock"
+    try:
+        lock = FileLock(str(lock_path), timeout=1)
+        lock.acquire()
+    except Timeout as exc:
+        raise IndexInProgressError(
+            f"'{name}' is already being indexed by another process. "
+            "Wait for it to finish, or index under a different name."
+        ) from exc
+
+    try:
+        return _index_repository_locked(
+            repo_root, embedder=embedder, store=store, name=name,
+            rebuild=rebuild, mode=mode, on_step=on_step,
+        )
+    finally:
+        lock.release()
+
+
+def _safe_lock_name(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:64]
+
+
+def _index_repository_locked(
+    repo_root: Path,
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    name: str,
+    rebuild: bool,
+    mode: str,
+    on_step: OnStep,
+) -> IndexResult:
     result = IndexResult(repo=name)
 
     # Indexing is what makes something a context source, so registration
@@ -193,11 +256,15 @@ def index_repository(
             result.files_skipped_unchanged += 1
             continue
 
-        chunks: List[Chunk] = chunk_file(path, repo_root=repo_root)
+        chunks: List[Chunk] = (
+            chunk_file_skeleton(path, repo_root=repo_root)
+            if mode == MODE_SKELETON
+            else chunk_file(path, repo_root=repo_root)
+        )
         if not chunks:
             # An empty or comment-only file still gets its hash recorded, so
             # the next run doesn't re-read it every time.
-            store.replace_file(name, relative, digest, [], [])
+            store.replace_file(name, relative, digest, [], [], mode=mode)
             continue
 
         _report(
@@ -210,7 +277,7 @@ def index_repository(
             result.errors.append(f"{relative}: {exc}")
             continue
 
-        store.replace_file(name, relative, digest, chunks, vectors)
+        store.replace_file(name, relative, digest, chunks, vectors, mode=mode)
         result.files_embedded += 1
         result.chunks_embedded += len(chunks)
 
@@ -281,6 +348,59 @@ def source_status(store: VectorStore, name: str):
     )
 
 
+# How much real code to return around a skeleton match. A declaration alone is
+# enough to *find* something and not enough to reason about it — but a skeleton
+# chunk spans from a file's first declaration to its last, so expanding to the
+# chunk's own range hands back the entire file. Twelve of those is thousands of
+# lines in one prompt, which buries the answer it was meant to supply.
+SKELETON_EXPANSION_LINES = 120
+
+
+def expand_skeleton_hits(store: VectorStore, hits: Sequence) -> List:
+    """Replace declaration text with the real code it stands for.
+
+    A skeleton chunk is an index entry, not an answer: it holds signatures so
+    the corpus stays small, but a caller asking what a module does needs the
+    code. Reading it back from the file at retrieval time keeps the index
+    cheap while the answer stays complete — and, because it comes off the
+    working tree, current by construction.
+    """
+    from dataclasses import replace
+
+    from meta_harness.embeddings.sources import VERIFIED, resolve_file
+    from meta_harness.embeddings.store import MODE_SKELETON
+
+    expanded = []
+    for hit in hits:
+        if hit.mode != MODE_SKELETON:
+            expanded.append(hit)
+            continue
+        source = store.sources.find(hit.repo) if hit.repo else None
+        if source is None:
+            expanded.append(hit)
+            continue
+        try:
+            lines = resolve_file(source, hit.path).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            expanded.append(hit)
+            continue
+
+        start = max(1, hit.start_line)
+        end = min(len(lines), start + SKELETON_EXPANSION_LINES - 1)
+        expanded.append(
+            replace(
+                hit,
+                text="\n".join(lines[start - 1 : end]),
+                start_line=start,
+                end_line=end,
+                # Read straight from the working tree, so it matches by
+                # construction — there is no stored copy to have drifted.
+                verification=VERIFIED,
+            )
+        )
+    return expanded
+
+
 def verify_hits(store: VectorStore, hits: Sequence) -> List:
     """Re-read each hit from disk and record whether it still matches.
 
@@ -290,9 +410,14 @@ def verify_hits(store: VectorStore, hits: Sequence) -> List:
     from dataclasses import replace
 
     from meta_harness.embeddings.sources import UNCHECKED, check_span
+    from meta_harness.embeddings.store import MODE_SKELETON
 
     checked = []
     for hit in hits:
+        if hit.mode == MODE_SKELETON:
+            # Already read from the working tree by expand_skeleton_hits.
+            checked.append(hit)
+            continue
         source = store.sources.find(hit.repo) if hit.repo else None
         if source is None:
             checked.append(replace(hit, verification=UNCHECKED))
@@ -453,6 +578,8 @@ def hybrid_search(
         results = _fuse(semantic, lexical_hits, store, repo, limit)
     else:
         results = semantic[:limit]
+
+    results = expand_skeleton_hits(store, results)
     return verify_hits(store, results) if verify else results
 
 

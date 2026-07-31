@@ -1397,12 +1397,26 @@ def _resolve_repo_name(repo: str, name: Optional[str]) -> str:
 @click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository to index.")
 @click.option("--name", default=None, help="Name to index it under. Defaults to the directory name.")
 @click.option("--rebuild", is_flag=True, help="Discard the existing index for this repo before indexing.")
+@click.option(
+    "--full/--skeleton",
+    "full",
+    default=False,
+    show_default=True,
+    help="Index whole file bodies instead of just what each file declares. "
+         "Skeleton is ~15% of the text and the real code is still read from disk on retrieval.",
+)
 @click.option("--db-path", type=click.Path(dir_okay=False), help="Override the index database location.")
-def index_build_cmd(repo: str, name: Optional[str], rebuild: bool, db_path: Optional[str]) -> None:
+def index_build_cmd(
+    repo: str, name: Optional[str], rebuild: bool, full: bool, db_path: Optional[str]
+) -> None:
     """Embed a repository's source into the index.
 
-    Incremental by default: files whose contents are unchanged since the last
-    run are skipped without being re-embedded.
+    Indexes declarations by default — signatures, types and their doc
+    comments — which is a fraction of the text and enough to find things by.
+    The real code is read from the file when a result is returned.
+
+    Incremental: files whose contents are unchanged since the last run are
+    skipped without being re-embedded.
     """
     repo_name = _resolve_repo_name(repo, name)
     store = VectorStore(Path(db_path) if db_path else None)
@@ -1413,9 +1427,10 @@ def index_build_cmd(repo: str, name: Optional[str], rebuild: bool, db_path: Opti
             store=store,
             repo_name=repo_name,
             rebuild=rebuild,
+            mode="full" if full else "skeleton",
             on_step=lambda message: console.print(f"[dim]{message}[/dim]"),
         )
-    except (EmbeddingError, VectorStoreError, NotADirectoryError) as exc:
+    except (EmbeddingError, VectorStoreError, NotADirectoryError, ValueError) as exc:
         raise _clickify_runtime_error(exc) from exc
     finally:
         store.close()

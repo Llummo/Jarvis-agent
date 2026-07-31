@@ -459,12 +459,32 @@ Force it either way with `--lexical` / `--no-lexical`.
 ripgrep is used when installed; otherwise `git grep`, which is always present
 because indexing already needs git. `meta-harness doctor` reports which.
 
+### What gets indexed
+
+Only what each file **declares** — signatures, type definitions and the
+comments describing them. Measured on a 2,788-file project, declarations are
+**15% of the text**, because a function body is mostly control flow that costs
+tokens without making the function easier to find.
+
+The real code is read back from the file when a result is returned, so nothing
+is lost from the answer, only from the index. That also means retrieved code
+comes off the working tree and cannot be stale.
+
+Pass `--full` to index bodies too, when you need to match on an implementation
+detail rather than on what a thing is.
+
 ### Backends
 
-Default is **local**: `voyageai/voyage-4-nano`, Apache 2.0, running on your
-machine. No API key, no per-token cost, and no source code leaving the host —
-which matters when the thing being indexed is a client's codebase. Weights
-(~700 MB) download once on first use; after that indexing is fully offline.
+Default is **local**: `sentence-transformers/all-MiniLM-L6-v2`. No API key, no
+per-token cost, and no source code leaving the host — which matters when the
+thing being indexed is a client's codebase.
+
+It is the default because speed decides whether this gets used at all:
+**0.18s per chunk against 13.5s** for the larger `voyageai/voyage-4-nano`. The
+trade is real — on a ten-query retrieval test it scored 6/10 against 9/10 —
+but the lexical pass covers exact symbols, where small models are weakest.
+For a small, high-value source, set `META_HARNESS_LOCAL_EMBED_MODEL=voyageai/voyage-4-nano`
+and `META_HARNESS_LOCAL_EMBED_DIMENSIONS=2048`.
 
 Its runtime is an opt-in extra because it pulls torch (~5 GB installed):
 
@@ -489,8 +509,12 @@ Local embedding is CPU-bound. Measured on a 16-core machine with no GPU, at
 
 | Repository | Chunks | First index |
 |---|---:|---:|
-| this repo | 257 | ~8 min |
-| a 2,788-file project | 4,875 | ~2.5 h |
+| this repo | 266 | ~1 min |
+| a 2,788-file project | 2,712 | **~37 min** |
+
+Adding a source is instant regardless — registering it takes well under a
+second, and it is searchable immediately via text search while embedding
+proceeds in the background.
 
 That is a one-time cost — re-indexing only touches files whose contents
 changed — but it is worth starting a large repository before you need it. A

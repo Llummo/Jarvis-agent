@@ -87,15 +87,29 @@ REQUESTS_PER_MINUTE = int(os.getenv("META_HARNESS_EMBED_RPM", "60"))
 RATE_LIMIT_BACKOFF_S = float(os.getenv("META_HARNESS_EMBED_RATE_LIMIT_WAIT_S", "20"))
 
 # --- Local backend ----------------------------------------------------------
-# voyage-4-nano is open-weight (Apache 2.0) and runs on the machine, so
-# indexing works with no API key and no data leaving the host — which matters
-# when the thing being indexed is a client's source code.
-LOCAL_MODEL_NAME = os.getenv("META_HARNESS_LOCAL_EMBED_MODEL", "voyageai/voyage-4-nano")
+# Runs on the machine: no API key, no quota, and no source code leaving the
+# host — which matters when the thing being indexed is a client's codebase.
+#
+# all-MiniLM-L6-v2 is the default because speed decides whether this feature
+# gets used at all. Measured on a 2,788-file project: 0.18s per chunk against
+# 13.5s for voyage-4-nano, which is fifteen minutes versus eighteen hours. It
+# is also what Chroma uses by default, for the same reason.
+#
+# The trade is real and worth knowing: on a ten-query retrieval test it scored
+# 6/10 against voyage-4-nano's 9/10. The lexical pass covers exact symbols,
+# which is where small models are weakest, and module relevance retrieves
+# twelve spans rather than three — so the practical gap is narrower than that
+# number suggests. For a small, high-value source, set:
+#   META_HARNESS_LOCAL_EMBED_MODEL=voyageai/voyage-4-nano
+#   META_HARNESS_LOCAL_EMBED_DIMENSIONS=2048
+LOCAL_MODEL_NAME = os.getenv(
+    "META_HARNESS_LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+)
 
-# The model emits 2048 dimensions and supports Matryoshka truncation down to
-# 256. Storage is not a constraint at repository scale — a few thousand chunks
-# is tens of megabytes — so the default keeps the full width and loses nothing.
-LOCAL_DIMENSIONS = int(os.getenv("META_HARNESS_LOCAL_EMBED_DIMENSIONS", "2048"))
+# The model's native width. Shorter vectors are possible on models trained for
+# Matryoshka truncation, but 384 is already small enough that storage is not a
+# consideration at repository scale.
+LOCAL_DIMENSIONS = int(os.getenv("META_HARNESS_LOCAL_EMBED_DIMENSIONS", "384"))
 
 # The model ships named prompts for the two sides of a retrieval pair; using
 # them is what makes query/document asymmetry work.

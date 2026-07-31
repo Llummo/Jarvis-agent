@@ -496,3 +496,102 @@ def test_skeleton_indexes_declarations_not_bodies():
     assert "adds a person to the payroll" in body, "the doc comment carries the meaning"
     assert "doSomethingVerbose" not in body, "the body is what we are dropping"
     assert len(body) < len(source) / 10
+
+
+# -- skeleton indexing end to end -------------------------------------------
+
+
+def test_skeleton_index_expands_to_real_code_on_retrieval(repo, store):
+    """The index holds declarations; the answer must hold code. Otherwise the
+    saving comes out of the caller's context rather than the index."""
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="project", mode="skeleton")
+
+    hits = hybrid_search("CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=2)
+
+    match = next(h for h in hits if "people.go" in h.path)
+    assert match.mode == "skeleton"
+    assert "return &Employee{Name: name}" in match.text, "the body must be read back from disk"
+
+
+def test_skeleton_hits_are_verified_by_construction(repo, store):
+    """Expansion reads the working tree, so there is no stored copy that could
+    have drifted — reporting anything else would be misleading."""
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="project", mode="skeleton")
+
+    hits = hybrid_search(
+        "CreateEmployee", repo="project", embedder=FakeEmbedder(), store=store, limit=1, verify=True
+    )
+
+    assert hits[0].verification == VERIFIED
+
+
+def test_skeleton_expansion_is_bounded(tmp_path, store):
+    """A skeleton chunk spans a file's first declaration to its last, so
+    expanding to its own range returns the whole file — and a dozen of those
+    buries the answer they were meant to supply."""
+    from meta_harness.embeddings.indexer import SKELETON_EXPANSION_LINES
+
+    root = tmp_path / "big"
+    root.mkdir()
+    (root / "huge.go").write_text(
+        "package huge\n\n" + "".join(f"func Thing{i}() {{\n\treturn\n}}\n\n" for i in range(400)),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    index_repository(root, embedder=FakeEmbedder(), store=store, repo_name="big", mode="skeleton")
+
+    hits = hybrid_search("Thing", repo="big", embedder=FakeEmbedder(), store=store, limit=1)
+
+    assert hits
+    assert len(hits[0].text.splitlines()) <= SKELETON_EXPANSION_LINES
+
+
+def test_skeleton_indexes_far_less_than_full(repo, store):
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="skel", mode="skeleton")
+    index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="full", mode="full")
+
+    sizes = {name: chunks for name, _files, chunks in store.repos()}
+    skel_text = store._connection.execute(
+        "SELECT SUM(LENGTH(text)) FROM chunks WHERE repo='skel'"
+    ).fetchone()[0]
+    full_text = store._connection.execute(
+        "SELECT SUM(LENGTH(text)) FROM chunks WHERE repo='full'"
+    ).fetchone()[0]
+
+    assert skel_text < full_text, "declarations must be smaller than bodies"
+    assert sizes["skel"] > 0
+
+
+def test_index_rejects_an_unknown_mode(repo, store):
+    with pytest.raises(ValueError, match="mode must be"):
+        index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="x", mode="nonsense")
+
+
+def test_mixed_width_index_is_reported_clearly(repo, store):
+    """Two backends writing one source produces vectors of different widths.
+    Reshaping blind turns that into an opaque numpy error far from the cause."""
+    from meta_harness.embeddings import VectorStoreError
+    from meta_harness.embeddings.chunking import Chunk
+
+    chunk = Chunk(path="a.go", language="go", start_line=1, end_line=2, text="x")
+    store.replace_file("mixed", "a.go", "h1", [chunk], [[0.1] * DIMS])
+    store.replace_file("mixed", "b.go", "h2", [chunk], [[0.1] * (DIMS * 2)])
+
+    with pytest.raises(VectorStoreError, match="different widths"):
+        store.search("mixed", [0.1] * DIMS)
+
+
+def test_concurrent_indexing_of_one_source_is_refused(repo, store):
+    """Two jobs writing the same source interleave and leave an index built by
+    two backends, which then fails to load at all."""
+    from filelock import FileLock
+
+    from meta_harness.embeddings.indexer import IndexInProgressError, _safe_lock_name
+
+    held = FileLock(str(store.db_path.parent / f".index-{_safe_lock_name('project')}.lock"))
+    held.acquire()
+    try:
+        with pytest.raises(IndexInProgressError, match="already being indexed"):
+            index_repository(repo, embedder=FakeEmbedder(), store=store, repo_name="project")
+    finally:
+        held.release()
