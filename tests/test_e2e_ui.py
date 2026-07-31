@@ -1034,3 +1034,46 @@ def test_flow_saving_a_base_url_without_a_destination_is_refused(browser):
     browser.click("#clickup-qa-base-url-save")
 
     assert "step 1" in browser.eval("document.getElementById('clickup-qa-base-url-status').textContent")
+
+
+def test_sources_panels_use_the_shared_panel_structure(browser):
+    """.panel carries no padding of its own — it comes from .panel-head and
+    .panel-body, and the gap between panels comes from the .step wrapper.
+    Content placed directly in .panel sits flush against the border, which is
+    exactly how this panel shipped broken the first time."""
+    browser.click('.tab-button[data-tab="sources"]')
+
+    counts = browser.eval(
+        "({panels: document.querySelectorAll('#tab-sources .panel').length,"
+        " steps: document.querySelectorAll('#tab-sources .step').length,"
+        " heads: document.querySelectorAll('#tab-sources .panel-head').length,"
+        " bodies: document.querySelectorAll('#tab-sources .panel-body').length})"
+    )
+
+    assert counts["panels"] == counts["steps"], "every panel needs a .step wrapper for its margin"
+    assert counts["panels"] == counts["heads"] == counts["bodies"], (
+        "every panel needs a head and a body, or its content has no padding"
+    )
+
+
+def test_sources_padding_matches_the_rest_of_the_app(browser):
+    browser.click('.tab-button[data-tab="clickup"]')
+    reference = browser.eval(
+        "getComputedStyle(document.querySelector('#tab-clickup .panel-body')).padding"
+    )
+    browser.click('.tab-button[data-tab="sources"]')
+    actual = browser.eval(
+        "getComputedStyle(document.querySelector('#tab-sources .panel-body')).padding"
+    )
+
+    assert actual == reference, f"sources body padding {actual} differs from {reference}"
+
+
+def test_sources_tab_does_not_scroll_sideways(browser):
+    browser.click('.tab-button[data-tab="sources"]')
+
+    overflow = browser.eval(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+
+    assert overflow <= 0, "the page must never scroll horizontally"

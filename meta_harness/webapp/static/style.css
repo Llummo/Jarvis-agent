@@ -1286,53 +1286,76 @@ kbd {
 }
 
 /* --- Sources -------------------------------------------------------------
-   A source card is scanned, not read: the pill carries whether the index is
-   current, so state reads at a glance before any of the text does. */
+   Source cards are scanned, not read: the pills carry kind and freshness, so
+   state reads before any of the text does. Spacing follows .field-grid's
+   rhythm so the cards sit with the rest of a panel body rather than beside
+   it. */
 .source-card,
 .source-hit {
-  border: 1px solid var(--border, #d5d8dd);
-  border-radius: 8px;
-  padding: 0.85rem 1rem;
-  margin-bottom: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-sunken);
+  padding: 0.75rem 0.875rem;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.375rem;
+}
+
+.source-card + .source-card,
+.source-hit + .source-hit {
+  margin-top: 0.625rem;
 }
 
 .source-head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.4375rem;
+  min-width: 0;
+}
+
+.source-head strong {
+  font-size: var(--text-sm);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+/* The card's own buttons sit inside a padded card, so they do not need the
+   vertical margin .btn-row adds between sections of a panel body. */
+.source-card .btn-row {
+  margin: 0.25rem 0 0;
 }
 
 .pill {
-  font-size: 0.72rem;
-  letter-spacing: 0.03em;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 0.12rem 0.5rem;
+  padding: 0.1875rem 0.5rem;
   border-radius: 999px;
-  border: 1px solid currentColor;
+  background: var(--brand-soft, rgba(127, 127, 127, 0.12));
+  color: var(--ink-muted);
   white-space: nowrap;
+  flex: none;
 }
 
-.pill-ok { color: #2e7d5b; }
-.pill-warn { color: #b07a17; }
-.pill-bad { color: #a5443b; }
+.pill-ok { color: #2e7d5b; background: rgba(46, 125, 91, 0.12); }
+.pill-warn { color: #b07a17; background: rgba(176, 122, 23, 0.14); }
+.pill-bad { color: #a5443b; background: rgba(165, 68, 59, 0.14); }
 
 .source-hit pre {
   margin: 0;
-  padding: 0.6rem 0.75rem;
-  border-radius: 6px;
-  background: var(--code-bg, rgba(127, 127, 127, 0.09));
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+  border: 1px solid var(--border);
   overflow-x: auto;
-  font-size: 0.82rem;
-  line-height: 1.45;
+  font-size: var(--text-xs);
+  line-height: 1.5;
 }
 
-.empty-note {
-  color: var(--muted, #6b7280);
-  font-style: italic;
+#source-list:empty::after {
+  content: "Nothing registered yet.";
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
 }
-
-.status-line.status-error { color: #a5443b; }
