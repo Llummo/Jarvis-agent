@@ -15,4 +15,8 @@ router = APIRouter()
 
 @router.get("/{token}", response_model=ProgressOut)
 def get_progress(token: str) -> ProgressOut:
-    return ProgressOut(steps=progress.get(token))
+    return ProgressOut(
+        steps=progress.get(token),
+        done=progress.is_done(token),
+        error=progress.error_of(token),
+    )

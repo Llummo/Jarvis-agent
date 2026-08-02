@@ -396,18 +396,95 @@ repository once and it indexes the source; from then on it retrieves the
 relevant spans on demand.
 
 ```bash
-meta-harness index build --repo ../sigo          # incremental after the first run
-meta-harness index status                        # what is indexed
-meta-harness index search "user permissions" --repo sigo
-meta-harness index drop --repo sigo
+meta-harness source add --repo ../sigo           # register + index in one step
+meta-harness source list                         # what is trusted, and is it current
+meta-harness source verify                       # has anything drifted since indexing
+meta-harness index search "user permissions" --repo sigo --verify
 ```
+
+### Trusted sources
+
+A source is a repository the harness is *allowed* to draw context from. It is
+registered by name, with the git revision it was indexed at, and every
+retrieved span carries a citation back to it — `sigo/internal/people.go:88-140`.
+
+That provenance is only worth something if it can be checked, so
+`--verify` re-reads each span from disk and compares it to what the index
+holds. Three outcomes: `verified` (matches the working tree), `drifted` (the
+file changed since indexing), `missing` (it is gone). Module-relevance
+retrieval **drops anything that is not verified**, so the context the model
+judges against is the code as it is now, not a stale copy.
+
+This matters because an index is a copy, and a copy goes stale silently — a
+file edited after indexing still returns its old contents, and nothing about
+the result looks wrong.
+
+### In the web UI
+
+The **Sources** tab registers three kinds of source — a folder on this
+machine, a repository URL (cloned shallowly into a local cache), or a single
+document (`.md`, `.txt`, `.pdf`; PDF text is extracted automatically). It
+shows whether each index is current or stale, and re-indexes or removes them. It also has a retrieval
+preview, so you can see what a source actually returns before trusting it to
+drive a verdict — each result carries its citation, how it was found
+(semantic / lexical / hybrid) and whether it still matches the working tree.
+
+Indexing runs as a background job because it outlives an HTTP request; the
+tab polls it and reports progress.
+
+In **Module check** on either tracker, the documentation textarea is now
+optional: pick a registered source instead and the harness reads the module's
+real code itself.
+
+### Symbol search
+
+Embeddings are weakest at exactly what a symbol name is: an exact string.
+Searching `_call_with_retry` semantically returns files *about* retrying;
+searching it lexically returns the declaration.
+
+So search runs both and fuses them by reciprocal rank. A lexical match inside
+an indexed span is evidence *for* that span, so an exact hit promotes the
+chunk that declares it rather than competing with it:
+
+```
+_call_with_retry
+  semantic only  ->  test_ticket_generator.py, ticket_generator.py   (all wrong)
+  hybrid         ->  embeddings/embedder.py:136   [hybrid, verified]  (the definition)
+```
+
+The lexical pass runs automatically when the query looks like an identifier,
+and is skipped for prose — searching a sentence literally finds nothing.
+Force it either way with `--lexical` / `--no-lexical`.
+
+ripgrep is used when installed; otherwise `git grep`, which is always present
+because indexing already needs git. `meta-harness doctor` reports which.
+
+### What gets indexed
+
+Only what each file **declares** — signatures, type definitions and the
+comments describing them. Measured on a 2,788-file project, declarations are
+**15% of the text**, because a function body is mostly control flow that costs
+tokens without making the function easier to find.
+
+The real code is read back from the file when a result is returned, so nothing
+is lost from the answer, only from the index. That also means retrieved code
+comes off the working tree and cannot be stale.
+
+Pass `--full` to index bodies too, when you need to match on an implementation
+detail rather than on what a thing is.
 
 ### Backends
 
-Default is **local**: `voyageai/voyage-4-nano`, Apache 2.0, running on your
-machine. No API key, no per-token cost, and no source code leaving the host —
-which matters when the thing being indexed is a client's codebase. Weights
-(~700 MB) download once on first use; after that indexing is fully offline.
+Default is **local**: `sentence-transformers/all-MiniLM-L6-v2`. No API key, no
+per-token cost, and no source code leaving the host — which matters when the
+thing being indexed is a client's codebase.
+
+It is the default because speed decides whether this gets used at all:
+**0.18s per chunk against 13.5s** for the larger `voyageai/voyage-4-nano`. The
+trade is real — on a ten-query retrieval test it scored 6/10 against 9/10 —
+but the lexical pass covers exact symbols, where small models are weakest.
+For a small, high-value source, set `META_HARNESS_LOCAL_EMBED_MODEL=voyageai/voyage-4-nano`
+and `META_HARNESS_LOCAL_EMBED_DIMENSIONS=2048`.
 
 Its runtime is an opt-in extra because it pulls torch (~5 GB installed):
 
@@ -432,8 +509,12 @@ Local embedding is CPU-bound. Measured on a 16-core machine with no GPU, at
 
 | Repository | Chunks | First index |
 |---|---:|---:|
-| this repo | 257 | ~8 min |
-| a 2,788-file project | 4,875 | ~2.5 h |
+| this repo | 266 | ~1 min |
+| a 2,788-file project | 2,712 | **~37 min** |
+
+Adding a source is instant regardless — registering it takes well under a
+second, and it is searchable immediately via text search while embedding
+proceeds in the background.
 
 That is a one-time cost — re-indexing only touches files whose contents
 changed — but it is worth starting a large repository before you need it. A

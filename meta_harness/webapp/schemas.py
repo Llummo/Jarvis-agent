@@ -211,6 +211,79 @@ class ReplayReviewIn(BaseModel):
 
 class ProgressOut(BaseModel):
     steps: list[str]
+    # Terminal state, for work that outlives its HTTP request (repository
+    # indexing). Both stay false/empty for the in-request operations that
+    # simply return when they are finished.
+    done: bool = False
+    error: str = ""
+
+
+class SourceOut(BaseModel):
+    """A registered context source and how current its index is."""
+
+    name: str
+    root: str
+    kind: str
+    origin: str = ""
+    revision: str = ""
+    indexed: bool = False
+    status: str = ""
+    current: bool = False
+    files_indexed: int = 0
+    files_changed: int = 0
+    files_removed: int = 0
+    chunks: int = 0
+
+
+class SourcesOut(BaseModel):
+    sources: list[SourceOut]
+    lexical_backend: str = ""
+    embedding_backend: str = ""
+
+
+class AddSourceIn(BaseModel):
+    """Register a context source and index it.
+
+    `kind` decides what `target` means: a directory on this machine, a clone
+    URL, or a path to a single document.
+    """
+
+    target: str
+    kind: str = "repository"
+    name: Optional[str] = None
+    rebuild: bool = False
+    progress_token: Optional[str] = None
+
+
+class AddSourceOut(BaseModel):
+    name: str
+    kind: str = "repository"
+    origin: str = ""
+    indexing: bool = False
+    progress_token: str = ""
+
+
+class SearchSourceIn(BaseModel):
+    query: str
+    repo: str
+    limit: int = 8
+    verify: bool = True
+
+
+class SearchHitOut(BaseModel):
+    path: str
+    language: str
+    start_line: int
+    end_line: int
+    text: str
+    score: float
+    retrieval: str
+    verification: str
+    citation: str
+
+
+class SearchSourceOut(BaseModel):
+    hits: list[SearchHitOut]
 
 
 class CommitReviewIn(BaseModel):

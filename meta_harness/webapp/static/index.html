@@ -36,6 +36,7 @@
         <nav class="tabs">
           <button class="tab-button active" data-tab="clickup">ClickUp</button>
           <button class="tab-button" data-tab="linear">Linear</button>
+          <button class="tab-button" data-tab="sources">Sources</button>
         </nav>
         <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch colour theme" title="Switch theme">
           <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-13.2a1 1 0 0 1 1 1v1.4a1 1 0 1 1-2 0V4.8a1 1 0 0 1 1-1zm0 14.4a1 1 0 0 1 1 1v1.4a1 1 0 1 1-2 0v-1.4a1 1 0 0 1 1-1zM4.8 11h1.4a1 1 0 1 1 0 2H4.8a1 1 0 1 1 0-2zm13 0h1.4a1 1 0 1 1 0 2h-1.4a1 1 0 1 1 0-2zM6.3 5a1 1 0 0 1 1.4 0l1 1a1 1 0 0 1-1.4 1.4l-1-1a1 1 0 0 1 0-1.4zm9.6 9.6a1 1 0 0 1 1.4 0l1 1a1 1 0 0 1-1.4 1.4l-1-1a1 1 0 0 1 0-1.4zm1.4-9.6a1 1 0 0 1 0 1.4l-1 1A1 1 0 0 1 14.9 6l1-1a1 1 0 0 1 1.4 0zM7.7 14.6a1 1 0 0 1 0 1.4l-1 1A1 1 0 0 1 5.3 15.6l1-1a1 1 0 0 1 1.4 0z"/></svg>
@@ -316,6 +317,13 @@
                 <input type="text" id="clickup-module-name" placeholder="Personas / Gestión de Pool de Talento">
               </div>
               <div class="field field-wide">
+                <label for="clickup-module-source">Where the module is described</label>
+                <select id="clickup-module-source">
+                  <option value="">Paste the documentation below</option>
+                </select>
+                <span class="field-note" id="clickup-module-source-note">Choose a registered repository to read the module's real code instead of pasting. Add one in the Sources tab.</span>
+              </div>
+              <div class="field field-wide" id="clickup-module-context-field">
                 <label for="clickup-module-context">Module documentation</label>
                 <textarea id="clickup-module-context" rows="6" placeholder="Paste the official documentation describing what this module covers…"></textarea>
                 <span class="field-note">The verdict is based only on what you paste here, so include the module's real scope.</span>
@@ -780,6 +788,13 @@
                 <input type="text" id="linear-module-name" placeholder="Personas / Gestión de Pool de Talento">
               </div>
               <div class="field field-wide">
+                <label for="linear-module-source">Where the module is described</label>
+                <select id="linear-module-source">
+                  <option value="">Paste the documentation below</option>
+                </select>
+                <span class="field-note" id="linear-module-source-note">Choose a registered repository to read the module's real code instead of pasting. Add one in the Sources tab.</span>
+              </div>
+              <div class="field field-wide" id="linear-module-context-field">
                 <label for="linear-module-context">Module documentation</label>
                 <textarea id="linear-module-context" rows="6" placeholder="Paste the official documentation describing what this module covers…"></textarea>
                 <span class="field-note">The verdict is based only on what you paste here, so include the module's real scope.</span>
@@ -1108,6 +1123,124 @@
         </div>
       </section>
       </div>
+    </section>
+
+    <!-- ===================================================================
+         Sources tab. A source is a repository the harness is allowed to read
+         context from. Registering one is what makes its code available to
+         the Module check workflow on both trackers.
+         =================================================================== -->
+    <!-- ===================================================================
+         Sources tab. A source is something the harness is allowed to read
+         context from: a checkout on this machine, a repository to clone, or a
+         single document. The same source feeds Module check on both trackers.
+         =================================================================== -->
+    <!-- ===================================================================
+         Sources tab. A source is something the harness is allowed to read
+         context from: a checkout on this machine, a repository to clone, or a
+         single document. The same source feeds Module check on both trackers.
+
+         Structured as panels like every other tab: .panel carries no padding
+         of its own, so content must sit inside .panel-head / .panel-body.
+         =================================================================== -->
+    <section id="tab-sources" class="tab-panel" data-tracker="sources" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-badge">Start here</span>
+            <div>
+              <h2>Add a source</h2>
+              <p class="hint">
+                Code and documents the harness may read. Everything retrieved is re-read
+                from disk before use, so a verdict cites a file and line you can open —
+                not a copy that may have gone stale.
+              </p>
+            </div>
+        </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field">
+                <label for="source-kind">Type</label>
+                <select id="source-kind">
+                  <option value="repository">Folder on this machine</option>
+                  <option value="github">Repository URL (clone)</option>
+                  <option value="document">Document (.md, .txt, .pdf)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="source-name">Name</label>
+                <input type="text" id="source-name" placeholder="optional" autocomplete="off">
+                <span class="field-note">Defaults to the folder, repo or file name.</span>
+              </div>
+              <div class="field field-wide">
+                <label for="source-target" id="source-target-label">Folder path</label>
+                <input type="text" id="source-target" placeholder="/home/you/projects/sigo" autocomplete="off">
+                <span class="field-note" id="source-target-note">An absolute path to a checkout on this machine.</span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="source-add-btn" class="btn-primary">Add source</button>
+              <button type="button" id="source-refresh-btn">Refresh list</button>
+            </div>
+
+            <div id="source-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="source-phase-log"></ul>
+              </div>
+            </div>
+            <div id="source-error" class="error-banner" hidden></div>
+            <div id="source-success" class="success-banner" hidden></div>
+        </div>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Registered sources</h2>
+              <p class="hint">What the harness may read, and whether each index still matches its files.</p>
+            </div>
+        </div>
+          <div class="panel-body">
+            <div id="source-list"></div>
+        </div>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Preview what a source returns</h2>
+              <p class="hint">
+                Check the context before trusting it to drive a verdict. Natural language
+                finds concepts; an exact identifier also runs a symbol search.
+              </p>
+            </div>
+        </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field">
+                <label for="source-search-repo">Source</label>
+                <select id="source-search-repo"></select>
+              </div>
+              <div class="field field-wide">
+                <label for="source-search-query">Query</label>
+                <input type="text" id="source-search-query" placeholder="employee payroll — or CreateEmployee" autocomplete="off">
+              </div>
+            </div>
+            <div class="btn-row">
+              <button type="button" id="source-search-btn">Search</button>
+            </div>
+            <div id="source-search-error" class="error-banner" hidden></div>
+            <div id="source-search-results"></div>
+        </div>
+        </div>
+      </section>
     </section>
   </main>
 

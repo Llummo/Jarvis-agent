@@ -25,7 +25,13 @@ from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from meta_harness.clickup_bridge import ClickUpReadError, get_clickup_task
-from meta_harness.embeddings import VectorStore, VectorStoreError, resolve_embedder, search_repository
+from meta_harness.embeddings import (
+    VERIFIED,
+    VectorStore,
+    VectorStoreError,
+    hybrid_search,
+    resolve_embedder,
+)
 from meta_harness.linear_bridge import LinearReadError, get_linear_issue
 
 OnStep = Optional[Callable[[str], None]]
@@ -192,23 +198,35 @@ def retrieve_module_context(
     *,
     repo: str,
     limit: int = DEFAULT_CONTEXT_CHUNKS,
+    verified_only: bool = True,
     on_step: OnStep = None,
 ) -> str:
-    """Assemble a module description by retrieving source from the index.
+    """Assemble a module description by retrieving source from a trusted source.
 
-    Each retrieved span keeps its file path and line range: the judgement that
-    follows is expected to cite evidence, and a citation to `people/service.go:88`
-    is checkable in a way that an unattributed snippet is not.
+    Every span is re-read from disk before it is used, and by default a span
+    that no longer matches the file is dropped rather than passed along. That
+    is the difference between context that is probably right and context that
+    is checkable: an index is a copy, and a copy goes stale without looking
+    wrong.
+
+    Each span keeps its file path and line range, so the judgement that
+    follows cites evidence a reviewer can open.
     """
-    _report(on_step, f'Retrieving "{module_name}" source from the "{repo}" index…')
+    _report(on_step, f'Retrieving "{module_name}" source from the "{repo}" source…')
     store = VectorStore()
     try:
-        hits = search_repository(
+        if store.sources.find(repo) is None:
+            raise ModuleContextUnavailableError(
+                f"'{repo}' is not a registered context source. "
+                "Add it with: meta-harness source add --repo <path>"
+            )
+        hits = hybrid_search(
             module_name,
             repo=repo,
             embedder=resolve_embedder(),
             store=store,
             limit=limit,
+            verify=True,
         )
     except VectorStoreError as exc:
         # A missing or mis-shaped index is a "no context available" outcome
@@ -219,20 +237,41 @@ def retrieve_module_context(
 
     if not hits:
         raise ModuleContextUnavailableError(
-            f'Nothing in the "{repo}" index matched "{module_name}". '
+            f'Nothing in the "{repo}" source matched "{module_name}". '
             "Check the module name, or rebuild the index."
         )
 
+    if verified_only:
+        fresh = [hit for hit in hits if hit.verification == VERIFIED]
+        dropped = len(hits) - len(fresh)
+        if dropped:
+            _report(
+                on_step,
+                f"Dropped {dropped} span(s) that no longer match the working tree — "
+                "re-index to recover them.",
+            )
+        if not fresh:
+            raise ModuleContextUnavailableError(
+                f'Every span retrieved for "{module_name}" is stale. '
+                f"Re-index with: meta-harness index build --repo <path> "
+            )
+        hits = fresh
+
     _report(
         on_step,
-        f"Retrieved {len(hits)} span(s): " + ", ".join(hit.location for hit in hits[:5]),
+        f"Retrieved {len(hits)} verified span(s): "
+        + ", ".join(hit.location for hit in hits[:5]),
     )
     sections = [
-        f"--- {hit.location} (relevance {hit.score:.2f})\n{hit.text}" for hit in hits
+        f"--- {hit.location} (lines {hit.start_line}-{hit.end_line}, "
+        f"relevance {hit.score:.2f})\n{hit.text}"
+        for hit in hits
     ]
     return (
-        f"Source retrieved from the '{repo}' repository for the "
-        f"'{module_name}' module:\n\n" + "\n\n".join(sections)
+        f"Source retrieved from the '{repo}' repository for the '{module_name}' "
+        "module. Each span below was re-read from the working tree and matches "
+        "it exactly, so the file and line references are citable:\n\n"
+        + "\n\n".join(sections)
     )
 
 

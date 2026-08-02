@@ -34,11 +34,13 @@ from meta_harness.config import MetaHarnessConfig, parse_command_prefix
 from meta_harness.doctor import run_all
 from meta_harness.embeddings import (
     EmbeddingError,
+    SourceError,
     VectorStore,
     VectorStoreError,
+    hybrid_search,
     index_repository,
     resolve_embedder,
-    search_repository,
+    source_status,
 )
 from meta_harness.frontier import FrontierStore
 from meta_harness.hermes_compat import inspect_hermes_compatibility
@@ -1395,12 +1397,26 @@ def _resolve_repo_name(repo: str, name: Optional[str]) -> str:
 @click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository to index.")
 @click.option("--name", default=None, help="Name to index it under. Defaults to the directory name.")
 @click.option("--rebuild", is_flag=True, help="Discard the existing index for this repo before indexing.")
+@click.option(
+    "--full/--skeleton",
+    "full",
+    default=False,
+    show_default=True,
+    help="Index whole file bodies instead of just what each file declares. "
+         "Skeleton is ~15% of the text and the real code is still read from disk on retrieval.",
+)
 @click.option("--db-path", type=click.Path(dir_okay=False), help="Override the index database location.")
-def index_build_cmd(repo: str, name: Optional[str], rebuild: bool, db_path: Optional[str]) -> None:
+def index_build_cmd(
+    repo: str, name: Optional[str], rebuild: bool, full: bool, db_path: Optional[str]
+) -> None:
     """Embed a repository's source into the index.
 
-    Incremental by default: files whose contents are unchanged since the last
-    run are skipped without being re-embedded.
+    Indexes declarations by default — signatures, types and their doc
+    comments — which is a fraction of the text and enough to find things by.
+    The real code is read from the file when a result is returned.
+
+    Incremental: files whose contents are unchanged since the last run are
+    skipped without being re-embedded.
     """
     repo_name = _resolve_repo_name(repo, name)
     store = VectorStore(Path(db_path) if db_path else None)
@@ -1411,9 +1427,10 @@ def index_build_cmd(repo: str, name: Optional[str], rebuild: bool, db_path: Opti
             store=store,
             repo_name=repo_name,
             rebuild=rebuild,
+            mode="full" if full else "skeleton",
             on_step=lambda message: console.print(f"[dim]{message}[/dim]"),
         )
-    except (EmbeddingError, VectorStoreError, NotADirectoryError) as exc:
+    except (EmbeddingError, VectorStoreError, NotADirectoryError, ValueError) as exc:
         raise _clickify_runtime_error(exc) from exc
     finally:
         store.close()
@@ -1440,15 +1457,27 @@ def index_build_cmd(repo: str, name: Optional[str], rebuild: bool, db_path: Opti
 @click.option("--limit", default=10, show_default=True, type=int, help="Maximum chunks to return.")
 @click.option("--min-score", default=0.0, show_default=True, type=float, help="Drop hits below this cosine score.")
 @click.option("--full", is_flag=True, help="Print each chunk's full text rather than a preview.")
+@click.option(
+    "--lexical/--no-lexical",
+    default=None,
+    help="Force the exact-symbol pass on or off. Default: on when the query looks like an identifier.",
+)
+@click.option("--verify", is_flag=True, help="Re-read each result from disk and report whether it still matches.")
 @click.option("--db-path", type=click.Path(dir_okay=False), help="Override the index database location.")
 def index_search_cmd(
-    query: str, repo: str, limit: int, min_score: float, full: bool, db_path: Optional[str]
+    query: str, repo: str, limit: int, min_score: float, full: bool,
+    lexical: Optional[bool], verify: bool, db_path: Optional[str]
 ) -> None:
-    """Retrieve the source most relevant to a natural-language query."""
+    """Retrieve the source most relevant to a query.
+
+    Combines semantic retrieval with an exact-symbol pass, because embeddings
+    are weakest at precisely the thing a symbol name is: an exact string.
+    """
     store = VectorStore(Path(db_path) if db_path else None)
     try:
-        hits = search_repository(
-            query, repo=repo, embedder=resolve_embedder(), store=store, limit=limit, min_score=min_score
+        hits = hybrid_search(
+            query, repo=repo, embedder=resolve_embedder(), store=store,
+            limit=limit, min_score=min_score, lexical=lexical, verify=verify,
         )
     except (EmbeddingError, VectorStoreError, ValueError) as exc:
         raise _clickify_runtime_error(exc) from exc
@@ -1459,8 +1488,13 @@ def index_search_cmd(
         console.print("[yellow]No matches.[/yellow]")
         return
 
+    marks = {"verified": "[green]verified[/green]", "drifted": "[yellow]drifted[/yellow]",
+             "missing": "[red]missing[/red]"}
     for hit in hits:
-        console.print(f"\n[bold]{hit.location}[/bold]  [dim]({hit.language}, score {hit.score:.3f})[/dim]")
+        tags = [hit.language, hit.retrieval]
+        if hit.verification != "unchecked":
+            tags.append(marks.get(hit.verification, hit.verification))
+        console.print(f"\n[bold]{hit.location}[/bold]  [dim]({', '.join(tags)}, score {hit.score:.3f})[/dim]")
         body = hit.text if full else "\n".join(hit.text.splitlines()[:12])
         console.print(body)
 
@@ -1593,3 +1627,127 @@ def rework_benchmark_cmd(
             click.echo(f"  {outcome.task_name}: expected {outcome.expected or '(none)'}, got {outcome.actual}")
     click.echo("")
     click.echo(f"Run written to {result.run_dir}")
+@main.group("source")
+def source_group() -> None:
+    """Register the repositories the harness may draw context from."""
+
+
+def _source_store(db_path: Optional[str]) -> VectorStore:
+    return VectorStore(Path(db_path) if db_path else None)
+
+
+@source_group.command("add")
+@click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False), help="Path to the repository.")
+@click.option("--name", default=None, help="Name to register it under. Defaults to the directory name.")
+@click.option("--index/--no-index", "do_index", default=True, show_default=True, help="Index it immediately.")
+@click.option("--db-path", type=click.Path(dir_okay=False))
+def source_add_cmd(repo: str, name: Optional[str], do_index: bool, db_path: Optional[str]) -> None:
+    """Register a repository as a trusted context source.
+
+    Registering without indexing declares the source but retrieves nothing
+    from it — the index is what makes it usable.
+    """
+    repo_name = _resolve_repo_name(repo, name)
+    store = _source_store(db_path)
+    try:
+        source = store.sources.register(repo_name, Path(repo))
+        console.print(
+            f"[green]Registered[/green] '{source.name}' -> {source.root}"
+            + (f"  [dim](at {source.revision[:8]})[/dim]" if source.revision else "")
+        )
+        if do_index:
+            result = index_repository(
+                Path(repo), embedder=resolve_embedder(), store=store, repo_name=repo_name,
+                on_step=lambda message: console.print(f"[dim]{message}[/dim]"),
+            )
+            console.print(f"[green]Indexed[/green] {result.summary()}")
+    except (SourceError, EmbeddingError, VectorStoreError, NotADirectoryError) as exc:
+        raise _clickify_runtime_error(exc) from exc
+    finally:
+        store.close()
+
+
+@source_group.command("list")
+@click.option("--db-path", type=click.Path(dir_okay=False))
+def source_list_cmd(db_path: Optional[str]) -> None:
+    """Show every registered source and whether its index is current."""
+    store = _source_store(db_path)
+    try:
+        sources = store.sources.list_sources()
+        rows = []
+        for source in sources:
+            try:
+                rows.append((source, source_status(store, source.name)))
+            except SourceError:
+                rows.append((source, None))
+    finally:
+        store.close()
+
+    if not rows:
+        console.print("[yellow]No sources registered. Add one: meta-harness source add --repo <path>[/yellow]")
+        return
+
+    table = Table(title="Context sources")
+    table.add_column("Name", style="bold")
+    table.add_column("Root")
+    table.add_column("Revision")
+    table.add_column("Status")
+    for source, status in rows:
+        table.add_row(
+            source.name,
+            str(source.root),
+            (source.revision or "-")[:8],
+            status.summary() if status else "unknown",
+        )
+    console.print(table)
+
+
+@source_group.command("verify")
+@click.option("--name", default=None, help="Source to verify. Defaults to all of them.")
+@click.option("--db-path", type=click.Path(dir_okay=False))
+def source_verify_cmd(name: Optional[str], db_path: Optional[str]) -> None:
+    """Check each source's index against what is on disk.
+
+    An index is a copy, and a copy goes stale without looking wrong. This is
+    how you find out before the context is used rather than after.
+    """
+    store = _source_store(db_path)
+    try:
+        names = [name] if name else [source.name for source in store.sources.list_sources()]
+        if not names:
+            console.print("[yellow]No sources registered.[/yellow]")
+            return
+        stale = 0
+        for source_name in names:
+            try:
+                status = source_status(store, source_name)
+            except SourceError as exc:
+                raise _clickify_runtime_error(exc) from exc
+            marker = "[green]OK[/green]" if status.current and status.source.exists else "[yellow]STALE[/yellow]"
+            if not (status.current and status.source.exists):
+                stale += 1
+            console.print(f"{marker}  [bold]{source_name}[/bold]  {status.summary()}")
+    finally:
+        store.close()
+
+    if stale:
+        console.print(
+            f"\n[dim]Re-index with: meta-harness index build --repo <path>[/dim]"
+        )
+
+
+@source_group.command("remove")
+@click.option("--name", required=True, help="Source to remove.")
+@click.option("--keep-index", is_flag=True, help="Deregister but leave the indexed chunks in place.")
+@click.option("--db-path", type=click.Path(dir_okay=False))
+def source_remove_cmd(name: str, keep_index: bool, db_path: Optional[str]) -> None:
+    """Remove a source. Its chunks go too, unless --keep-index."""
+    store = _source_store(db_path)
+    try:
+        if not store.sources.remove(name):
+            raise click.ClickException(f"'{name}' is not a registered source.")
+        if not keep_index:
+            store.clear_repo(name)
+    finally:
+        store.close()
+    console.print(f"[green]Removed[/green] '{name}'" + (" (index kept)" if keep_index else ""))

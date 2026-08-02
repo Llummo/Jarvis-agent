@@ -56,11 +56,54 @@ def test_shell_shows_the_metrica_jarvis_identity(browser):
     assert browser.visible(".brand-mark"), "the logo must render"
 
 
-def test_shell_exposes_both_trackers(browser):
+def test_shell_exposes_the_trackers_and_sources(browser):
+    """Sources sits alongside the trackers rather than inside one: a source is
+    a repository, and the same one feeds the module check on both."""
     assert browser.eval("[...document.querySelectorAll('.tab-button')].map(b => b.textContent)") == [
         "ClickUp",
         "Linear",
+        "Sources",
     ]
+
+
+def test_sources_tab_opens_and_offers_registration(browser):
+    browser.click('.tab-button[data-tab="sources"]')
+
+    assert browser.visible("#tab-sources"), "the Sources panel must open"
+    assert browser.visible("#source-target"), "a target field is the point of the tab"
+    assert browser.visible("#source-add-btn")
+    assert browser.eval(
+        "[...document.querySelectorAll('#source-kind option')].map(o => o.value)"
+    ) == ["repository", "github", "document"]
+
+
+def test_source_kind_relabels_the_target_field(browser):
+    """The field means something different per kind, so it must say which."""
+    browser.click('.tab-button[data-tab="sources"]')
+
+    folder_label = browser.eval("document.getElementById('source-target-label').textContent")
+    browser.eval(
+        "const s=document.getElementById('source-kind');"
+        "s.value='github'; s.dispatchEvent(new Event('change'))"
+    )
+    url_label = browser.eval("document.getElementById('source-target-label').textContent")
+
+    assert folder_label == "Folder path"
+    assert url_label == "Repository URL"
+
+
+def test_adding_a_source_with_no_target_reports_an_error(browser):
+    """A button that silently does nothing is indistinguishable from a broken
+    one — the whole point of this panel's feedback."""
+    browser.click('.tab-button[data-tab="sources"]')
+    browser.eval("document.getElementById('source-target').value = ''")
+
+    browser.click("#source-add-btn")
+
+    assert browser.visible("#source-error"), "an empty target must be reported"
+    assert "folder path" in browser.eval(
+        "document.getElementById('source-error').textContent"
+    ).lower()
 
 
 # ===========================================================================
@@ -1175,3 +1218,44 @@ def test_clearing_the_filter_restores_every_option(browser):
         "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
     )
     assert any("SIG-90" in label for label in labels)
+def test_sources_panels_use_the_shared_panel_structure(browser):
+    """.panel carries no padding of its own — it comes from .panel-head and
+    .panel-body, and the gap between panels comes from the .step wrapper.
+    Content placed directly in .panel sits flush against the border, which is
+    exactly how this panel shipped broken the first time."""
+    browser.click('.tab-button[data-tab="sources"]')
+
+    counts = browser.eval(
+        "({panels: document.querySelectorAll('#tab-sources .panel').length,"
+        " steps: document.querySelectorAll('#tab-sources .step').length,"
+        " heads: document.querySelectorAll('#tab-sources .panel-head').length,"
+        " bodies: document.querySelectorAll('#tab-sources .panel-body').length})"
+    )
+
+    assert counts["panels"] == counts["steps"], "every panel needs a .step wrapper for its margin"
+    assert counts["panels"] == counts["heads"] == counts["bodies"], (
+        "every panel needs a head and a body, or its content has no padding"
+    )
+
+
+def test_sources_padding_matches_the_rest_of_the_app(browser):
+    browser.click('.tab-button[data-tab="clickup"]')
+    reference = browser.eval(
+        "getComputedStyle(document.querySelector('#tab-clickup .panel-body')).padding"
+    )
+    browser.click('.tab-button[data-tab="sources"]')
+    actual = browser.eval(
+        "getComputedStyle(document.querySelector('#tab-sources .panel-body')).padding"
+    )
+
+    assert actual == reference, f"sources body padding {actual} differs from {reference}"
+
+
+def test_sources_tab_does_not_scroll_sideways(browser):
+    browser.click('.tab-button[data-tab="sources"]')
+
+    overflow = browser.eval(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+
+    assert overflow <= 0, "the page must never scroll horizontally"
