@@ -90,6 +90,24 @@ def list_linear_issues(team_id: str, *, limit: Optional[int] = None) -> List[dic
     return payload
 
 
+def list_linear_issue_index(team_id: str, *, limit: Optional[int] = None) -> List[dict]:
+    """Every issue on a team, titles only — the corpus name matching runs over."""
+    payload = _read("issue index", lambda c: c.get_issue_index(team_id, limit))
+    if not isinstance(payload, list):
+        raise LinearReadError(f"Expected a list of issues, got: {payload!r}")
+    return payload
+
+
+def search_linear_issues(team_id: str, text: str, *, limit: Optional[int] = None) -> List[dict]:
+    """Issues whose title contains `text`, filtered by Linear."""
+    if not text.strip():
+        raise ValueError("search text is required")
+    payload = _read("issue search", lambda c: c.search_issues(team_id, text, limit))
+    if not isinstance(payload, list):
+        raise LinearReadError(f"Expected a list of issues, got: {payload!r}")
+    return payload
+
+
 def get_linear_issue(issue_id: str) -> dict:
     payload = _read(f"fetch of issue {issue_id}", lambda c: c.get_issue(issue_id))
     if not isinstance(payload, dict):
