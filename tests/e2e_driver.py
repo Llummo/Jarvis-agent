@@ -57,6 +57,83 @@ LINEAR_ISSUES = [
     {"id": "i1", "identifier": "SIG-1", "title": "Control de permisos", "state": {"id": "st1", "name": "Todo"}},
     {"id": "i2", "identifier": "SIG-2", "title": "Vista de personas", "state": {"id": "st2", "name": "Done"}},
 ]
+REWORK_PARENTS = [
+    {"issue_id": "p1", "identifier": "SIG-90", "title": "Módulo de selección", "state_name": "Todo"}
+]
+
+# One name resolved cleanly, one left ambiguous — the two branches the review
+# table has to render differently.
+_MATCH_A = {
+    "issue_id": "i1",
+    "identifier": "SIG-1",
+    "title": "6.5 Tabla de Carga por responsable",
+    "score": 0.95,
+    "state_name": "Todo",
+    "state_type": "unstarted",
+}
+_MATCH_B = {
+    "issue_id": "i2",
+    "identifier": "SIG-2",
+    "title": "Mover candidato a Tanda enviada a cliente",
+    "score": 0.71,
+    "state_name": "Todo",
+    "state_type": "unstarted",
+}
+_MATCH_C = {
+    "issue_id": "i3",
+    "identifier": "SIG-3",
+    "title": "Mover candidato a Tanda enviada a Comercial",
+    "score": 0.70,
+    "state_name": "Todo",
+    "state_type": "unstarted",
+}
+REWORK_PREVIEW = {
+    "team_id": "LT1",
+    "cancelled_state": {"id": "st9", "name": "Cancelado", "type": "canceled"},
+    "warnings": ["1 of 2 name(s) could not be matched confidently."],
+    "matched_count": 1,
+    "unresolved_count": 1,
+    "resolutions": [
+        {
+            "name": "6.5 Tabla de Carga por responsable",
+            "raw": "- ✅ *6.5 Tabla de Carga por responsable*",
+            "status": "matched",
+            "method": "score",
+            "note": "",
+            "chosen": _MATCH_A,
+            "candidates": [_MATCH_A],
+        },
+        {
+            "name": "Mover candidato a Tanda enviada",
+            "raw": "- ✅ *Mover candidato a Tanda enviada*",
+            "status": "ambiguous",
+            "method": "",
+            "note": "scoring could not separate the top candidates",
+            "chosen": None,
+            "candidates": [_MATCH_B, _MATCH_C],
+        },
+    ],
+}
+REWORK_REPORT = {
+    "parent_issue_id": "p1",
+    "summary": "1/1 created, 1 original(s) still open",
+    "created_count": 1,
+    "failed_count": 0,
+    "stranded_count": 1,
+    "outcomes": [
+        {
+            "issue_id": "i1",
+            "identifier": "SIG-1",
+            "original_title": "6.5 Tabla de Carga por responsable",
+            "created_issue_id": "n1",
+            "created_title": "6.5 Tabla de Carga por responsable",
+            "cancelled": False,
+            "error": "",
+            "ok": True,
+            "needs_attention": True,
+        }
+    ],
+}
 FINDINGS = {
     "findings": [
         {
@@ -174,6 +251,8 @@ def _post_route(path: str):
                 for i, t in enumerate(GENERATED["tickets"], start=1)
             ]
         },
+        "/api/rework/preview": REWORK_PREVIEW,
+        "/api/rework/apply": REWORK_REPORT,
         "/api/qa/reviews": REVIEW_RESULT,
         "/api/qa/reviews/commit": FINDING,
         "/api/qa/reviews/bulk": {
@@ -220,6 +299,7 @@ def _route(path: str) -> Optional[Any]:
         "/api/linear/states": LINEAR_STATES,
         "/api/linear/projects": [],
         "/api/linear/issues": LINEAR_ISSUES,
+        "/api/rework/parents": REWORK_PARENTS,
         "/api/qa/findings": FINDINGS,
         "/api/qa/project-config": {"projects": {}},
         "/api/qa/reviews": [],

@@ -417,3 +417,32 @@ class RevertibleTicketOut(BaseModel):
     title: str
     new_title: str = ""
     saved_at: str
+
+
+class ReworkPreviewIn(BaseModel):
+    """Resolve pasted names against a team. Read-only."""
+
+    team_id: str
+    names: str
+    # Reasoning costs a subprocess per ambiguous name, so it is opt-in.
+    use_reasoning: bool = False
+    progress_token: Optional[str] = None
+
+
+class ReworkItemIn(BaseModel):
+    """One issue the user confirmed, carried over from the preview."""
+
+    issue_id: str
+    identifier: str = ""
+    original_title: str = ""
+
+
+class ReworkApplyIn(BaseModel):
+    """Execute an approved plan. This writes."""
+
+    team_id: str
+    parent_issue_id: str
+    items: list[ReworkItemIn]
+    cancelled_state_id: str = ""
+    cancel_originals: bool = True
+    progress_token: Optional[str] = None

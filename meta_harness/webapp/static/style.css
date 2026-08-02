@@ -1284,3 +1284,78 @@ kbd {
   border: 1px solid rgba(255, 255, 255, 0.25);
   display: block;
 }
+
+/* --- Rework batch ---------------------------------------------------------- */
+
+/* A checkbox and its explanation on one line, aligned at the top so a wrapped
+   label does not drag the box down with it. */
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.checkbox-row input[type="checkbox"] {
+  margin: 0.15rem 0 0;
+  flex: 0 0 auto;
+}
+
+/* Search results for the parent picker. Capped and scrollable: a broad query
+   returns 25 issues and must not push the button below the fold. */
+.option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  margin: 0.5rem 0;
+  padding: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.option-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.option-row:hover,
+.option-row:focus-visible {
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+}
+
+.option-row .option-id {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.col-check {
+  width: 2.25rem;
+  text-align: center;
+}
+
+/* The match quality of one resolved row, so a weak match is visible without
+   reading the score. */
+.match-note {
+  display: block;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.match-ambiguous { color: var(--warning, #b7791f); }
+.match-unmatched { color: var(--danger, #c53030); }

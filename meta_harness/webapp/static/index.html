@@ -558,6 +558,7 @@
         <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="qa" id="linear-subtab-qa">QA review</button>
         <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="module" id="linear-subtab-module">Module check</button>
         <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="modify" id="linear-subtab-modify">Modify ticket</button>
+        <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="rework" id="linear-subtab-rework">Rework batch</button>
         <button class="subtab" role="tab" aria-selected="false" data-tracker="linear" data-sub="findings" id="linear-subtab-findings">Findings</button>
       </nav>
 
@@ -883,6 +884,137 @@
                 <button type="button" id="linear-reformat-apply-btn" class="btn-success">Confirm and update the issue</button>
                 <button type="button" id="linear-reformat-discard-btn">Discard</button>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <div class="subpanel" id="linear-sub-rework" role="tabpanel" aria-labelledby="linear-subtab-rework" hidden>
+      <section class="step">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-badge">Step 1</span>
+            <div>
+              <h2>Paste the ticket names</h2>
+              <p class="hint">Paste the list exactly as you received it — bullets, check marks and relevance percentages are stripped automatically. Each line is matched to a real issue on the team.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field field-wide">
+              <label for="linear-rework-names">Ticket names, one per line</label>
+              <textarea id="linear-rework-names" rows="10" placeholder="- ✅ *6.5 Tabla de Carga por responsable* — Pertenece al módulo (93%) *check*"></textarea>
+              <span class="field-note">A line carrying an issue id such as SIG-60 is matched exactly; everything else is matched on the title.</span>
+            </div>
+
+            <label class="checkbox-row" for="linear-rework-reasoning">
+              <input type="checkbox" id="linear-rework-reasoning">
+              <span>Ask the assistant to settle names that scoring cannot separate (slower)</span>
+            </label>
+
+            <div class="btn-row">
+              <button type="button" id="linear-rework-resolve-btn" class="btn-primary" disabled>Resolve names</button>
+            </div>
+
+            <div id="linear-rework-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-rework-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-rework-error" class="error-banner" hidden></div>
+            <div id="linear-rework-warnings" class="warning-banner" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" id="linear-rework-review" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-badge">Step 2</span>
+            <div>
+              <h2>Check what was matched</h2>
+              <p class="hint">Only ticked rows are reworked. A name that could not be matched confidently is left unticked on purpose — pick the right issue yourself or leave it out.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="table-wrap">
+              <table id="linear-rework-table">
+                <thead>
+                  <tr>
+                    <th class="col-check"><input type="checkbox" id="linear-rework-check-all" aria-label="Select all matched"></th>
+                    <th>Pasted name</th>
+                    <th>Matched issue</th>
+                    <th>How</th>
+                  </tr>
+                </thead>
+                <tbody id="linear-rework-tbody"></tbody>
+              </table>
+            </div>
+            <div class="field-note" id="linear-rework-counts"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" id="linear-rework-parent-step" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="step-badge">Step 3</span>
+            <div>
+              <h2>Choose the parent issue</h2>
+              <p class="hint">The reworked tickets are created as sub-issues of this one. Search by title, or paste an issue id.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="field-grid">
+              <div class="field field-wide">
+                <label for="linear-rework-parent-search">Parent issue</label>
+                <input type="text" id="linear-rework-parent-search" placeholder="Search issues by title…" autocomplete="off">
+                <span class="field-note" id="linear-rework-parent-status"></span>
+              </div>
+            </div>
+            <div id="linear-rework-parent-results" class="option-list" hidden></div>
+            <div id="linear-rework-parent-selected" class="selected-callout is-empty">No parent selected yet.</div>
+
+            <label class="checkbox-row" for="linear-rework-cancel">
+              <input type="checkbox" id="linear-rework-cancel" checked>
+              <span id="linear-rework-cancel-label">Move the original issues to the cancelled column</span>
+            </label>
+
+            <div class="btn-row">
+              <button type="button" id="linear-rework-apply-btn" class="btn-success" disabled>Create the reworked tickets</button>
+            </div>
+
+            <div id="linear-rework-apply-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-rework-apply-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-rework-apply-error" class="error-banner" hidden></div>
+            <div id="linear-rework-apply-success" class="success-banner" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" id="linear-rework-report" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Result</h2>
+              <p class="hint">What was created, and anything that still needs a human.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Original</th><th>Replacement</th><th>Original moved</th><th>Notes</th></tr>
+                </thead>
+                <tbody id="linear-rework-report-tbody"></tbody>
+              </table>
             </div>
           </div>
         </div>
