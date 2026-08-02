@@ -134,6 +134,11 @@ class ReworkOutcome:
     created_title: str = ""
     cancelled: bool = False
     error: str = ""
+    # The column the original sat in before it was cancelled, read at the
+    # moment of the move. Undo restores this; without it the original could
+    # only be guessed back into some default column.
+    previous_state_id: str = ""
+    previous_state_name: str = ""
 
     @property
     def ok(self) -> bool:
@@ -153,11 +158,74 @@ class ReworkOutcome:
 
 
 @dataclass
+class UndoOutcome:
+    """What happened to one item when a run was reversed."""
+
+    issue_id: str
+    identifier: str
+    restored_to: str = ""
+    deleted_issue_id: str = ""
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {**asdict(self), "ok": self.ok}
+
+
+@dataclass
+class UndoReport:
+    """The result of undoing a run."""
+
+    run_id: str
+    outcomes: List[UndoOutcome] = field(default_factory=list)
+    # False when something failed, so the run stays undoable and the user can
+    # retry rather than being told it worked.
+    complete: bool = True
+
+    @property
+    def restored(self) -> List[UndoOutcome]:
+        return [outcome for outcome in self.outcomes if outcome.restored_to]
+
+    @property
+    def deleted(self) -> List[UndoOutcome]:
+        return [outcome for outcome in self.outcomes if outcome.deleted_issue_id]
+
+    @property
+    def failed(self) -> List[UndoOutcome]:
+        return [outcome for outcome in self.outcomes if outcome.error]
+
+    def summary_line(self) -> str:
+        parts = [
+            f"{len(self.restored)} original(s) restored",
+            f"{len(self.deleted)} replacement(s) deleted",
+        ]
+        if self.failed:
+            parts.append(f"{len(self.failed)} failed")
+        return ", ".join(parts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "summary": self.summary_line(),
+            "complete": self.complete,
+            "restored_count": len(self.restored),
+            "deleted_count": len(self.deleted),
+            "failed_count": len(self.failed),
+            "outcomes": [outcome.to_dict() for outcome in self.outcomes],
+        }
+
+
+@dataclass
 class ReworkReport:
     """The result of executing a plan."""
 
     parent_issue_id: str
     outcomes: List[ReworkOutcome] = field(default_factory=list)
+    # Identifies this run in the history, so it can be undone later.
+    run_id: str = ""
 
     @property
     def created(self) -> List[ReworkOutcome]:
@@ -182,6 +250,10 @@ class ReworkReport:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "parent_issue_id": self.parent_issue_id,
+            "run_id": self.run_id,
+            # Only a run that created something and recorded where the
+            # originals came from can be reversed.
+            "undoable": bool(self.run_id and self.created),
             "summary": self.summary_line(),
             "created_count": len(self.created),
             "failed_count": len(self.failed),

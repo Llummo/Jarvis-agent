@@ -700,3 +700,178 @@ def test_the_command_side_is_the_only_writer():
             if isinstance(node, ast.ImportFrom) and any(a.name in writers for a in node.names):
                 offenders.append(path.name)
     assert not offenders, f"only commands.py may import Linear writes; found in {offenders}"
+
+
+# --- undo ---------------------------------------------------------------------
+
+from meta_harness.rework.commands import undo_rework_run  # noqa: E402
+from meta_harness.rework.history import ReworkHistoryStore, build_run_record  # noqa: E402
+from meta_harness.rework.queries import list_undoable_runs  # noqa: E402
+
+
+@pytest.fixture
+def history(tmp_path):
+    return ReworkHistoryStore(tmp_path / "rework_history.json")
+
+
+@pytest.fixture
+def linear_with_state(monkeypatch):
+    """A working Linear where originals start in 'Todo'."""
+    calls = []
+    monkeypatch.setattr(commands_module, "reformat_ticket", lambda tid, **k: _reformatted(tid))
+    monkeypatch.setattr(
+        commands_module, "get_linear_issue",
+        lambda iid: {"id": iid, "state": {"id": "st-todo", "name": "Todo", "type": "unstarted"}},
+    )
+    monkeypatch.setattr(
+        commands_module, "create_linear_issue",
+        lambda team, title, desc, **k: calls.append(("create", k.get("parent_id"))) or "new-1",
+    )
+    monkeypatch.setattr(
+        commands_module, "update_linear_issue_state",
+        lambda iid, sid: calls.append(("state", iid, sid)) or {},
+    )
+    monkeypatch.setattr(
+        commands_module, "delete_linear_issue",
+        lambda iid: calls.append(("delete", iid)) or True,
+    )
+    return calls
+
+
+def test_the_original_column_is_recorded_before_cancelling(linear_with_state, history):
+    report = execute_rework_plan(_plan(), history=history)
+    outcome = report.outcomes[0]
+    assert outcome.previous_state_id == "st-todo"
+    assert outcome.previous_state_name == "Todo"
+
+
+def test_a_completed_run_is_saved_for_undo(linear_with_state, history):
+    report = execute_rework_plan(_plan(), history=history)
+    assert report.run_id
+    saved = history.get(report.run_id)
+    assert saved is not None
+    assert saved["items"][0]["previous_state_id"] == "st-todo"
+
+
+def test_a_run_that_created_nothing_is_not_saved(monkeypatch, history):
+    monkeypatch.setattr(
+        commands_module, "reformat_ticket",
+        lambda *a, **k: (_ for _ in ()).throw(TicketReformatError("bad")),
+    )
+    report = execute_rework_plan(_plan(), history=history)
+    assert history.list_runs() == []
+    assert report.to_dict()["undoable"] is False
+
+
+def test_undo_restores_the_original_then_deletes_the_replacement(linear_with_state, history):
+    report = execute_rework_plan(_plan(), history=history)
+    linear_with_state.clear()
+
+    undo = undo_rework_run(report.run_id, history=history)
+
+    # Restore first, delete second: a failure between them leaves a duplicate,
+    # never a vanished ticket.
+    assert linear_with_state == [("state", "i1", "st-todo"), ("delete", "new-1")]
+    assert undo.restored and undo.deleted
+    assert undo.complete
+
+
+def test_undo_puts_the_original_back_in_its_own_column(linear_with_state, history):
+    report = execute_rework_plan(_plan(), history=history)
+    undo = undo_rework_run(report.run_id, history=history)
+    assert undo.outcomes[0].restored_to == "Todo"
+
+
+def test_a_run_can_only_be_undone_once(linear_with_state, history):
+    report = execute_rework_plan(_plan(), history=history)
+    undo_rework_run(report.run_id, history=history)
+    with pytest.raises(ValueError, match="No undoable run"):
+        undo_rework_run(report.run_id, history=history)
+
+
+def test_an_unknown_run_id_is_rejected(history):
+    with pytest.raises(ValueError, match="No undoable run"):
+        undo_rework_run("nope", history=history)
+
+
+def test_a_failed_restore_does_not_delete_the_replacement(linear_with_state, history, monkeypatch):
+    """Deleting the replacement when the original is stuck in Cancelled would
+    leave the work with no home at all."""
+    report = execute_rework_plan(_plan(), history=history)
+    linear_with_state.clear()
+    monkeypatch.setattr(
+        commands_module, "update_linear_issue_state",
+        lambda *a: (_ for _ in ()).throw(commands_module.LinearIssueError("no permission")),
+    )
+
+    undo = undo_rework_run(report.run_id, history=history)
+    assert [step for step, *_ in linear_with_state] == []
+    assert undo.failed
+    assert not undo.complete
+
+
+def test_a_partly_failed_undo_stays_undoable(linear_with_state, history, monkeypatch):
+    report = execute_rework_plan(_plan(), history=history)
+    monkeypatch.setattr(
+        commands_module, "delete_linear_issue",
+        lambda iid: (_ for _ in ()).throw(commands_module.LinearIssueError("gone")),
+    )
+
+    undo = undo_rework_run(report.run_id, history=history)
+    assert not undo.complete
+    # Still listed, so the user can retry rather than being told it worked.
+    assert history.get(report.run_id) is not None
+    assert "not deleted" in undo.outcomes[0].error
+
+
+def test_an_uncancelled_original_only_needs_the_replacement_deleted(linear_with_state, history):
+    report = execute_rework_plan(_plan(cancel_originals=False), history=history)
+    linear_with_state.clear()
+
+    undo = undo_rework_run(report.run_id, history=history)
+    assert linear_with_state == [("delete", "new-1")]
+    assert undo.complete
+
+
+def test_undo_reports_when_the_original_column_was_never_recorded(history):
+    """Runs from before this feature existed cannot be restored, and must say
+    so rather than guessing a column."""
+    outcome = ReworkOutcome("i1", "SIG-1", "old", created_issue_id="n1", cancelled=True)
+    history.remember(
+        build_run_record(
+            run_id="legacy", team_id="t", parent_issue_id="p1",
+            outcomes=[outcome], cancelled_state_id="sc",
+        )
+    )
+    undo = undo_rework_run("legacy", history=history)
+    assert not undo.complete
+    assert "not recorded" in undo.outcomes[0].error
+
+
+def test_history_keeps_only_the_most_recent_runs(history):
+    outcome = ReworkOutcome("i1", "SIG-1", "t", created_issue_id="n1")
+    for index in range(25):
+        history.remember(
+            build_run_record(run_id=f"run-{index}", team_id="t", parent_issue_id="p",
+                             outcomes=[outcome], cancelled_state_id="sc")
+        )
+    runs = history.list_runs()
+    assert len(runs) == 20
+    assert runs[0]["run_id"] == "run-24"
+
+
+def test_corrupt_history_does_not_block_a_rework(tmp_path, linear_with_state):
+    path = tmp_path / "broken.json"
+    path.write_text("{not json", encoding="utf-8")
+    report = execute_rework_plan(_plan(), history=ReworkHistoryStore(path))
+    assert report.created
+
+
+def test_runs_can_be_listed_per_team(history):
+    outcome = ReworkOutcome("i1", "SIG-1", "t", created_issue_id="n1")
+    history.remember(build_run_record(run_id="a", team_id="team-1", parent_issue_id="p",
+                                      outcomes=[outcome], cancelled_state_id="sc"))
+    history.remember(build_run_record(run_id="b", team_id="team-2", parent_issue_id="p",
+                                      outcomes=[outcome], cancelled_state_id="sc"))
+    assert [r["run_id"] for r in list_undoable_runs(team_id="team-1", history=history)] == ["a"]
+    assert len(list_undoable_runs(history=history)) == 2

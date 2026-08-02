@@ -254,6 +254,21 @@ class LinearClient:
             raise LinearAPIError(f"Linear issue creation failed: {result}")
         return result["issue"]
 
+    def delete_issue(self, issue_id: str) -> dict:
+        """Move an issue to Linear's trash.
+
+        `issueDelete` is a soft delete: the issue leaves every board and query
+        but stays recoverable from trash for about 30 days. That is the right
+        primitive for undoing a batch — a mistake in the undo is still fixable
+        from Linear's own UI, which a hard destroy would not be.
+        """
+        query = """
+        mutation($issueId: String!) {
+          issueDelete(id: $issueId) { success }
+        }
+        """
+        return self._request(query, {"issueId": issue_id})["issueDelete"]
+
     def update_issue_state(self, issue_id: str, state_id: str) -> dict:
         query = """
         mutation($issueId: String!, $stateId: String!) {

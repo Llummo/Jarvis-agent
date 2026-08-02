@@ -10,16 +10,17 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from meta_harness.linear_bridge import LinearIssueError, LinearReadError
-from meta_harness.rework.commands import execute_rework_plan
+from meta_harness.rework.commands import execute_rework_plan, undo_rework_run
 from meta_harness.rework.models import ReworkItem, ReworkPlan
 from meta_harness.rework.queries import (
     find_parent_candidates,
+    list_undoable_runs,
     list_parent_options,
     preview_rework,
 )
 from meta_harness.rework.reasoning import claude_reasoner
 from meta_harness.webapp import progress
-from meta_harness.webapp.schemas import ReworkApplyIn, ReworkPreviewIn
+from meta_harness.webapp.schemas import ReworkApplyIn, ReworkPreviewIn, ReworkUndoIn
 
 router = APIRouter()
 
@@ -93,6 +94,25 @@ def post_apply(body: ReworkApplyIn) -> dict:
 
     try:
         report = execute_rework_plan(plan, on_step=_on_step(body.progress_token))
+    except (LinearIssueError, LinearReadError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return report.to_dict()
+
+
+@router.get("/runs")
+def get_runs(team_id: str = Query("")) -> list:
+    """Completed runs that can still be undone, newest first."""
+    return list_undoable_runs(team_id=team_id or None)
+
+
+@router.post("/undo")
+def post_undo(body: ReworkUndoIn) -> dict:
+    """Reverse a run: originals back to their column, replacements deleted."""
+    try:
+        report = undo_rework_run(body.run_id, on_step=_on_step(body.progress_token))
+    except ValueError as exc:
+        # An unknown or already-undone run is the caller's mistake, not an outage.
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (LinearIssueError, LinearReadError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return report.to_dict()

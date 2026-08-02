@@ -154,6 +154,16 @@ def create_linear_issue(
     return str(issue_id)
 
 
+def delete_linear_issue(issue_id: str) -> bool:
+    """Move an issue to Linear's trash. Recoverable there for about 30 days."""
+    payload = _write("issue deletion", lambda c: c.delete_issue(issue_id))
+    if not isinstance(payload, dict):
+        raise LinearIssueError(f"Expected a JSON object for the deleted issue, got: {payload!r}")
+    if not payload.get("success"):
+        raise LinearIssueError(f"Linear refused to delete issue {issue_id}: {payload}")
+    return True
+
+
 def update_linear_issue_state(issue_id: str, state_id: str) -> dict:
     """Move a Linear issue to a different workflow state."""
     payload = _write(

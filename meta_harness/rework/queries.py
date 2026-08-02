@@ -21,6 +21,7 @@ from meta_harness.rework.matching import (
     parse_pasted_names,
     resolve_names,
 )
+from meta_harness.rework.history import ReworkHistoryStore
 from meta_harness.rework.models import ParentOption, ReworkPreview, WorkflowState
 
 OnStep = Optional[Callable[[str], None]]
@@ -160,3 +161,25 @@ def _duplicate_targets(resolutions: Sequence) -> List[str]:
             key = resolution.chosen.identifier or resolution.chosen.issue_id
             seen[key] = seen.get(key, 0) + 1
     return [key for key, count in seen.items() if count > 1]
+
+
+def list_undoable_runs(
+    *, team_id: Optional[str] = None, history: Optional[ReworkHistoryStore] = None
+) -> List[Dict]:
+    """Runs that can still be reversed, newest first.
+
+    Read-only, like everything else here: listing what could be undone must
+    never itself change anything.
+    """
+    store = history if history is not None else ReworkHistoryStore()
+    return [
+        {
+            "run_id": run.get("run_id", ""),
+            "team_id": run.get("team_id", ""),
+            "parent_issue_id": run.get("parent_issue_id", ""),
+            "created_at": run.get("created_at", ""),
+            "item_count": len(run.get("items") or []),
+            "identifiers": [item.get("identifier", "") for item in (run.get("items") or [])],
+        }
+        for run in store.list_runs(team_id=team_id)
+    ]

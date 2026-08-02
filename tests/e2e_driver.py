@@ -114,7 +114,21 @@ REWORK_PREVIEW = {
         },
     ],
 }
+REWORK_UNDO = {
+    "run_id": "rework-1",
+    "summary": "1 original(s) restored, 1 replacement(s) deleted",
+    "complete": True,
+    "restored_count": 1,
+    "deleted_count": 1,
+    "failed_count": 0,
+    "outcomes": [
+        {"issue_id": "i1", "identifier": "SIG-1", "restored_to": "Todo",
+         "deleted_issue_id": "n1", "error": "", "ok": True}
+    ],
+}
 REWORK_REPORT = {
+    "run_id": "rework-1",
+    "undoable": True,
     "parent_issue_id": "p1",
     "summary": "1/1 created, 1 original(s) still open",
     "created_count": 1,
@@ -253,6 +267,7 @@ def _post_route(path: str):
         },
         "/api/rework/preview": REWORK_PREVIEW,
         "/api/rework/apply": REWORK_REPORT,
+        "/api/rework/undo": REWORK_UNDO,
         "/api/qa/reviews": REVIEW_RESULT,
         "/api/qa/reviews/commit": FINDING,
         "/api/qa/reviews/bulk": {

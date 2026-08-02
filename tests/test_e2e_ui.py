@@ -1259,3 +1259,42 @@ def test_sources_tab_does_not_scroll_sideways(browser):
     )
 
     assert overflow <= 0, "the page must never scroll horizontally"
+
+
+def _run_rework(browser):
+    _resolve(browser)
+    _pick_parent(browser)
+    browser.click("#linear-rework-apply-btn")
+    browser.wait_for("!document.getElementById('linear-rework-report').hidden")
+
+
+def test_undo_is_offered_after_a_run(browser):
+    _run_rework(browser)
+    assert browser.visible("#linear-rework-undo-row")
+
+
+def test_undo_is_not_offered_before_a_run(browser):
+    _open_rework(browser)
+    assert not browser.visible("#linear-rework-undo-row")
+
+
+def test_undo_asks_before_reversing_anything(browser):
+    """It deletes tickets, so it must never fire on a stray click."""
+    _run_rework(browser)
+    browser.eval("window.__undoConfirmed = false; window.confirm = () => { window.__undoConfirmed = true; return false; }; return true;")
+    browser.click("#linear-rework-undo-btn")
+    assert browser.eval("window.__undoConfirmed") is True
+    # Declined, so the button stays available.
+    assert browser.visible("#linear-rework-undo-row")
+
+
+def test_confirming_undo_reverses_the_run_and_retires_the_button(browser):
+    _run_rework(browser)
+    browser.eval("window.confirm = () => true; return true;")
+    browser.click("#linear-rework-undo-btn")
+    browser.wait_for("!document.getElementById('linear-rework-undo-success').hidden")
+
+    assert not browser.visible("#linear-rework-undo-row")
+    report = browser.eval("document.getElementById('linear-rework-report-tbody').textContent")
+    assert "undone" in report
+    assert "Todo" in report

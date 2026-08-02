@@ -519,3 +519,10 @@ class ReworkApplyIn(BaseModel):
     cancelled_state_id: str = ""
     cancel_originals: bool = True
     progress_token: Optional[str] = None
+
+
+class ReworkUndoIn(BaseModel):
+    """Reverse a completed run. This writes."""
+
+    run_id: str
+    progress_token: Optional[str] = None

@@ -196,3 +196,57 @@ def test_static_files_must_be_revalidated(client):
     response = client.get("/app.js")
     assert response.status_code == 200
     assert "no-cache" in response.headers.get("cache-control", "")
+
+
+def test_runs_endpoint_lists_undoable_runs(client, monkeypatch):
+    monkeypatch.setattr(
+        routes_rework, "list_undoable_runs",
+        lambda **k: [{"run_id": "r1", "team_id": "t", "parent_issue_id": "p1",
+                      "created_at": "2026-08-02T00:00:00Z", "item_count": 2,
+                      "identifiers": ["SIG-1", "SIG-2"]}],
+    )
+    body = client.get("/api/rework/runs", params={"team_id": "t"}).json()
+    assert body[0]["run_id"] == "r1"
+    assert body[0]["item_count"] == 2
+
+
+def test_undo_reverses_a_run(client, monkeypatch):
+    from meta_harness.rework.models import UndoOutcome, UndoReport
+
+    monkeypatch.setattr(
+        routes_rework, "undo_rework_run",
+        lambda run_id, **k: UndoReport(
+            run_id=run_id,
+            outcomes=[UndoOutcome("i1", "SIG-1", restored_to="Todo", deleted_issue_id="n1")],
+        ),
+    )
+    body = client.post("/api/rework/undo", json={"run_id": "r1"}).json()
+    assert body["restored_count"] == 1
+    assert body["deleted_count"] == 1
+    assert body["complete"] is True
+
+
+def test_undoing_an_unknown_run_is_404_not_502(client, monkeypatch):
+    """An already-undone run is the caller's mistake, not an outage."""
+    def boom(run_id, **kwargs):
+        raise ValueError(f"No undoable run with id {run_id!r}")
+
+    monkeypatch.setattr(routes_rework, "undo_rework_run", boom)
+    response = client.post("/api/rework/undo", json={"run_id": "gone"})
+    assert response.status_code == 404
+
+
+def test_a_partial_undo_is_reported_as_incomplete(client, monkeypatch):
+    from meta_harness.rework.models import UndoOutcome, UndoReport
+
+    monkeypatch.setattr(
+        routes_rework, "undo_rework_run",
+        lambda run_id, **k: UndoReport(
+            run_id=run_id,
+            outcomes=[UndoOutcome("i1", "SIG-1", restored_to="Todo", error="replacement not deleted")],
+            complete=False,
+        ),
+    )
+    body = client.post("/api/rework/undo", json={"run_id": "r1"}).json()
+    assert body["complete"] is False
+    assert body["failed_count"] == 1

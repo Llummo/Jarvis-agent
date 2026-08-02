@@ -15,7 +15,8 @@ therefore safe to run as many times as it takes to get the list right.
 """
 
 from meta_harness.rework.benchmark import CaseSet, MatchCase, run_benchmark, sweep
-from meta_harness.rework.commands import execute_rework_plan
+from meta_harness.rework.commands import execute_rework_plan, undo_rework_run
+from meta_harness.rework.history import ReworkHistoryStore
 from meta_harness.rework.matching import (
     DEFAULT_THRESHOLDS,
     IssueMatch,
@@ -36,10 +37,13 @@ from meta_harness.rework.models import (
     ReworkPlan,
     ReworkPreview,
     ReworkReport,
+    UndoOutcome,
+    UndoReport,
     WorkflowState,
 )
 from meta_harness.rework.queries import (
     find_cancelled_state,
+    list_undoable_runs,
     find_parent_candidates,
     get_parent_option,
     list_workflow_states,
@@ -60,7 +64,10 @@ __all__ = [
     "ReworkOutcome",
     "ReworkPlan",
     "ReworkPreview",
+    "ReworkHistoryStore",
     "ReworkReport",
+    "UndoOutcome",
+    "UndoReport",
     "STATUS_AMBIGUOUS",
     "STATUS_MATCHED",
     "STATUS_UNMATCHED",
@@ -73,7 +80,9 @@ __all__ = [
     "list_workflow_states",
     "parse_pasted_names",
     "preview_rework",
+    "list_undoable_runs",
     "resolve_names",
+    "undo_rework_run",
     "run_benchmark",
     "score_title",
     "sweep",

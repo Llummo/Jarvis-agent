@@ -1035,6 +1035,21 @@
                 <tbody id="linear-rework-report-tbody"></tbody>
               </table>
             </div>
+
+            <div class="btn-row" id="linear-rework-undo-row" hidden>
+              <button type="button" id="linear-rework-undo-btn">Undo this run</button>
+              <span class="field-note">Puts each original back in the column it came from and moves the new sub-issues to Linear's trash, where they stay recoverable for about 30 days.</span>
+            </div>
+
+            <div id="linear-rework-undo-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-rework-undo-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-rework-undo-error" class="error-banner" hidden></div>
+            <div id="linear-rework-undo-success" class="success-banner" hidden></div>
           </div>
         </div>
       </section>

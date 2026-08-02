@@ -2282,6 +2282,7 @@ function initRework() {
     cancelledState: null,
     parent: null,
     parentOptions: [],
+    runId: "",
   };
 
   const teamId = () => scope.value || "";
@@ -2298,14 +2299,20 @@ function initRework() {
     }
   };
 
+  // Each long action has its own indicator; "resolve" owns the unprefixed ids
+  // because it was the first one.
+  const INDICATOR = { resolve: "", apply: "apply-", undo: "undo-" };
+
   const thinking = (name, visible, message) => {
-    const node = el(name === "resolve" ? "thinking" : "apply-thinking");
+    const node = el(`${INDICATOR[name]}thinking`);
+    if (!node) return;
     node.hidden = !visible;
     if (visible) node.querySelector(".thinking-text").textContent = message || "Working…";
   };
 
   const phaseLog = (name, steps) => {
-    const node = el(name === "resolve" ? "phase-log" : "apply-phase-log");
+    const node = el(`${INDICATOR[name]}phase-log`);
+    if (!node) return;
     node.innerHTML = steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
     node.scrollTop = node.scrollHeight;
   };
@@ -2602,7 +2609,72 @@ function initRework() {
         return `<tr><td>${escapeHtml(outcome.identifier || outcome.issue_id)}</td><td>${replacement}</td><td>${moved}</td><td>${note}</td></tr>`;
       })
       .join("");
+
+    state.runId = report.undoable ? report.run_id : "";
+    el("undo-row").hidden = !state.runId;
+    banner("undo-error", null);
+    banner("undo-success", null);
     show("linear-rework-report", true);
+  }
+
+  async function undo() {
+    if (!state.runId) return;
+    const confirmed = window.confirm(
+      "Undo this run?\n\n" +
+        "Each original goes back to the column it came from, and the new " +
+        "sub-issues are moved to Linear's trash (recoverable there for about " +
+        "30 days)."
+    );
+    if (!confirmed) return;
+
+    banner("undo-error", null);
+    banner("undo-success", null);
+    const token = newProgressToken();
+    const stop = pollProgress(token, (steps) => phaseLog("undo", steps));
+    thinking("undo", true, "Putting the originals back…");
+    el("undo-btn").disabled = true;
+
+    try {
+      const report = await fetchJson("/api/rework/undo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: state.runId, progress_token: token }),
+      });
+      banner("undo-success", report.summary, "success-banner");
+      if (report.complete) {
+        // Nothing left to reverse; offering the button again would 404.
+        state.runId = "";
+        el("undo-row").hidden = true;
+      } else {
+        banner(
+          "undo-error",
+          "Some items could not be reversed, so this run is still undoable — " +
+            "fix the cause and try again.",
+          "error-banner"
+        );
+      }
+      renderUndoNotes(report);
+    } catch (err) {
+      banner("undo-error", err.message, "error-banner");
+    } finally {
+      await stop();
+      thinking("undo", false);
+      el("undo-btn").disabled = false;
+    }
+  }
+
+  function renderUndoNotes(report) {
+    // Fold the undo result back into the report table, so one place shows
+    // what happened to each ticket.
+    const byId = new Map((report.outcomes || []).map((o) => [o.identifier || o.issue_id, o]));
+    for (const row of el("report-tbody").querySelectorAll("tr")) {
+      const key = row.cells[0].textContent;
+      const outcome = byId.get(key);
+      if (!outcome) continue;
+      row.cells[3].innerHTML = outcome.error
+        ? `<span class="match-unmatched">${escapeHtml(outcome.error)}</span>`
+        : `undone — original back in ${escapeHtml(outcome.restored_to || "its column")}`;
+    }
   }
 
   // --- wiring ---------------------------------------------------------------
@@ -2614,6 +2686,8 @@ function initRework() {
     state.resolutions = [];
     el("parent-search").value = "";
     chooseParent("");
+    state.runId = "";
+    el("undo-row").hidden = true;
     show("linear-rework-review", false);
     show("linear-rework-report", false);
     syncResolveEnabled();
@@ -2621,6 +2695,7 @@ function initRework() {
   });
   el("resolve-btn").addEventListener("click", resolve);
   el("apply-btn").addEventListener("click", apply);
+  el("undo-btn").addEventListener("click", undo);
   el("parent-select").addEventListener("change", (event) => chooseParent(event.target.value));
   // Filtering is local, so it can run on every keystroke without a debounce.
   el("parent-search").addEventListener("input", renderParentOptions);
