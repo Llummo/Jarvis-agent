@@ -1531,3 +1531,65 @@ def doctor_cmd(strict: bool) -> None:
     if strict and needs_action:
         raise click.ClickException(f"{len(needs_action)} check(s) degraded (--strict).")
     console.print("\n[green]Ready.[/green]")
+
+
+@main.group("rework")
+def rework_group() -> None:
+    """Measure the ticket-name matcher behind the Linear rework flow."""
+
+
+@rework_group.command("benchmark")
+@click.option("--cases", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="Hand-resolved case set (JSON).")
+@click.option("--archive-dir", required=True, type=click.Path(file_okay=False),
+              help="Where to write the run directory.")
+@click.option("--candidate-name", default="default-thresholds", help="Name this run is reported under.")
+@click.option("--strong-match", type=float, default=None, help="Score at or above which a match is accepted.")
+@click.option("--min-candidate", type=float, default=None, help="Score below which a candidate is discarded.")
+@click.option("--ambiguity-margin", type=float, default=None,
+              help="Gap the top two candidates must exceed to be considered separated.")
+def rework_benchmark_cmd(
+    cases: str,
+    archive_dir: str,
+    candidate_name: str,
+    strong_match: Optional[float],
+    min_candidate: Optional[float],
+    ambiguity_margin: Optional[float],
+) -> None:
+    """Score the matcher and write a run the outer loop can compare.
+
+    The run directory is the same shape `compare-runs` and `show-frontier`
+    already read, so two threshold settings are compared with those rather
+    than by eye.
+    """
+    from meta_harness.rework.benchmark import CaseSet, run_benchmark
+    from meta_harness.rework.matching import DEFAULT_THRESHOLDS, Thresholds
+
+    thresholds = Thresholds(
+        strong_match=DEFAULT_THRESHOLDS.strong_match if strong_match is None else strong_match,
+        min_candidate=DEFAULT_THRESHOLDS.min_candidate if min_candidate is None else min_candidate,
+        ambiguity_margin=(
+            DEFAULT_THRESHOLDS.ambiguity_margin if ambiguity_margin is None else ambiguity_margin
+        ),
+    )
+    try:
+        thresholds.validate()
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    case_set = CaseSet.load(Path(cases))
+    result = run_benchmark(
+        case_set,
+        archive_root=Path(archive_dir),
+        thresholds=thresholds,
+        candidate_name=candidate_name,
+    )
+    click.echo(result.summary_line())
+    if result.false_matches:
+        # Called out separately: this is the failure that gets acted on.
+        click.echo("")
+        click.echo("False matches (a name resolved to the wrong issue):")
+        for outcome in result.false_matches:
+            click.echo(f"  {outcome.task_name}: expected {outcome.expected or '(none)'}, got {outcome.actual}")
+    click.echo("")
+    click.echo(f"Run written to {result.run_dir}")
