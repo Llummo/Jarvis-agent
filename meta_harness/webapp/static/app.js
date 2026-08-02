@@ -2444,7 +2444,6 @@ function initRework() {
         cancelBox.disabled = true;
       }
       show("linear-rework-review", true);
-      show("linear-rework-parent-step", true);
     } catch (err) {
       banner("error", err.message, "error-banner");
     } finally {
@@ -2581,13 +2580,19 @@ function initRework() {
 
   el("names").addEventListener("input", syncResolveEnabled);
   scope.addEventListener("change", () => {
-    // A different team invalidates every resolved id.
+    // A different team invalidates every resolved id, and the parent too —
+    // an issue from the previous team cannot parent one in this one.
     state.resolutions = [];
     state.parent = null;
+    el("parent-search").value = "";
+    el("parent-results").hidden = true;
+    const selected = el("parent-selected");
+    selected.className = "selected-callout is-empty";
+    selected.textContent = "No parent selected yet.";
     show("linear-rework-review", false);
-    show("linear-rework-parent-step", false);
     show("linear-rework-report", false);
     syncResolveEnabled();
+    syncApplyEnabled();
   });
   el("resolve-btn").addEventListener("click", resolve);
   el("apply-btn").addEventListener("click", apply);

@@ -153,3 +153,10 @@ def test_apply_reports_stranded_originals(client, monkeypatch):
     body = response.json()
     assert body["stranded_count"] == 1
     assert body["outcomes"][0]["needs_attention"] is True
+
+
+def test_static_files_must_be_revalidated(client):
+    """A cached app.js shows the previous UI and reads as a broken feature."""
+    response = client.get("/app.js")
+    assert response.status_code == 200
+    assert "no-cache" in response.headers.get("cache-control", "")

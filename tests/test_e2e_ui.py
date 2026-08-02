@@ -1113,3 +1113,34 @@ def test_apply_sends_only_the_ticked_rows(browser):
     assert len(sent["items"]) == 1
     assert sent["items"][0]["identifier"] == "SIG-1"
     assert sent["parent_issue_id"] == "p1"
+
+
+def test_the_parent_picker_is_visible_before_resolving(browser):
+    """It was hidden behind a successful resolve, which made it unfindable —
+    and unreachable at all if Linear was unavailable."""
+    _open_rework(browser)
+    assert browser.visible("#linear-rework-parent-step")
+    assert browser.visible("#linear-rework-parent-search")
+
+
+def test_a_parent_can_be_chosen_before_any_names_are_resolved(browser):
+    _open_rework(browser)
+    browser.type_into("#linear-rework-parent-search", "modulo")
+    browser.wait_for("!document.getElementById('linear-rework-parent-results').hidden")
+    browser.click("#linear-rework-parent-results .option-row")
+
+    selected = browser.eval("document.getElementById('linear-rework-parent-selected').textContent")
+    assert "SIG-90" in selected
+    # Still nothing to rework, so applying stays blocked.
+    assert browser.eval("document.getElementById('linear-rework-apply-btn').disabled") is True
+
+
+def test_changing_team_clears_the_chosen_parent(browser):
+    _open_rework(browser)
+    browser.type_into("#linear-rework-parent-search", "modulo")
+    browser.wait_for("!document.getElementById('linear-rework-parent-results').hidden")
+    browser.click("#linear-rework-parent-results .option-row")
+    browser.type_into("#linear-scope", "")
+
+    selected = browser.eval("document.getElementById('linear-rework-parent-selected').textContent")
+    assert "No parent selected" in selected

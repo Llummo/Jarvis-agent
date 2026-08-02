@@ -23,6 +23,24 @@ from meta_harness.webapp.routes_tickets import router as tickets_router
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+class RevalidatedStaticFiles(StaticFiles):
+    """Serve the UI, but make the browser check it is current.
+
+    The default headers let a browser reuse app.js and index.html from cache
+    without asking. After an upgrade that shows the previous version of the
+    page — controls that do nothing, panels that are simply absent — and it
+    looks like a broken feature rather than a stale file.
+
+    `must-revalidate` still allows a 304, so this costs one conditional
+    request per file, not a re-download.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Meta-Harness UI")
 
@@ -47,7 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(tickets_router, prefix="/api/tickets", tags=["tickets"])
     app.include_router(rework_router, prefix="/api/rework", tags=["rework"])
     app.include_router(progress_router, prefix="/api/progress", tags=["progress"])
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", RevalidatedStaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
 
 
