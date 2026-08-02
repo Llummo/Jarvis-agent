@@ -1285,6 +1285,40 @@ kbd {
   display: block;
 }
 
+/* --- Rework batch ---------------------------------------------------------- */
+
+/* A checkbox and its explanation on one line, aligned at the top so a wrapped
+   label does not drag the box down with it. */
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.checkbox-row input[type="checkbox"] {
+  margin: 0.15rem 0 0;
+  flex: 0 0 auto;
+}
+
+.col-check {
+  width: 2.25rem;
+  text-align: center;
+}
+
+/* The match quality of one resolved row, so a weak match is visible without
+   reading the score. */
+.match-note {
+  display: block;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.match-ambiguous { color: var(--warning, #b7791f); }
+.match-unmatched { color: var(--danger, #c53030); }
 /* --- Sources -------------------------------------------------------------
    Source cards are scanned, not read: the pills carry kind and freshness, so
    state reads before any of the text does. Spacing follows .field-grid's

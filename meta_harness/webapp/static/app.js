@@ -2259,12 +2259,382 @@ document.addEventListener("DOMContentLoaded", async () => {
   initTabs();
   initSubTabs();
   initThemeToggle();
+  initRework();
   await loadProjectConfig();
   for (const tracker of Object.values(TRACKERS)) {
     createTrackerPanel(tracker).init();
   }
 });
 
+// --- Rework batch (Linear) ---------------------------------------------------
+// Rebuild a module's tickets as formatted sub-issues of one parent. Kept
+// standalone rather than folded into createTrackerPanel: it is Linear-only, and
+// it reads the team straight off the step-1 select so the two stay in sync
+// without either knowing about the other.
+
+function initRework() {
+  const el = (name) => document.getElementById(`linear-rework-${name}`);
+  const scope = document.getElementById("linear-scope");
+  if (!scope || !el("names")) return;
+
+  const state = {
+    resolutions: [],
+    cancelledState: null,
+    parent: null,
+    parentOptions: [],
+  };
+
+  const teamId = () => scope.value || "";
+
+  const banner = (name, message, klass) => {
+    const node = el(name);
+    if (!node) return;
+    if (message) {
+      node.textContent = message;
+      if (klass) node.className = klass;
+      node.hidden = false;
+    } else {
+      node.hidden = true;
+    }
+  };
+
+  const thinking = (name, visible, message) => {
+    const node = el(name === "resolve" ? "thinking" : "apply-thinking");
+    node.hidden = !visible;
+    if (visible) node.querySelector(".thinking-text").textContent = message || "Working…";
+  };
+
+  const phaseLog = (name, steps) => {
+    const node = el(name === "resolve" ? "phase-log" : "apply-phase-log");
+    node.innerHTML = steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
+    node.scrollTop = node.scrollHeight;
+  };
+
+  const show = (id, visible) => {
+    const node = document.getElementById(id);
+    if (node) node.hidden = !visible;
+  };
+
+  function syncResolveEnabled() {
+    el("resolve-btn").disabled = !teamId() || !el("names").value.trim();
+  }
+
+  // --- step 2: the resolved rows -------------------------------------------
+
+  function selectedRows() {
+    return state.resolutions
+      .map((resolution, index) => ({ resolution, index }))
+      .filter(({ index }) => {
+        const box = document.getElementById(`linear-rework-row-${index}`);
+        return box && box.checked && !box.disabled;
+      });
+  }
+
+  function chosenFor(index) {
+    const resolution = state.resolutions[index];
+    if (!resolution) return null;
+    const picker = document.getElementById(`linear-rework-pick-${index}`);
+    if (picker && picker.value) {
+      return resolution.candidates.find((c) => c.issue_id === picker.value) || null;
+    }
+    return resolution.chosen;
+  }
+
+  function renderRows() {
+    const body = el("tbody");
+    body.innerHTML = state.resolutions
+      .map((resolution, index) => {
+        const matched = resolution.status === "matched" && resolution.chosen;
+        // A name nobody could match confidently starts unticked: silently
+        // reworking a guess is the one outcome there is no undo for.
+        const checkbox = `<input type="checkbox" id="linear-rework-row-${index}"${matched ? " checked" : ""}${
+          resolution.candidates.length ? "" : " disabled"
+        }>`;
+
+        let target;
+        if (matched) {
+          target = `<strong>${escapeHtml(resolution.chosen.identifier)}</strong> ${escapeHtml(
+            resolution.chosen.title
+          )}`;
+        } else if (resolution.candidates.length) {
+          const options = resolution.candidates
+            .map(
+              (c) =>
+                `<option value="${escapeHtml(c.issue_id)}">${escapeHtml(c.identifier)} — ${escapeHtml(
+                  c.title
+                )} (${Math.round(c.score * 100)}%)</option>`
+            )
+            .join("");
+          target =
+            `<select id="linear-rework-pick-${index}">` +
+            `<option value="">Leave this one out</option>${options}</select>` +
+            `<span class="match-note match-ambiguous">${escapeHtml(resolution.note || "Pick the right issue")}</span>`;
+        } else {
+          target = `<span class="match-note match-unmatched">No issue matched this name</span>`;
+        }
+
+        const how = matched
+          ? `${escapeHtml(resolution.method)}${
+              resolution.chosen.score < 1 ? ` · ${Math.round(resolution.chosen.score * 100)}%` : ""
+            }`
+          : escapeHtml(resolution.status);
+
+        return `<tr><td class="col-check">${checkbox}</td><td>${escapeHtml(
+          resolution.name
+        )}</td><td>${target}</td><td>${how}</td></tr>`;
+      })
+      .join("");
+
+    body.querySelectorAll("select[id^='linear-rework-pick-']").forEach((picker) => {
+      picker.addEventListener("change", () => {
+        const index = picker.id.replace("linear-rework-pick-", "");
+        const box = document.getElementById(`linear-rework-row-${index}`);
+        // Choosing an issue is the act of including the row; clearing it drops it.
+        if (box) box.checked = Boolean(picker.value);
+        syncApplyEnabled();
+      });
+    });
+    body.querySelectorAll("input[type='checkbox']").forEach((box) => {
+      box.addEventListener("change", syncApplyEnabled);
+    });
+
+    const matchedCount = state.resolutions.filter((r) => r.status === "matched" && r.chosen).length;
+    el("counts").textContent = `${matchedCount} of ${state.resolutions.length} name(s) matched confidently.`;
+    syncApplyEnabled();
+  }
+
+  el("check-all").addEventListener("change", (event) => {
+    el("tbody")
+      .querySelectorAll("input[type='checkbox']:not(:disabled)")
+      .forEach((box) => {
+        box.checked = event.target.checked;
+      });
+    syncApplyEnabled();
+  });
+
+  // --- step 1: resolve ------------------------------------------------------
+
+  async function resolve() {
+    banner("error", null);
+    banner("warnings", null);
+    show("linear-rework-report", false);
+    const token = newProgressToken();
+    const stop = pollProgress(token, (steps) => phaseLog("resolve", steps));
+    thinking("resolve", true, "Matching the pasted names against the team…");
+    el("resolve-btn").disabled = true;
+
+    try {
+      const payload = await fetchJson("/api/rework/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          team_id: teamId(),
+          names: el("names").value,
+          use_reasoning: el("reasoning").checked,
+          progress_token: token,
+        }),
+      });
+      state.resolutions = payload.resolutions || [];
+      state.cancelledState = payload.cancelled_state;
+      renderRows();
+
+      if (payload.warnings && payload.warnings.length) {
+        banner("warnings", payload.warnings.join(" "), "warning-banner");
+      }
+      const cancelBox = el("cancel");
+      if (state.cancelledState) {
+        el("cancel-label").textContent = `Move the original issues to “${state.cancelledState.name}”`;
+        cancelBox.disabled = false;
+      } else {
+        el("cancel-label").textContent = "This team has no cancelled column — originals will be left as they are";
+        cancelBox.checked = false;
+        cancelBox.disabled = true;
+      }
+      show("linear-rework-review", true);
+    } catch (err) {
+      banner("error", err.message, "error-banner");
+    } finally {
+      await stop();
+      thinking("resolve", false);
+      syncResolveEnabled();
+    }
+  }
+
+  // --- step 3: parent -------------------------------------------------------
+
+  // The whole team is loaded once and filtered in the browser. Typing is a
+  // narrowing aid, not the only way in: the dropdown can be opened and read
+  // without knowing a word that happens to match.
+  async function loadParents() {
+    const select = el("parent-select");
+    if (!teamId()) {
+      select.innerHTML = '<option value="">Select a team first</option>';
+      return;
+    }
+    select.innerHTML = '<option value="">Loading issues…</option>';
+    try {
+      state.parentOptions = await fetchJson(
+        `/api/rework/parents?team_id=${encodeURIComponent(teamId())}`
+      );
+      el("parent-status").textContent = `${state.parentOptions.length} issue(s) on this team.`;
+      renderParentOptions();
+    } catch (err) {
+      state.parentOptions = [];
+      select.innerHTML = '<option value="">Could not load issues</option>';
+      el("parent-status").textContent = err.message;
+    }
+  }
+
+  function renderParentOptions() {
+    const select = el("parent-select");
+    const needle = el("parent-search").value.trim().toLowerCase();
+    const matching = needle
+      ? state.parentOptions.filter((option) =>
+          `${option.identifier} ${option.title}`.toLowerCase().includes(needle)
+        )
+      : state.parentOptions;
+
+    if (!state.parentOptions.length) {
+      select.innerHTML = '<option value="">No issues on this team</option>';
+      return;
+    }
+    if (!matching.length) {
+      select.innerHTML = `<option value="">No issue matches “${escapeHtml(needle)}”</option>`;
+      return;
+    }
+
+    const chosen = state.parent ? state.parent.issue_id : "";
+    select.innerHTML =
+      `<option value="">Choose an issue…</option>` +
+      matching
+        .map(
+          (option) =>
+            `<option value="${escapeHtml(option.issue_id)}"${option.issue_id === chosen ? " selected" : ""}>` +
+            `${escapeHtml(option.identifier)} — ${escapeHtml(option.title)}</option>`
+        )
+        .join("");
+    if (needle) el("parent-status").textContent = `${matching.length} of ${state.parentOptions.length} shown.`;
+  }
+
+  function chooseParent(issueId) {
+    const node = el("parent-selected");
+    state.parent = state.parentOptions.find((option) => option.issue_id === issueId) || null;
+    if (!state.parent) {
+      node.className = "selected-callout is-empty";
+      node.textContent = "No parent selected yet.";
+    } else {
+      node.className = "selected-callout";
+      node.innerHTML = `New tickets go under <strong>${escapeHtml(state.parent.identifier)}</strong> ${escapeHtml(
+        state.parent.title
+      )}.`;
+    }
+    syncApplyEnabled();
+  }
+
+  function syncApplyEnabled() {
+    el("apply-btn").disabled = !state.parent || selectedRows().length === 0;
+  }
+
+  // --- apply ----------------------------------------------------------------
+
+  async function apply() {
+    const rows = selectedRows();
+    const items = rows
+      .map(({ resolution, index }) => {
+        const chosen = chosenFor(index);
+        return chosen
+          ? {
+              issue_id: chosen.issue_id,
+              identifier: chosen.identifier,
+              original_title: chosen.title || resolution.name,
+            }
+          : null;
+      })
+      .filter(Boolean);
+
+    if (!items.length) {
+      banner("apply-error", "Nothing is selected to rework.", "error-banner");
+      return;
+    }
+
+    banner("apply-error", null);
+    banner("apply-success", null);
+    const token = newProgressToken();
+    const stop = pollProgress(token, (steps) => phaseLog("apply", steps));
+    thinking("apply", true, `Reworking ${items.length} ticket(s)…`);
+    el("apply-btn").disabled = true;
+
+    try {
+      const report = await fetchJson("/api/rework/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          team_id: teamId(),
+          parent_issue_id: state.parent.issue_id,
+          items,
+          cancelled_state_id: state.cancelledState ? state.cancelledState.id : "",
+          cancel_originals: el("cancel").checked,
+          progress_token: token,
+        }),
+      });
+      renderReport(report);
+      banner("apply-success", report.summary, "success-banner");
+    } catch (err) {
+      banner("apply-error", err.message, "error-banner");
+    } finally {
+      await stop();
+      thinking("apply", false);
+      syncApplyEnabled();
+    }
+  }
+
+  function renderReport(report) {
+    el("report-tbody").innerHTML = (report.outcomes || [])
+      .map((outcome) => {
+        const replacement = outcome.created_issue_id
+          ? escapeHtml(outcome.created_title || "created")
+          : `<span class="match-unmatched">not created</span>`;
+        const moved = outcome.cancelled ? "yes" : "no";
+        let note = "";
+        if (outcome.error) note = `<span class="match-unmatched">${escapeHtml(outcome.error)}</span>`;
+        else if (outcome.needs_attention)
+          note = `<span class="match-ambiguous">Replacement created, but the original is still open — move it yourself.</span>`;
+        return `<tr><td>${escapeHtml(outcome.identifier || outcome.issue_id)}</td><td>${replacement}</td><td>${moved}</td><td>${note}</td></tr>`;
+      })
+      .join("");
+    show("linear-rework-report", true);
+  }
+
+  // --- wiring ---------------------------------------------------------------
+
+  el("names").addEventListener("input", syncResolveEnabled);
+  scope.addEventListener("change", () => {
+    // A different team invalidates every resolved id, and the parent too —
+    // an issue from the previous team cannot parent one in this one.
+    state.resolutions = [];
+    el("parent-search").value = "";
+    chooseParent("");
+    show("linear-rework-review", false);
+    show("linear-rework-report", false);
+    syncResolveEnabled();
+    loadParents();
+  });
+  el("resolve-btn").addEventListener("click", resolve);
+  el("apply-btn").addEventListener("click", apply);
+  el("parent-select").addEventListener("change", (event) => chooseParent(event.target.value));
+  // Filtering is local, so it can run on every keystroke without a debounce.
+  el("parent-search").addEventListener("input", renderParentOptions);
+
+  // Opening the tab is the first moment the list is actually wanted.
+  const subtab = document.getElementById("linear-subtab-rework");
+  if (subtab) {
+    subtab.addEventListener("click", () => {
+      if (!state.parentOptions.length) loadParents();
+    });
+  }
+
+  syncResolveEnabled();
+}
 // ===========================================================================
 // Sources — what the harness is allowed to read context from.
 //

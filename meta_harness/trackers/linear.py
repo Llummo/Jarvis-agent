@@ -118,6 +118,82 @@ class LinearClient:
         # `first` — the caller asked for at most `limit`.
         return issues[:limit] if limit is not None else issues
 
+    def get_issue_index(self, team_id: str, limit: int | None = None) -> list[dict]:
+        """Every issue on the team, titles only.
+
+        Deliberately not `get_issues`: matching a pasted list of names needs
+        titles and nothing else, and descriptions are the overwhelming
+        majority of an issue payload. On a team of any size that difference
+        is the whole cost of the request.
+        """
+        query = """
+        query($teamId: String!, $first: Int!, $after: String) {
+          team(id: $teamId) {
+            issues(first: $first, after: $after) {
+              nodes {
+                id identifier title
+                state { id name type }
+                parent { id identifier }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+        """
+        return self._paginate_issues(query, {"teamId": team_id}, limit)
+
+    def search_issues(self, team_id: str, text: str, limit: int | None = None) -> list[dict]:
+        """Issues whose title contains `text`, filtered by Linear itself.
+
+        Used when the caller already knows roughly what it is looking for —
+        picking a parent, say. Filtering server-side beats pulling the whole
+        team down and discarding most of it.
+        """
+        query = """
+        query($teamId: String!, $text: String!, $first: Int!, $after: String) {
+          team(id: $teamId) {
+            issues(
+              first: $first
+              after: $after
+              filter: { title: { containsIgnoreCase: $text } }
+            ) {
+              nodes {
+                id identifier title
+                state { id name type }
+                parent { id identifier }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+        """
+        return self._paginate_issues(query, {"teamId": team_id, "text": text}, limit)
+
+    def _paginate_issues(
+        self, query: str, variables: dict, limit: int | None
+    ) -> list[dict]:
+        """Walk `pageInfo.endCursor` until the last page.
+
+        Shared by every issue-listing query: Linear caps a response at
+        PAGE_SIZE, so a single request silently truncates.
+        """
+        issues: list[dict] = []
+        cursor: str | None = None
+        while True:
+            page_size = PAGE_SIZE if limit is None else min(PAGE_SIZE, limit - len(issues))
+            if page_size <= 0:
+                break
+            payload = self._request(query, {**variables, "first": page_size, "after": cursor})
+            page = payload["team"]["issues"]
+            issues.extend(page["nodes"])
+            info = page.get("pageInfo") or {}
+            cursor = info.get("endCursor")
+            if not info.get("hasNextPage") or not cursor:
+                break
+            if limit is not None and len(issues) >= limit:
+                break
+        return issues[:limit] if limit is not None else issues
+
     def get_issue(self, issue_id: str) -> dict:
         query = """
         query($issueId: String!) {

@@ -18,6 +18,7 @@ from meta_harness.webapp.routes_linear import router as linear_router
 from meta_harness.webapp.routes_qa import router as qa_router
 from meta_harness.webapp.routes_qa_flow import router as qa_flow_router
 from meta_harness.webapp.routes_progress import router as progress_router
+from meta_harness.webapp.routes_rework import router as rework_router
 from meta_harness.webapp.routes_sources import router as sources_router
 from meta_harness.webapp.routes_tickets import router as tickets_router
 
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(clickup_router, prefix="/api/clickup", tags=["clickup"])
     app.include_router(linear_router, prefix="/api/linear", tags=["linear"])
     app.include_router(tickets_router, prefix="/api/tickets", tags=["tickets"])
+    app.include_router(rework_router, prefix="/api/rework", tags=["rework"])
     app.include_router(sources_router, prefix="/api/sources", tags=["sources"])
     app.include_router(progress_router, prefix="/api/progress", tags=["progress"])
     app.mount("/", RevalidatedStaticFiles(directory=STATIC_DIR, html=True), name="static")

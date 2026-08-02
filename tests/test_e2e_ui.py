@@ -11,6 +11,8 @@ never breaks a machine that can't run a browser.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from e2e_driver import Browser, StubAPIServer, chromium_available
@@ -160,12 +162,22 @@ def test_only_one_tracker_panel_is_visible_at_a_time(browser):
 # ===========================================================================
 
 
+SHARED_WORKFLOWS = ["Generate tickets", "QA review", "Module check", "Modify ticket", "Findings"]
+
+# Workflows only one tracker has. Rework talks to Linear's GraphQL API for
+# sub-issues and cancelled states directly, and ClickUp's equivalents are
+# different enough that a shared tab would be a lie.
+TRACKER_ONLY_WORKFLOWS = {"clickup": [], "linear": ["Rework batch"]}
+
+
 @pytest.mark.parametrize("tracker", TRACKERS)
-def test_every_tracker_has_the_same_five_workflows(browser, tracker):
+def test_every_tracker_has_the_shared_workflows(browser, tracker):
     labels = browser.eval(
         f"[...document.querySelectorAll('.subtab[data-tracker=\"{tracker}\"]')].map(b => b.textContent)"
     )
-    assert labels == ["Generate tickets", "QA review", "Module check", "Modify ticket", "Findings"]
+    assert [label for label in labels if label in SHARED_WORKFLOWS] == SHARED_WORKFLOWS
+    extra = [label for label in labels if label not in SHARED_WORKFLOWS]
+    assert sorted(extra) == sorted(TRACKER_ONLY_WORKFLOWS[tracker])
 
 
 @pytest.mark.parametrize("tracker", TRACKERS)
@@ -173,7 +185,11 @@ def test_generate_is_the_landing_workflow(browser, tracker):
     if tracker == "linear":
         browser.click('.tab-button[data-tab="linear"]')
     assert browser.visible(f"#{tracker}-sub-generate")
-    for other in ("qa", "module", "modify", "findings"):
+    # Derived from the DOM so a newly added workflow is covered automatically.
+    subs = browser.eval(
+        f"[...document.querySelectorAll('.subtab[data-tracker=\"{tracker}\"]')].map(b => b.dataset.sub)"
+    )
+    for other in [sub for sub in subs if sub != "generate"]:
         assert not browser.visible(f"#{tracker}-sub-{other}")
 
 
@@ -1036,6 +1052,172 @@ def test_flow_saving_a_base_url_without_a_destination_is_refused(browser):
     assert "step 1" in browser.eval("document.getElementById('clickup-qa-base-url-status').textContent")
 
 
+# ===========================================================================
+# Module: rework batch (Linear only)
+# ===========================================================================
+
+
+def _open_rework(browser):
+    browser.click('.tab-button[data-tab="linear"]')
+    browser.wait_for("document.querySelectorAll('#linear-scope option').length > 1")
+    browser.type_into("#linear-scope", "LT1")
+    browser.click('.subtab[data-tracker="linear"][data-sub="rework"]')
+    browser.wait_for("!document.getElementById('linear-sub-rework').hidden")
+
+
+def _pick_parent(browser, issue_id="p1"):
+    """Choose from the dropdown, the way the UI is actually driven."""
+    browser.wait_for(
+        "document.querySelectorAll('#linear-rework-parent-select option').length > 1"
+    )
+    browser.type_into("#linear-rework-parent-select", issue_id)
+
+
+def _resolve(browser, names="6.5 Tabla de Carga por responsable\nMover candidato a Tanda enviada"):
+    _open_rework(browser)
+    browser.type_into("#linear-rework-names", names)
+    browser.click("#linear-rework-resolve-btn")
+    browser.wait_for("!document.getElementById('linear-rework-review').hidden")
+
+
+def test_rework_tab_opens(browser):
+    _open_rework(browser)
+    assert browser.visible("#linear-sub-rework")
+    assert not browser.visible("#linear-sub-generate")
+
+
+def test_resolve_is_disabled_until_names_are_pasted(browser):
+    _open_rework(browser)
+    assert browser.eval("document.getElementById('linear-rework-resolve-btn').disabled") is True
+    browser.type_into("#linear-rework-names", "6.5 Tabla de Carga")
+    assert browser.eval("document.getElementById('linear-rework-resolve-btn').disabled") is False
+
+
+def test_a_confident_match_is_ticked_and_an_ambiguous_one_is_not(browser):
+    """The unticked row is the safety property: a guess is never reworked
+    just because the user pressed the button."""
+    _resolve(browser)
+    assert browser.eval("document.getElementById('linear-rework-row-0').checked") is True
+    assert browser.eval("document.getElementById('linear-rework-row-1').checked") is False
+
+
+def test_an_ambiguous_name_offers_its_candidates(browser):
+    _resolve(browser)
+    options = browser.eval(
+        "[...document.querySelectorAll('#linear-rework-pick-1 option')].map(o => o.textContent)"
+    )
+    assert any("SIG-2" in option for option in options)
+    assert any("SIG-3" in option for option in options)
+
+
+def test_warnings_from_the_preview_are_shown(browser):
+    _resolve(browser)
+    assert browser.visible("#linear-rework-warnings")
+    text = browser.eval("document.getElementById('linear-rework-warnings').textContent")
+    assert "could not be matched" in text
+
+
+def test_the_cancelled_column_is_named_in_the_checkbox(browser):
+    _resolve(browser)
+    label = browser.eval("document.getElementById('linear-rework-cancel-label').textContent")
+    assert "Cancelado" in label
+
+
+def test_apply_stays_disabled_until_a_parent_is_chosen(browser):
+    _resolve(browser)
+    assert browser.eval("document.getElementById('linear-rework-apply-btn').disabled") is True
+    _pick_parent(browser)
+    assert browser.eval("document.getElementById('linear-rework-apply-btn').disabled") is False
+
+
+def test_applying_renders_the_report_and_flags_a_stranded_original(browser):
+    _resolve(browser)
+    _pick_parent(browser)
+    browser.click("#linear-rework-apply-btn")
+    browser.wait_for("!document.getElementById('linear-rework-report').hidden")
+
+    report = browser.eval("document.getElementById('linear-rework-report-tbody').textContent")
+    assert "SIG-1" in report
+    # Created but not cancelled — the UI must say so rather than report success.
+    assert "still open" in report
+    assert browser.visible("#linear-rework-apply-success")
+
+
+def test_apply_sends_only_the_ticked_rows(browser):
+    _resolve(browser)
+    _pick_parent(browser)
+    browser.click("#linear-rework-apply-btn")
+    browser.wait_for("!document.getElementById('linear-rework-report').hidden")
+
+    sent = json.loads(
+        browser.eval(
+            "return fetch('/__last_post?path=/api/rework/apply')"
+            ".then(r => r.json()).then(r => r.body);"
+        )
+    )
+    assert len(sent["items"]) == 1
+    assert sent["items"][0]["identifier"] == "SIG-1"
+    assert sent["parent_issue_id"] == "p1"
+
+
+def test_the_parent_picker_is_visible_before_resolving(browser):
+    """It was hidden behind a successful resolve, which made it unfindable —
+    and unreachable at all if Linear was unavailable."""
+    _open_rework(browser)
+    assert browser.visible("#linear-rework-parent-step")
+    assert browser.visible("#linear-rework-parent-search")
+
+
+def test_a_parent_can_be_chosen_before_any_names_are_resolved(browser):
+    _open_rework(browser)
+    _pick_parent(browser)
+
+    selected = browser.eval("document.getElementById('linear-rework-parent-selected').textContent")
+    assert "SIG-90" in selected
+    # Still nothing to rework, so applying stays blocked.
+    assert browser.eval("document.getElementById('linear-rework-apply-btn').disabled") is True
+
+
+def test_changing_team_clears_the_chosen_parent(browser):
+    _open_rework(browser)
+    _pick_parent(browser)
+    browser.type_into("#linear-scope", "")
+
+    selected = browser.eval("document.getElementById('linear-rework-parent-selected').textContent")
+    assert "No parent selected" in selected
+
+
+def test_the_parent_dropdown_is_populated_without_typing(browser):
+    """The reason this was rebuilt: a search box that stays empty until you
+    guess a matching word looks like it has no options at all."""
+    _open_rework(browser)
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
+    labels = browser.eval(
+        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
+    )
+    assert any("SIG-90" in label for label in labels)
+
+
+def test_typing_filters_the_parent_dropdown(browser):
+    _open_rework(browser)
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
+    browser.type_into("#linear-rework-parent-search", "zzzz-no-such-issue")
+    labels = browser.eval(
+        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
+    )
+    assert len(labels) == 1
+    assert "No issue matches" in labels[0]
+
+
+def test_clearing_the_filter_restores_every_option(browser):
+    _open_rework(browser)
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
+    browser.type_into("#linear-rework-parent-search", "zzzz")
+    browser.type_into("#linear-rework-parent-search", "")
+    labels = browser.eval(
+        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
+    )
+    assert any("SIG-90" in label for label in labels)
 def test_sources_panels_use_the_shared_panel_structure(browser):
     """.panel carries no padding of its own — it comes from .panel-head and
     .panel-body, and the gap between panels comes from the .step wrapper.

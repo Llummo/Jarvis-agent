@@ -335,3 +335,70 @@ def test_qa_close_issue_cli(tmp_path):
 
     assert result.exit_code == 0
     assert "closed" in result.output
+
+
+# --- rework matcher benchmark -------------------------------------------------
+
+
+def _rework_cases(tmp_path):
+    from meta_harness.rework.benchmark import CaseSet, MatchCase
+
+    issues = [
+        {"id": "i1", "identifier": "SIG-1", "title": "6.5 Tabla de Carga por responsable",
+         "state": {"id": "s", "name": "Todo", "type": "unstarted"}},
+        {"id": "i2", "identifier": "SIG-2", "title": "2.1. Catálogo de Reject",
+         "state": {"id": "s", "name": "Todo", "type": "unstarted"}},
+    ]
+    cases = [
+        MatchCase("- ✅ *6.5 Tabla de Carga por responsable* — Pertenece al módulo (93%)", "SIG-1"),
+        MatchCase("- ✅ *2.1. Catálogo de Reject* — Pertenece al módulo (72%)", "SIG-2"),
+    ]
+    return CaseSet(name="cli-cases", cases=cases, issues=issues).save(tmp_path / "cases.json")
+
+
+def test_rework_benchmark_cli_scores_and_writes_a_run(tmp_path):
+    cases = _rework_cases(tmp_path)
+    result = CliRunner().invoke(
+        main,
+        ["rework", "benchmark", "--cases", str(cases),
+         "--archive-dir", str(tmp_path / "archive"), "--candidate-name", "default"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "2/2 correct" in result.output
+    assert (tmp_path / "archive" / "default" / "summary.json").exists() or list(
+        (tmp_path / "archive").glob("default-*/summary.json")
+    )
+
+
+def test_rework_benchmark_cli_rejects_impossible_thresholds(tmp_path):
+    cases = _rework_cases(tmp_path)
+    result = CliRunner().invoke(
+        main,
+        ["rework", "benchmark", "--cases", str(cases), "--archive-dir", str(tmp_path / "a"),
+         "--strong-match", "0.4", "--min-candidate", "0.9"],
+    )
+    assert result.exit_code != 0
+    assert "min_candidate" in result.output
+
+
+def test_rework_benchmark_cli_reports_false_matches_prominently(tmp_path):
+    """A false match is the failure that gets acted on, so it must not hide
+    behind a pass rate."""
+    from meta_harness.rework.benchmark import CaseSet, MatchCase
+
+    issues = [
+        {"id": "i1", "identifier": "SIG-1", "title": "Notificación por correo al Jefe de selección",
+         "state": {"id": "s", "name": "Todo", "type": "unstarted"}},
+    ]
+    path = CaseSet(
+        name="fp", cases=[MatchCase("- ✅ *Notificación*", "")], issues=issues
+    ).save(tmp_path / "fp.json")
+
+    result = CliRunner().invoke(
+        main,
+        ["rework", "benchmark", "--cases", str(path), "--archive-dir", str(tmp_path / "a"),
+         "--strong-match", "0.30", "--min-candidate", "0.05", "--ambiguity-margin", "0.0"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "FALSE MATCH" in result.output
+    assert "SIG-1" in result.output
