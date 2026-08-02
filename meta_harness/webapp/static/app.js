@@ -2275,7 +2275,12 @@ function initRework() {
   const scope = document.getElementById("linear-scope");
   if (!scope || !el("names")) return;
 
-  const state = { resolutions: [], cancelledState: null, parent: null, parentTimer: null };
+  const state = {
+    resolutions: [],
+    cancelledState: null,
+    parent: null,
+    parentOptions: [],
+  };
 
   const teamId = () => scope.value || "";
 
@@ -2455,51 +2460,73 @@ function initRework() {
 
   // --- step 3: parent -------------------------------------------------------
 
-  async function searchParents(query) {
-    const results = el("parent-results");
-    if (!query.trim() || !teamId()) {
-      results.hidden = true;
+  // The whole team is loaded once and filtered in the browser. Typing is a
+  // narrowing aid, not the only way in: the dropdown can be opened and read
+  // without knowing a word that happens to match.
+  async function loadParents() {
+    const select = el("parent-select");
+    if (!teamId()) {
+      select.innerHTML = '<option value="">Select a team first</option>';
       return;
     }
+    select.innerHTML = '<option value="">Loading issues…</option>';
     try {
-      const options = await fetchJson(
-        `/api/rework/parents?team_id=${encodeURIComponent(teamId())}&q=${encodeURIComponent(query)}`
+      state.parentOptions = await fetchJson(
+        `/api/rework/parents?team_id=${encodeURIComponent(teamId())}`
       );
-      if (!options.length) {
-        results.innerHTML = `<div class="field-note">No issue matched “${escapeHtml(query)}”.</div>`;
-        results.hidden = false;
-        return;
-      }
-      results.innerHTML = options
-        .map(
-          (option) =>
-            `<button type="button" class="option-row" data-issue-id="${escapeHtml(
-              option.issue_id
-            )}" data-identifier="${escapeHtml(option.identifier)}" data-title="${escapeHtml(option.title)}">` +
-            `<span class="option-id">${escapeHtml(option.identifier)}</span><span>${escapeHtml(option.title)}</span></button>`
-        )
-        .join("");
-      results.hidden = false;
-      results.querySelectorAll(".option-row").forEach((row) => {
-        row.addEventListener("click", () => {
-          state.parent = {
-            issue_id: row.dataset.issueId,
-            identifier: row.dataset.identifier,
-            title: row.dataset.title,
-          };
-          const node = el("parent-selected");
-          node.className = "selected-callout";
-          node.innerHTML = `New tickets go under <strong>${escapeHtml(state.parent.identifier)}</strong> ${escapeHtml(
-            state.parent.title
-          )}.`;
-          results.hidden = true;
-          el("parent-search").value = `${state.parent.identifier} ${state.parent.title}`;
-          syncApplyEnabled();
-        });
-      });
+      el("parent-status").textContent = `${state.parentOptions.length} issue(s) on this team.`;
+      renderParentOptions();
     } catch (err) {
+      state.parentOptions = [];
+      select.innerHTML = '<option value="">Could not load issues</option>';
       el("parent-status").textContent = err.message;
     }
+  }
+
+  function renderParentOptions() {
+    const select = el("parent-select");
+    const needle = el("parent-search").value.trim().toLowerCase();
+    const matching = needle
+      ? state.parentOptions.filter((option) =>
+          `${option.identifier} ${option.title}`.toLowerCase().includes(needle)
+        )
+      : state.parentOptions;
+
+    if (!state.parentOptions.length) {
+      select.innerHTML = '<option value="">No issues on this team</option>';
+      return;
+    }
+    if (!matching.length) {
+      select.innerHTML = `<option value="">No issue matches “${escapeHtml(needle)}”</option>`;
+      return;
+    }
+
+    const chosen = state.parent ? state.parent.issue_id : "";
+    select.innerHTML =
+      `<option value="">Choose an issue…</option>` +
+      matching
+        .map(
+          (option) =>
+            `<option value="${escapeHtml(option.issue_id)}"${option.issue_id === chosen ? " selected" : ""}>` +
+            `${escapeHtml(option.identifier)} — ${escapeHtml(option.title)}</option>`
+        )
+        .join("");
+    if (needle) el("parent-status").textContent = `${matching.length} of ${state.parentOptions.length} shown.`;
+  }
+
+  function chooseParent(issueId) {
+    const node = el("parent-selected");
+    state.parent = state.parentOptions.find((option) => option.issue_id === issueId) || null;
+    if (!state.parent) {
+      node.className = "selected-callout is-empty";
+      node.textContent = "No parent selected yet.";
+    } else {
+      node.className = "selected-callout";
+      node.innerHTML = `New tickets go under <strong>${escapeHtml(state.parent.identifier)}</strong> ${escapeHtml(
+        state.parent.title
+      )}.`;
+    }
+    syncApplyEnabled();
   }
 
   function syncApplyEnabled() {
@@ -2583,25 +2610,26 @@ function initRework() {
     // A different team invalidates every resolved id, and the parent too —
     // an issue from the previous team cannot parent one in this one.
     state.resolutions = [];
-    state.parent = null;
     el("parent-search").value = "";
-    el("parent-results").hidden = true;
-    const selected = el("parent-selected");
-    selected.className = "selected-callout is-empty";
-    selected.textContent = "No parent selected yet.";
+    chooseParent("");
     show("linear-rework-review", false);
     show("linear-rework-report", false);
     syncResolveEnabled();
-    syncApplyEnabled();
+    loadParents();
   });
   el("resolve-btn").addEventListener("click", resolve);
   el("apply-btn").addEventListener("click", apply);
-  el("parent-search").addEventListener("input", (event) => {
-    // Debounced: typing a title would otherwise fire a query per keystroke.
-    clearTimeout(state.parentTimer);
-    const query = event.target.value;
-    state.parentTimer = setTimeout(() => searchParents(query), 300);
-  });
+  el("parent-select").addEventListener("change", (event) => chooseParent(event.target.value));
+  // Filtering is local, so it can run on every keystroke without a debounce.
+  el("parent-search").addEventListener("input", renderParentOptions);
+
+  // Opening the tab is the first moment the list is actually wanted.
+  const subtab = document.getElementById("linear-subtab-rework");
+  if (subtab) {
+    subtab.addEventListener("click", () => {
+      if (!state.parentOptions.length) loadParents();
+    });
+  }
 
   syncResolveEnabled();
 }

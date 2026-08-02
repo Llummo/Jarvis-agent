@@ -1022,6 +1022,14 @@ def _open_rework(browser):
     browser.wait_for("!document.getElementById('linear-sub-rework').hidden")
 
 
+def _pick_parent(browser, issue_id="p1"):
+    """Choose from the dropdown, the way the UI is actually driven."""
+    browser.wait_for(
+        "document.querySelectorAll('#linear-rework-parent-select option').length > 1"
+    )
+    browser.type_into("#linear-rework-parent-select", issue_id)
+
+
 def _resolve(browser, names="6.5 Tabla de Carga por responsable\nMover candidato a Tanda enviada"):
     _open_rework(browser)
     browser.type_into("#linear-rework-names", names)
@@ -1075,17 +1083,13 @@ def test_the_cancelled_column_is_named_in_the_checkbox(browser):
 def test_apply_stays_disabled_until_a_parent_is_chosen(browser):
     _resolve(browser)
     assert browser.eval("document.getElementById('linear-rework-apply-btn').disabled") is True
-    browser.type_into("#linear-rework-parent-search", "modulo")
-    browser.wait_for("!document.getElementById('linear-rework-parent-results').hidden")
-    browser.click("#linear-rework-parent-results .option-row")
+    _pick_parent(browser)
     assert browser.eval("document.getElementById('linear-rework-apply-btn').disabled") is False
 
 
 def test_applying_renders_the_report_and_flags_a_stranded_original(browser):
     _resolve(browser)
-    browser.type_into("#linear-rework-parent-search", "modulo")
-    browser.wait_for("!document.getElementById('linear-rework-parent-results').hidden")
-    browser.click("#linear-rework-parent-results .option-row")
+    _pick_parent(browser)
     browser.click("#linear-rework-apply-btn")
     browser.wait_for("!document.getElementById('linear-rework-report').hidden")
 
@@ -1098,9 +1102,7 @@ def test_applying_renders_the_report_and_flags_a_stranded_original(browser):
 
 def test_apply_sends_only_the_ticked_rows(browser):
     _resolve(browser)
-    browser.type_into("#linear-rework-parent-search", "modulo")
-    browser.wait_for("!document.getElementById('linear-rework-parent-results').hidden")
-    browser.click("#linear-rework-parent-results .option-row")
+    _pick_parent(browser)
     browser.click("#linear-rework-apply-btn")
     browser.wait_for("!document.getElementById('linear-rework-report').hidden")
 
@@ -1125,9 +1127,7 @@ def test_the_parent_picker_is_visible_before_resolving(browser):
 
 def test_a_parent_can_be_chosen_before_any_names_are_resolved(browser):
     _open_rework(browser)
-    browser.type_into("#linear-rework-parent-search", "modulo")
-    browser.wait_for("!document.getElementById('linear-rework-parent-results').hidden")
-    browser.click("#linear-rework-parent-results .option-row")
+    _pick_parent(browser)
 
     selected = browser.eval("document.getElementById('linear-rework-parent-selected').textContent")
     assert "SIG-90" in selected
@@ -1137,10 +1137,41 @@ def test_a_parent_can_be_chosen_before_any_names_are_resolved(browser):
 
 def test_changing_team_clears_the_chosen_parent(browser):
     _open_rework(browser)
-    browser.type_into("#linear-rework-parent-search", "modulo")
-    browser.wait_for("!document.getElementById('linear-rework-parent-results').hidden")
-    browser.click("#linear-rework-parent-results .option-row")
+    _pick_parent(browser)
     browser.type_into("#linear-scope", "")
 
     selected = browser.eval("document.getElementById('linear-rework-parent-selected').textContent")
     assert "No parent selected" in selected
+
+
+def test_the_parent_dropdown_is_populated_without_typing(browser):
+    """The reason this was rebuilt: a search box that stays empty until you
+    guess a matching word looks like it has no options at all."""
+    _open_rework(browser)
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
+    labels = browser.eval(
+        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
+    )
+    assert any("SIG-90" in label for label in labels)
+
+
+def test_typing_filters_the_parent_dropdown(browser):
+    _open_rework(browser)
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
+    browser.type_into("#linear-rework-parent-search", "zzzz-no-such-issue")
+    labels = browser.eval(
+        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
+    )
+    assert len(labels) == 1
+    assert "No issue matches" in labels[0]
+
+
+def test_clearing_the_filter_restores_every_option(browser):
+    _open_rework(browser)
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
+    browser.type_into("#linear-rework-parent-search", "zzzz")
+    browser.type_into("#linear-rework-parent-search", "")
+    labels = browser.eval(
+        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
+    )
+    assert any("SIG-90" in label for label in labels)

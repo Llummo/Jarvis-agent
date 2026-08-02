@@ -1304,46 +1304,6 @@ kbd {
   flex: 0 0 auto;
 }
 
-/* Search results for the parent picker. Capped and scrollable: a broad query
-   returns 25 issues and must not push the button below the fold. */
-.option-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  max-height: 15rem;
-  overflow-y: auto;
-  margin: 0.5rem 0;
-  padding: 0.35rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-}
-
-.option-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.45rem 0.55rem;
-  border: 0;
-  border-radius: 0.375rem;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.option-row:hover,
-.option-row:focus-visible {
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
-}
-
-.option-row .option-id {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.7;
-}
-
 .col-check {
   width: 2.25rem;
   text-align: center;

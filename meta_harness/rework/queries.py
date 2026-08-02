@@ -65,33 +65,37 @@ def find_cancelled_state(team_id: str) -> Optional[WorkflowState]:
     return None
 
 
-def find_parent_candidates(team_id: str, text: str, *, limit: int = 25) -> List[ParentOption]:
-    """Issues matching `text`, offered as possible parents.
-
-    Filtered by Linear rather than locally: the caller is typing, so the query
-    is specific and the round trip is cheaper than pulling the team down.
-    """
-    issues = search_linear_issues(team_id, text, limit=limit)
-    return [
-        ParentOption(
-            issue_id=str(issue.get("id") or ""),
-            identifier=str(issue.get("identifier") or ""),
-            title=str(issue.get("title") or ""),
-            state_name=str((issue.get("state") or {}).get("name") or ""),
-        )
-        for issue in issues
-    ]
-
-
-def get_parent_option(issue_id: str) -> ParentOption:
-    """One issue, addressed directly — for a parent pasted rather than searched."""
-    issue = get_linear_issue(issue_id)
+def _to_option(issue: Dict) -> ParentOption:
     return ParentOption(
         issue_id=str(issue.get("id") or ""),
         identifier=str(issue.get("identifier") or ""),
         title=str(issue.get("title") or ""),
         state_name=str((issue.get("state") or {}).get("name") or ""),
     )
+
+
+def list_parent_options(team_id: str, *, limit: Optional[int] = None) -> List[ParentOption]:
+    """Every issue on the team, offered as possible parents.
+
+    Backed by the title-only index, so listing a whole team is cheap enough to
+    do up front. A dropdown you can open and read beats a search box that
+    stays empty until you guess a word that happens to match.
+    """
+    return [_to_option(issue) for issue in list_linear_issue_index(team_id, limit=limit)]
+
+
+def find_parent_candidates(team_id: str, text: str, *, limit: int = 25) -> List[ParentOption]:
+    """Issues matching `text`, offered as possible parents.
+
+    Filtered by Linear rather than locally: the caller is typing, so the query
+    is specific and the round trip is cheaper than pulling the team down.
+    """
+    return [_to_option(issue) for issue in search_linear_issues(team_id, text, limit=limit)]
+
+
+def get_parent_option(issue_id: str) -> ParentOption:
+    """One issue, addressed directly — for a parent pasted rather than searched."""
+    return _to_option(get_linear_issue(issue_id))
 
 
 def preview_rework(

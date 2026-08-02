@@ -12,7 +12,11 @@ from fastapi import APIRouter, HTTPException, Query
 from meta_harness.linear_bridge import LinearIssueError, LinearReadError
 from meta_harness.rework.commands import execute_rework_plan
 from meta_harness.rework.models import ReworkItem, ReworkPlan
-from meta_harness.rework.queries import find_parent_candidates, preview_rework
+from meta_harness.rework.queries import (
+    find_parent_candidates,
+    list_parent_options,
+    preview_rework,
+)
 from meta_harness.rework.reasoning import claude_reasoner
 from meta_harness.webapp import progress
 from meta_harness.webapp.schemas import ReworkApplyIn, ReworkPreviewIn
@@ -28,10 +32,14 @@ def _on_step(token):
 
 
 @router.get("/parents")
-def get_parents(team_id: str = Query(...), q: str = Query(..., min_length=1)) -> list:
-    """Issues matching `q`, offered as possible parents."""
+def get_parents(team_id: str = Query(...), q: str = Query("")) -> list:
+    """Possible parent issues.
+
+    With no `q` this is the whole team, so the UI can offer a list to browse
+    rather than a box that stays empty until the right word is guessed.
+    """
     try:
-        candidates = find_parent_candidates(team_id, q)
+        candidates = find_parent_candidates(team_id, q) if q.strip() else list_parent_options(team_id)
     except (LinearReadError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return [

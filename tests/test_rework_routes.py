@@ -71,8 +71,44 @@ def test_parents_endpoint_returns_candidates(client, monkeypatch):
     assert response.json()[0]["identifier"] == "SIG-9"
 
 
-def test_parents_endpoint_requires_a_query(client):
-    assert client.get("/api/rework/parents", params={"team_id": "t", "q": ""}).status_code == 422
+def test_parents_endpoint_lists_the_whole_team_without_a_query(client, monkeypatch):
+    """The dropdown has to have something in it before anyone types."""
+    searched = []
+    monkeypatch.setattr(
+        routes_rework,
+        "list_parent_options",
+        lambda team, **k: [ParentOption("i1", "SIG-9", "Módulo de selección", "Todo")],
+    )
+    monkeypatch.setattr(
+        routes_rework, "find_parent_candidates", lambda *a, **k: searched.append(a) or []
+    )
+
+    response = client.get("/api/rework/parents", params={"team_id": "t"})
+    assert response.status_code == 200
+    assert response.json()[0]["identifier"] == "SIG-9"
+    # No filter text, so the search path must not be taken.
+    assert searched == []
+
+
+def test_parents_endpoint_filters_when_given_a_query(client, monkeypatch):
+    listed = []
+    monkeypatch.setattr(routes_rework, "list_parent_options", lambda *a, **k: listed.append(a) or [])
+    monkeypatch.setattr(
+        routes_rework,
+        "find_parent_candidates",
+        lambda team, q, **k: [ParentOption("i2", "SIG-10", f"match for {q}", "Todo")],
+    )
+
+    response = client.get("/api/rework/parents", params={"team_id": "t", "q": "modulo"})
+    assert response.json()[0]["title"] == "match for modulo"
+    assert listed == []
+
+
+def test_blank_query_is_treated_as_no_query(client, monkeypatch):
+    monkeypatch.setattr(
+        routes_rework, "list_parent_options", lambda team, **k: [ParentOption("i1", "SIG-9", "T", "Todo")]
+    )
+    assert client.get("/api/rework/parents", params={"team_id": "t", "q": "   "}).status_code == 200
 
 
 def test_apply_executes_the_plan(client, monkeypatch):
