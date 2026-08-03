@@ -10,6 +10,8 @@ later against the same ticket.
 
 from __future__ import annotations
 
+from meta_harness.claude_output import assert_usable
+
 import json
 import os
 import shutil
@@ -207,7 +209,9 @@ def analyze_ticket(
 
         _report(on_step, "Received Claude's response — validating…")
         try:
-            return _parse_review(completed.stdout, ticket_id, ticket_name)
+            return _parse_review(
+                assert_usable(completed.stdout, action="the QA review"), ticket_id, ticket_name
+            )
         except ReviewParseError as exc:
             last_error = str(exc)
             if attempt == max_attempts:

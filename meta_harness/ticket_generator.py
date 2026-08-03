@@ -8,6 +8,8 @@ binary that's already installed and logged in on this machine.
 
 from __future__ import annotations
 
+from meta_harness.claude_output import assert_usable
+
 import io
 import json
 import os
@@ -761,7 +763,7 @@ def _run_claude(claude_path: str, prompt: str, document_text: str, timeout_s: fl
         detail = completed.stderr.strip() or completed.stdout.strip()[:300] or "(no output)"
         raise TicketGenerationError(f"Claude CLI failed ({completed.returncode}): {detail}")
 
-    return completed.stdout
+    return assert_usable(completed.stdout, action="ticket generation")
 
 
 def generate_tickets_from_text(

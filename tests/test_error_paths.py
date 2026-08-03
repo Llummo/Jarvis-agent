@@ -158,3 +158,46 @@ def test_frontier_upsert_updates_existing(tmp_path):
     matching = [e for e in entries if e.candidate_name == "test"]
     assert len(matching) == 1
     assert matching[0].pass_rate == 0.5
+
+
+# --- Claude CLI failing while reporting success -------------------------------
+
+
+def test_generation_reports_credits_not_a_parse_error(monkeypatch):
+    """Out of credits must not surface as 'the model returned invalid JSON'."""
+    import subprocess
+
+    from meta_harness.claude_output import ClaudeUnavailableError
+    from meta_harness import ticket_generator
+
+    class _Ok:
+        returncode = 0
+        stdout = "Credit balance is too low to run this request."
+        stderr = ""
+
+    monkeypatch.setattr(ticket_generator, "_find_claude", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Ok())
+
+    with pytest.raises(ClaudeUnavailableError, match="credits"):
+        ticket_generator._run_claude("/usr/bin/claude", "prompt", "doc", 10.0)
+
+
+def test_a_pasted_image_never_returns_the_failure_text_as_a_description(monkeypatch, tmp_path):
+    """image_input has no JSON step, so it is the path where an operational
+    message would otherwise become content verbatim."""
+    from meta_harness.claude_output import ClaudeUnavailableError
+    from meta_harness import image_input
+
+    class _Ok:
+        returncode = 0
+        stdout = "You have insufficient credits. Please purchase more credits."
+        stderr = ""
+
+    monkeypatch.setattr(image_input, "_find_claude", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(image_input.subprocess, "run", lambda *a, **k: _Ok())
+
+    image = tmp_path / "captura.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+
+    with pytest.raises(ClaudeUnavailableError, match="credits"):
+        image_input.describe_images([image])
