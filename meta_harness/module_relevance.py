@@ -15,6 +15,8 @@ Same subprocess boundary and retry-with-repair harness as qa_flow.py.
 
 from __future__ import annotations
 
+from meta_harness.claude_output import assert_usable
+
 import json
 import os
 import shutil
@@ -351,7 +353,10 @@ def analyze_module_relevance(
             raise AnalysisGenerationError(f"Claude CLI failed ({completed.returncode}): {completed.stderr.strip()}")
 
         try:
-            result = _parse(completed.stdout, ticket_id, ticket_name, module_name.strip())
+            result = _parse(
+                assert_usable(completed.stdout, action="the module relevance check"),
+                ticket_id, ticket_name, module_name.strip(),
+            )
         except AnalysisParseError as exc:
             last_error = str(exc)
             if attempt == max_attempts:

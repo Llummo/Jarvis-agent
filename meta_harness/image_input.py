@@ -18,6 +18,8 @@ whose output is treated as untrusted text describing a picture.
 
 from __future__ import annotations
 
+from meta_harness.claude_output import assert_usable
+
 import os
 import shutil
 import subprocess
@@ -189,7 +191,9 @@ def describe_images(
         detail = completed.stderr.strip() or completed.stdout.strip()[:300] or "(no output)"
         raise ImageDescriptionError(f"Could not read the pasted image(s): {detail}")
 
-    description = completed.stdout.strip()
+    # This path returns the CLI's output verbatim as content — no JSON step
+    # to reject an operational message — so the check matters most here.
+    description = assert_usable(completed.stdout, action="reading the pasted image(s)").strip()
     if not description:
         raise ImageDescriptionError("The pasted image(s) produced no description.")
     return description
