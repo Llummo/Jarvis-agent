@@ -402,3 +402,65 @@ def test_rework_benchmark_cli_reports_false_matches_prominently(tmp_path):
     assert result.exit_code == 0, result.output
     assert "FALSE MATCH" in result.output
     assert "SIG-1" in result.output
+
+
+def test_rework_mutations_cli_lists_the_trade_offs():
+    result = CliRunner().invoke(main, ["rework", "mutations"])
+    assert result.exit_code == 0, result.output
+    assert "cautious" in result.output
+    assert "stricter_match" in result.output
+
+
+def test_rework_search_cli_ranks_settings(tmp_path):
+    cases = _rework_cases(tmp_path)
+    result = CliRunner().invoke(
+        main,
+        ["rework", "search", "--cases", str(cases),
+         "--archive-dir", str(tmp_path / "runs"),
+         "--frontier-path", str(tmp_path / "frontier.json"),
+         "--json-output", str(tmp_path / "search.json")],
+    )
+    assert result.exit_code == 0, result.output
+    assert "seed" in result.output
+    assert (tmp_path / "search.json").exists()
+
+    import json as _json
+    payload = _json.loads((tmp_path / "search.json").read_text(encoding="utf-8"))
+    assert payload["false_match_penalty"] == 2.0
+    assert payload["best"]["name"]
+
+
+def test_rework_search_cli_can_limit_mutations(tmp_path):
+    cases = _rework_cases(tmp_path)
+    result = CliRunner().invoke(
+        main,
+        ["rework", "search", "--cases", str(cases), "--archive-dir", str(tmp_path / "runs"),
+         "--mutation", "cautious"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "seed-cautious" in result.output
+
+
+def test_rework_search_cli_rejects_an_unknown_mutation(tmp_path):
+    cases = _rework_cases(tmp_path)
+    result = CliRunner().invoke(
+        main,
+        ["rework", "search", "--cases", str(cases), "--archive-dir", str(tmp_path / "runs"),
+         "--mutation", "does-not-exist"],
+    )
+    assert result.exit_code != 0
+    assert "Unknown mutation" in result.output
+
+
+def test_rework_benchmark_cli_can_record_on_the_frontier(tmp_path):
+    from meta_harness.frontier import FrontierStore
+
+    cases = _rework_cases(tmp_path)
+    frontier = tmp_path / "frontier.json"
+    result = CliRunner().invoke(
+        main,
+        ["rework", "benchmark", "--cases", str(cases), "--archive-dir", str(tmp_path / "runs"),
+         "--candidate-name", "default", "--frontier-path", str(frontier)],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(FrontierStore(frontier).load()) == 1

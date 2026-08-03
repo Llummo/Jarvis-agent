@@ -354,6 +354,26 @@ def _write_run_dir(
     )
 
 
+def record_in_frontier(
+    result: BenchmarkResult, frontier_path: Path, *, notes: str = ""
+) -> None:
+    """Add a scored run to the frontier so it can be ranked against the others.
+
+    The frontier orders by pass rate alone — that is Hermes's own rule and it is
+    left untouched. But pass rate hides the failure that matters here, so the
+    false-match count rides along in `notes`: an entry at the top of the list
+    with false matches recorded against it is not actually the one to ship.
+    """
+    from meta_harness.archive_reader import load_run_summary
+    from meta_harness.frontier import FrontierStore
+
+    summary = load_run_summary(result.run_dir)
+    detail = f"false_matches={len(result.false_matches)} misses={len(result.misses)}"
+    FrontierStore(Path(frontier_path)).upsert_from_summary(
+        summary, notes=f"{notes} {detail}".strip()
+    )
+
+
 def sweep(
     case_set: CaseSet,
     *,

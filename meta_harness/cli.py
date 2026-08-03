@@ -1582,6 +1582,8 @@ def rework_group() -> None:
 @click.option("--min-candidate", type=float, default=None, help="Score below which a candidate is discarded.")
 @click.option("--ambiguity-margin", type=float, default=None,
               help="Gap the top two candidates must exceed to be considered separated.")
+@click.option("--frontier-path", type=click.Path(dir_okay=False), default=None,
+              help="Record this run in a frontier file so show-frontier can rank it.")
 def rework_benchmark_cmd(
     cases: str,
     archive_dir: str,
@@ -1589,6 +1591,7 @@ def rework_benchmark_cmd(
     strong_match: Optional[float],
     min_candidate: Optional[float],
     ambiguity_margin: Optional[float],
+    frontier_path: Optional[str],
 ) -> None:
     """Score the matcher and write a run the outer loop can compare.
 
@@ -1596,7 +1599,7 @@ def rework_benchmark_cmd(
     already read, so two threshold settings are compared with those rather
     than by eye.
     """
-    from meta_harness.rework.benchmark import CaseSet, run_benchmark
+    from meta_harness.rework.benchmark import CaseSet, record_in_frontier, run_benchmark
     from meta_harness.rework.matching import DEFAULT_THRESHOLDS, Thresholds
 
     thresholds = Thresholds(
@@ -1618,6 +1621,9 @@ def rework_benchmark_cmd(
         thresholds=thresholds,
         candidate_name=candidate_name,
     )
+    if frontier_path:
+        record_in_frontier(result, Path(frontier_path))
+
     click.echo(result.summary_line())
     if result.false_matches:
         # Called out separately: this is the failure that gets acted on.
@@ -1751,3 +1757,99 @@ def source_remove_cmd(name: str, keep_index: bool, db_path: Optional[str]) -> No
     finally:
         store.close()
     console.print(f"[green]Removed[/green] '{name}'" + (" (index kept)" if keep_index else ""))
+
+
+@rework_group.command("mutations")
+def rework_mutations_cmd() -> None:
+    """List the threshold mutations a search can apply."""
+    from meta_harness.rework.mutations import builtin_mutations
+
+    table = Table(title="Threshold Mutations")
+    table.add_column("Slug")
+    table.add_column("Change")
+    table.add_column("Trade-off")
+    for slug in sorted(builtin_mutations()):
+        mutation = builtin_mutations()[slug]
+        table.add_row(mutation.slug, mutation.description, mutation.rationale)
+    console.print(table)
+
+
+@rework_group.command("search")
+@click.option("--cases", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="Hand-resolved case set (JSON).")
+@click.option("--archive-dir", required=True, type=click.Path(file_okay=False),
+              help="Where to write the run directories.")
+@click.option("--frontier-path", type=click.Path(dir_okay=False), default=None,
+              help="Frontier file to record every trial in.")
+@click.option("--mutation", "mutations", multiple=True,
+              help="Limit the search to these mutations. Repeatable. Defaults to all.")
+@click.option("--strong-match", type=float, default=None, help="Seed strong_match.")
+@click.option("--min-candidate", type=float, default=None, help="Seed min_candidate.")
+@click.option("--ambiguity-margin", type=float, default=None, help="Seed ambiguity_margin.")
+@click.option("--json-output", type=click.Path(dir_okay=False), default=None,
+              help="Optional path to write the full search result as JSON.")
+def rework_search_cmd(
+    cases: str,
+    archive_dir: str,
+    frontier_path: Optional[str],
+    mutations: tuple,
+    strong_match: Optional[float],
+    min_candidate: Optional[float],
+    ambiguity_margin: Optional[float],
+    json_output: Optional[str],
+) -> None:
+    """Search for better matcher thresholds over a labelled case set.
+
+    Scores the seed and one variant per axis, then reports which to keep.
+    Ranking penalises false matches, so a setting that trades misses for false
+    matches loses even when its pass rate is higher.
+    """
+    from meta_harness.rework.benchmark import CaseSet
+    from meta_harness.rework.matching import DEFAULT_THRESHOLDS, Thresholds
+    from meta_harness.rework.search import search_thresholds
+
+    seed = Thresholds(
+        strong_match=DEFAULT_THRESHOLDS.strong_match if strong_match is None else strong_match,
+        min_candidate=DEFAULT_THRESHOLDS.min_candidate if min_candidate is None else min_candidate,
+        ambiguity_margin=(
+            DEFAULT_THRESHOLDS.ambiguity_margin if ambiguity_margin is None else ambiguity_margin
+        ),
+    )
+    try:
+        seed.validate()
+        result = search_thresholds(
+            CaseSet.load(Path(cases)),
+            archive_root=Path(archive_dir),
+            seed=seed,
+            mutations=list(mutations) or None,
+            frontier_path=Path(frontier_path) if frontier_path else None,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    table = Table(title=f"Threshold Search — {result.case_set_name}")
+    table.add_column("Setting")
+    table.add_column("Quality", justify="right")
+    table.add_column("Pass rate", justify="right")
+    table.add_column("False matches", justify="right")
+    table.add_column("Misses", justify="right")
+    for trial in result.ranked:
+        marker = " (best)" if trial is result.best else ""
+        table.add_row(
+            f"{trial.name}{marker}",
+            f"{trial.quality:.3f}",
+            f"{trial.result.pass_rate:.0%}",
+            str(len(trial.result.false_matches)),
+            str(len(trial.result.misses)),
+        )
+    console.print(table)
+    click.echo("")
+    click.echo(result.summary_line())
+    if result.improved:
+        click.echo(f"  thresholds: {result.best.thresholds.describe()}")
+
+    if json_output:
+        Path(json_output).write_text(
+            json.dumps(result.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        click.echo(f"  written to {json_output}")
