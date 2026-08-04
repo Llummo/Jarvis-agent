@@ -172,10 +172,15 @@ _PROMPT_TAIL = (
     "not invent technical notes that aren't grounded in the document. "
     "FORMATTING: anything that is literally code or machine output — SQL queries, JSON or request "
     "payloads, function or method signatures, CLI commands, error logs and stack traces, "
-    "configuration snippets, permission matrices and state/status enumerations — must be wrapped "
+    "message and email templates, "
+    "configuration snippets, permission matrices, state/status enumerations, and the literal body "
+    "of any message the system must send — email and notification templates, including their "
+    "greeting, paragraphs, signature and {variables} — must be wrapped "
     "in a fenced block using triple backticks on their own lines, with a language hint where it is "
-    "obvious (```sql, ```json, ```bash). Everything else stays as ordinary prose; do NOT fence "
-    "plain sentences, route paths or endpoint names. Example:\\n"
+    "obvious (```sql, ```json, ```bash). A template is literal content even though it reads as "
+    "ordinary sentences: reproduce it in full inside a fence, never summarise it or describe "
+    "what it says — the summary cannot be used to send the message. Everything else stays as "
+    "ordinary prose; do NOT fence plain sentences, route paths or endpoint names. Example:\\n"
     "Matriz de permisos:\\n```\\ntalent:read   Lectura del directorio\\ntalent:write  "
     "Creacion y edicion\\n```), "
     '"priority" (one of: "urgent", "high", "normal", "low"), '
@@ -506,6 +511,11 @@ class ProposedTicket:
     # of; empty for a top-level ticket. Resolved to a real parent id at
     # creation time, once the parent actually exists in the tracker.
     parent_title: str = ""
+    # Blocks that must be reproduced exactly: email and message templates,
+    # payloads, permission matrices. Carried across in code when reformatting,
+    # because a model asked to copy one back rewords it — and a reworded
+    # template cannot be used to send anything.
+    verbatim_blocks: List[str] = field(default_factory=list)
     # Images and reference links carried over verbatim from an existing
     # ticket when reformatting it. Extracted in code rather than asked of
     # the model — these are long signed URLs that must survive byte-for-byte

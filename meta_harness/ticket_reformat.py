@@ -22,6 +22,7 @@ from meta_harness.clickup_bridge import get_clickup_task, update_clickup_task
 from meta_harness.linear_bridge import get_linear_issue, update_linear_issue
 from meta_harness.reformat_history import ReformatHistoryStore
 from meta_harness.ticket_format import (
+    extract_verbatim_blocks,
     extract_visual_resources,
     format_clickup_description,
     format_linear_description,
@@ -153,6 +154,9 @@ def reformat_ticket(
         # Images and attachments are carried across verbatim rather than
         # regenerated: reformatting a ticket must never cost it its
         # screenshots.
+        blocks = extract_verbatim_blocks(original_description)
+        if blocks:
+            ticket = replace(ticket, verbatim_blocks=blocks)
         carried = extract_visual_resources(original_description)
         if carried:
             ticket = replace(ticket, visual_resources=carried)

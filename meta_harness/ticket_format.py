@@ -161,12 +161,47 @@ def format_linear_description(ticket) -> str:
         "",
         "🛠️ NOTAS TÉCNICAS Y ADICIONALES (opcional)",
     ]
+    verbatim = getattr(ticket, "verbatim_blocks", None) or []
+    if verbatim:
+        # Its own section, above the notes, so nobody edits it by accident
+        # thinking it is commentary.
+        lines = lines[:-1] + [
+            "📋 CONTENIDO LITERAL (reproducir tal cual, no reformular)",
+            "",
+        ]
+        for block in verbatim:
+            lines += block.splitlines() + [""]
+        lines.append("🛠️ NOTAS TÉCNICAS Y ADICIONALES (opcional)")
     if ticket.technical_notes:
         lines.extend(bulleted_preserving_code(ticket.technical_notes))
     else:
         lines.append("* (sin notas adicionales)")
 
     return "\n".join(lines)
+
+
+# A fenced block is content someone wrote to be reproduced exactly: an email
+# template, a payload, a permission matrix. Pulled out in code for the same
+# reason as the images below — a model asked to copy one back will reword it,
+# and a reworded email template is unusable for actually sending email.
+_FENCED_BLOCK = re.compile(r"```[^\n]*\n.*?\n```", re.DOTALL)
+
+
+def extract_verbatim_blocks(description: str) -> list:
+    """Pull every fenced block out of a ticket body, in order, deduplicated.
+
+    These must survive a rewrite byte-for-byte. Paraphrasing one is not a
+    formatting problem: it silently destroys the only copy of the text the
+    feature is supposed to send.
+    """
+    if not description:
+        return []
+    found: list = []
+    for match in _FENCED_BLOCK.finditer(description):
+        block = match.group(0).strip()
+        if block not in found:
+            found.append(block)
+    return found
 
 
 # Images in existing tickets come as markdown with long signed URLs, or
