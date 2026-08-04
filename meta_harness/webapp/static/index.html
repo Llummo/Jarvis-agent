@@ -1031,14 +1031,11 @@
           </div>
           <div class="panel-body">
             <div class="field-grid">
-              <div class="field">
-                <label for="linear-rework-parent-search">Filter</label>
-                <input type="text" id="linear-rework-parent-search" placeholder="Type to narrow the list…" autocomplete="off">
-                <span class="field-note">Optional — leave empty to see every issue on the team.</span>
-              </div>
-              <div class="field">
-                <label for="linear-rework-parent-select">Parent issue</label>
-                <select id="linear-rework-parent-select"><option value="">Select a team first</option></select>
+              <div class="field field-wide">
+                <label for="linear-rework-parent">Parent issue</label>
+                <input type="text" id="linear-rework-parent" list="linear-rework-parent-options"
+                       placeholder="Type to search, or paste an issue id like SIG-90" autocomplete="off">
+                <datalist id="linear-rework-parent-options"></datalist>
                 <span class="field-note" id="linear-rework-parent-status"></span>
               </div>
             </div>

@@ -2470,58 +2470,40 @@ function initRework() {
 
   // --- step 3: parent -------------------------------------------------------
 
-  // The whole team is loaded once and filtered in the browser. Typing is a
-  // narrowing aid, not the only way in: the dropdown can be opened and read
-  // without knowing a word that happens to match.
+  // One field, not two: the datalist filters as you type, so a separate
+  // "filter" box was two controls doing one job. Same pattern as the ticket
+  // pickers elsewhere in this page.
   async function loadParents() {
-    const select = el("parent-select");
+    const input = el("parent");
+    const datalist = document.getElementById("linear-rework-parent-options");
     if (!teamId()) {
-      select.innerHTML = '<option value="">Select a team first</option>';
+      resetTicketPicker(input, "Select a team first");
       return;
     }
-    select.innerHTML = '<option value="">Loading issues…</option>';
+    input.disabled = true;
+    input.placeholder = "Loading issues…";
     try {
       state.parentOptions = await fetchJson(
         `/api/rework/parents?team_id=${encodeURIComponent(teamId())}`
       );
+      input.__options = new Map();
+      datalist.innerHTML = state.parentOptions
+        .map((option) => {
+          const label = `${option.identifier} — ${option.title}`;
+          input.__options.set(label, option.issue_id);
+          // Pasting a bare id has to work too; the hint promises it.
+          input.__options.set(option.identifier, option.issue_id);
+          return `<option value="${escapeHtml(label)}"></option>`;
+        })
+        .join("");
+      input.disabled = false;
+      input.placeholder = "Type to search, or paste an issue id like SIG-90";
       el("parent-status").textContent = `${state.parentOptions.length} issue(s) on this team.`;
-      renderParentOptions();
     } catch (err) {
       state.parentOptions = [];
-      select.innerHTML = '<option value="">Could not load issues</option>';
+      resetTicketPicker(input, "Could not load issues");
       el("parent-status").textContent = err.message;
     }
-  }
-
-  function renderParentOptions() {
-    const select = el("parent-select");
-    const needle = el("parent-search").value.trim().toLowerCase();
-    const matching = needle
-      ? state.parentOptions.filter((option) =>
-          `${option.identifier} ${option.title}`.toLowerCase().includes(needle)
-        )
-      : state.parentOptions;
-
-    if (!state.parentOptions.length) {
-      select.innerHTML = '<option value="">No issues on this team</option>';
-      return;
-    }
-    if (!matching.length) {
-      select.innerHTML = `<option value="">No issue matches “${escapeHtml(needle)}”</option>`;
-      return;
-    }
-
-    const chosen = state.parent ? state.parent.issue_id : "";
-    select.innerHTML =
-      `<option value="">Choose an issue…</option>` +
-      matching
-        .map(
-          (option) =>
-            `<option value="${escapeHtml(option.issue_id)}"${option.issue_id === chosen ? " selected" : ""}>` +
-            `${escapeHtml(option.identifier)} — ${escapeHtml(option.title)}</option>`
-        )
-        .join("");
-    if (needle) el("parent-status").textContent = `${matching.length} of ${state.parentOptions.length} shown.`;
   }
 
   function chooseParent(issueId) {
@@ -2685,7 +2667,7 @@ function initRework() {
     // A different team invalidates every resolved id, and the parent too —
     // an issue from the previous team cannot parent one in this one.
     state.resolutions = [];
-    el("parent-search").value = "";
+    el("parent").value = "";
     chooseParent("");
     state.runId = "";
     el("undo-row").hidden = true;
@@ -2697,9 +2679,8 @@ function initRework() {
   el("resolve-btn").addEventListener("click", resolve);
   el("apply-btn").addEventListener("click", apply);
   el("undo-btn").addEventListener("click", undo);
-  el("parent-select").addEventListener("change", (event) => chooseParent(event.target.value));
-  // Filtering is local, so it can run on every keystroke without a debounce.
-  el("parent-search").addEventListener("input", renderParentOptions);
+  // Resolves on every keystroke: picking from the datalist fires input, not change.
+  el("parent").addEventListener("input", () => chooseParent(pickerValue(el("parent"))));
 
   // Opening the tab is the first moment the list is actually wanted.
   const subtab = document.getElementById("linear-subtab-rework");
