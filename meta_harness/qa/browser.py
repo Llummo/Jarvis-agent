@@ -336,6 +336,20 @@ class Browser:
         if not typed:
             raise BrowserError(f"no field to type into at {selector!r}")
 
+    def set_cookie(self, name: str, value: str, url: str) -> None:
+        """Install a cookie for `url`.
+
+        The admin app authenticates with a cookie, not a bearer token in
+        storage, so this is what actually makes a session. Uses CDP rather
+        than document.cookie because the real cookie is httpOnly and
+        JavaScript cannot write it.
+        """
+        result = self._call(
+            "Network.setCookie", {"name": name, "value": value, "url": url}
+        )
+        if not (result.get("result") or {}).get("success", True):
+            raise BrowserError(f"el navegador rechazó la cookie {name!r}")
+
     def screenshot(self, path: Path) -> Path:
         payload = self._call("Page.captureScreenshot", {"format": "png"})
         data = (payload.get("result") or {}).get("data")

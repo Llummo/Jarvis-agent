@@ -85,6 +85,10 @@ def test_describe_says_whether_there_is_a_session_but_not_the_token(monkeypatch)
 class _FakeBrowser:
     def __init__(self, text=APP, accepts=True):
         self.visited, self.scripts, self._text, self._accepts = [], [], text, accepts
+        self.cookies = []
+
+    def set_cookie(self, name, value, url):
+        self.cookies.append((name, value, url))
 
     def goto(self, url):
         self.visited.append(url)
@@ -97,14 +101,13 @@ class _FakeBrowser:
         return self._text
 
 
-def test_the_origin_is_loaded_before_writing_the_session():
-    """localStorage vive por origen: escribirlo en una página en blanco lo
-    guardaría donde la aplicación nunca lo lee."""
+def test_the_origin_is_loaded_before_installing_the_session():
+    """La cookie y localStorage viven por origen: instalarlos en una página en
+    blanco los guardaría donde la aplicación nunca los lee."""
     b = _FakeBrowser()
     authenticate(b, "http://localhost:5180", "abc123")
     assert b.visited == ["http://localhost:5180"]
-    assert "localStorage.setItem" in b.scripts[0]
-    assert "abc123" in b.scripts[0]
+    assert b.cookies[0][1] == "abc123"
 
 
 def test_without_a_token_nothing_is_installed():
@@ -113,9 +116,12 @@ def test_without_a_token_nothing_is_installed():
     assert b.visited == []
 
 
-def test_a_browser_that_refuses_storage_is_reported():
-    with pytest.raises(AuthError, match="localStorage"):
-        authenticate(_FakeBrowser(accepts=False), "http://x", "abc")
+def test_a_browser_that_refuses_storage_still_authenticates():
+    """La sesión de la app de administración es la cookie. Que localStorage
+    falle solo afecta a los portales externos, así que no debe abortar."""
+    b = _FakeBrowser(accepts=False)
+    assert authenticate(b, "http://x", "abc") is True
+    assert b.cookies
 
 
 # --- fallar claro -------------------------------------------------------------
@@ -176,3 +182,42 @@ def test_the_message_distinguishes_missing_token_from_expired(monkeypatch):
 
     monkeypatch.setenv("SIGO_LOCAL_TOKEN", "caducado")
     assert token_for("local") == "caducado"
+
+
+# --- la sesión es una cookie, no almacenamiento -------------------------------
+
+
+def test_the_session_cookie_is_installed():
+    """La app de administración lee la cookie access_token
+    (pkg/iam/auth/middleware.go). Escribir solo localStorage la dejaba fuera."""
+    from meta_harness.qa.auth import SESSION_COOKIE
+
+    class _B(_FakeBrowser):
+        def __init__(self):
+            super().__init__()
+            self.cookies = []
+
+        def set_cookie(self, name, value, url):
+            self.cookies.append((name, value, url))
+
+    b = _B()
+    authenticate(b, "http://localhost:5180", "jwt-abc")
+    assert b.cookies == [(SESSION_COOKIE, "jwt-abc", "http://localhost:5180")]
+
+
+def test_the_cookie_name_matches_the_backend():
+    from meta_harness.qa.auth import SESSION_COOKIE
+
+    assert SESSION_COOKIE == "access_token"
+
+
+def test_storage_is_still_written_for_the_portals():
+    """Los portales externos sí usan bearer desde almacenamiento."""
+
+    class _B(_FakeBrowser):
+        def set_cookie(self, name, value, url):
+            pass
+
+    b = _B()
+    authenticate(b, "http://x", "jwt-abc")
+    assert any("localStorage.setItem" in s for s in b.scripts)
