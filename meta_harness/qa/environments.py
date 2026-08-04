@@ -43,6 +43,10 @@ class Environment:
     # Where the API lives, when it is not served from the same origin. Empty
     # means «same host as the UI», which is the common case.
     api_url: str = ""
+    # Session token for this target. Read from the environment, never stored
+    # here — and per environment, so a local session cannot reach the deployed
+    # site by accident.
+    auth_token: str = ""
 
     def api_base(self) -> str:
         return (self.api_url or self.ui_url).rstrip("/")
@@ -51,7 +55,13 @@ class Environment:
         return f"{self.ui_url.rstrip('/')}/{route.lstrip('/')}"
 
     def describe(self) -> Dict[str, str]:
-        return {"name": self.name, "ui_url": self.ui_url, "api_url": self.api_base()}
+        return {
+            "name": self.name,
+            "ui_url": self.ui_url,
+            "api_url": self.api_base(),
+            # Only whether there is one. The token itself never leaves the process.
+            "authenticated": "sí" if self.auth_token else "no",
+        }
 
 
 def _guard_not_production(name: str, url: str) -> None:
@@ -84,4 +94,8 @@ def resolve_environment(name: str, *, ui_url: Optional[str] = None, api_url: Opt
     if resolved_api:
         _guard_not_production(name, resolved_api)
 
-    return Environment(name=name, ui_url=resolved_ui, api_url=resolved_api)
+    from meta_harness.qa.auth import token_for
+
+    return Environment(
+        name=name, ui_url=resolved_ui, api_url=resolved_api, auth_token=token_for(name)
+    )

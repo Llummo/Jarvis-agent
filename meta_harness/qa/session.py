@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from meta_harness.qa.auth import authenticate, looks_like_login
 from meta_harness.qa.browser import Browser, BrowserError
 from meta_harness.qa.environments import Environment, resolve_environment
 
@@ -45,7 +46,10 @@ class BrowserSession:
         browser.__enter__()
         self._browser = browser
         self._environment = target
-        return {"opened": True, "environment": target.describe()}
+        # Sin esto el modelo exploraría la pantalla de login creyendo que es la
+        # aplicación, y escribiría un plan sobre ella.
+        installed = authenticate(browser, target.ui_url, target.auth_token)
+        return {"opened": True, "environment": target.describe(), "session_installed": installed}
 
     def stop(self) -> Dict[str, Any]:
         was_open = self._browser is not None
@@ -102,6 +106,9 @@ class BrowserSession:
             "url": browser.eval("return location.href;"),
             "text": text[:limit],
             "truncated": len(text) > limit,
+            # Se declara para que el modelo no confunda el login con la pantalla
+            # que pidió: la URL puede ser la correcta y el contenido no.
+            "is_login_screen": looks_like_login(text),
         }
 
     def find(self, text: str) -> Dict[str, Any]:
