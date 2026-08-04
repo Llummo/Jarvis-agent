@@ -1290,3 +1290,27 @@ def test_confirming_undo_reverses_the_run_and_retires_the_button(browser):
     report = browser.eval("document.getElementById('linear-rework-report-tbody').textContent")
     assert "undone" in report
     assert "Todo" in report
+
+
+def test_the_plan_request_sends_the_issue_id_not_the_visible_label(browser):
+    """La etiqueta es «identifier — título (estado)»; Linear necesita el id.
+    Mandarla tal cual produce «Entity not found: Issue»."""
+    browser.click('.tab-button[data-tab="linear"]')
+    browser.wait_for("document.querySelectorAll('#linear-scope option').length > 1")
+    browser.type_into("#linear-scope", "LT1")
+    browser.click('.subtab[data-tracker="linear"][data-sub="qa"]')
+    browser.wait_for("document.querySelectorAll('#linear-qa-ticket-options option').length > 0")
+    browser.type_into("#linear-qa-ticket", "SIG-1 — Control de permisos (Todo)")
+
+    browser.wait_for("!document.getElementById('linear-qa-test-plan-btn').disabled")
+    browser.click("#linear-qa-test-plan-btn")
+    browser.wait_for("!document.getElementById('linear-qa-test-plan').hidden")
+
+    sent = json.loads(
+        browser.eval(
+            "return fetch('/__last_post?path=/api/qa/tests/plan')"
+            ".then(r => r.json()).then(r => r.body);"
+        )
+    )
+    assert sent["ticket_id"] == "i1", f"se envió {sent['ticket_id']!r} en vez del id"
+    assert "—" not in sent["ticket_id"]

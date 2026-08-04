@@ -3093,7 +3093,10 @@ function initQaBrowserTests() {
   };
 
   function syncButtons() {
-    el("plan-btn").disabled = !ticket.value.trim();
+    // pickerValue traduce la etiqueta visible al id real. Usar el texto tal
+    // cual manda a Linear algo como "SIG-109 — Formulario… (Q&A)", que no es
+    // un identificador y falla con «Entity not found».
+    el("plan-btn").disabled = !pickerValue(ticket);
     el("run-btn").disabled = !state.plan;
   }
 
@@ -3134,7 +3137,7 @@ function initQaBrowserTests() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ticket_id: ticket.value.trim(),
+          ticket_id: pickerValue(ticket),
           tracker: "linear",
           environment: el("env").value,
           progress_token: token,

@@ -33,7 +33,12 @@ def _report(on_step: OnStep, message: str) -> None:
 
 from meta_harness.clickup_bridge import ClickUpReadError, ClickUpTicketError, get_clickup_task, update_clickup_task_status
 from meta_harness.linear_bridge import LinearIssueError, LinearReadError, get_linear_issue, update_linear_issue_state
-from meta_harness.mcp_server.cdp_screenshot import ChromiumNotFoundError, ScreenshotCaptureError, capture_screenshot
+from meta_harness.mcp_server.cdp_screenshot import (
+    ChromiumNotFoundError,
+    ScreenshotCaptureError,
+    capture_screenshot,
+    default_screenshot_path,
+)
 from meta_harness.project_config import ProjectConfigStore
 from meta_harness.qa_findings import SEVERITIES, QAFinding, QAFindingStore, report_qa_issue
 from meta_harness.run_archive import RunArchive, RunRecord, RunStepRecord
@@ -224,23 +229,23 @@ def _capture_with_session(base_url: str, url: str) -> Tuple[Optional[str], bool]
     """Capture `url`, installing a session first when one is configured.
 
     Returns the screenshot path and whether the page turned out to be the login
-    screen. Falls back to the plain capture when no token exists, so a target
-    without authentication keeps working exactly as before.
+    screen.
+
+    The login check runs whether or not a token exists. Skipping it when none
+    is configured — which is exactly when the app *will* show the login — files
+    a screenshot of a sign-in form as if it were the feature under test, which
+    is the failure this function was written to stop.
     """
-    from meta_harness.qa.auth import looks_like_login, token_for
+    from meta_harness.qa.auth import inject_script, looks_like_login, token_for
     from meta_harness.qa.browser import Browser, BrowserError
 
     token = token_for("local") or token_for("qa")
-    if not token:
-        return str(capture_screenshot(url)), False
-
     try:
         with Browser() as browser:
-            browser.goto(base_url)
-            browser.eval(
-                "try { localStorage.setItem('token', %s); return true; } catch (e) { return false; }"
-                % json.dumps(token)
-            )
+            if token:
+                # El origen primero: localStorage es por origen.
+                browser.goto(base_url)
+                browser.eval(inject_script(token))
             browser.goto(url)
             saw_login = looks_like_login(browser.text_of())
             path = default_screenshot_path()
@@ -292,10 +297,18 @@ def perform_route_check(
         if saw_login:
             # Without this the review files a screenshot of a login form as if
             # it were the feature under test.
+            from meta_harness.qa.auth import token_for as _token_for
+
+            causa = (
+                "no hay token configurado"
+                if not (_token_for("local") or _token_for("qa"))
+                else "el token configurado no es válido o expiró"
+            )
             not_signed_in = (
-                "No autenticado: la aplicación mostró la pantalla de inicio de sesión, "
-                "así que la captura no corresponde a la ruta pedida. "
-                "Configure SIGO_LOCAL_TOKEN (o SIGO_QA_TOKEN) con una sesión vigente."
+                f"No autenticado ({causa}): la aplicación mostró la pantalla de inicio de "
+                "sesión, así que la captura no corresponde a la ruta pedida. "
+                "Defina SIGO_LOCAL_TOKEN con el valor de localStorage['token'] de una "
+                "sesión abierta en Sigo."
             )
             http_error = f"{http_error} · {not_signed_in}" if http_error else not_signed_in
             _report(on_step, not_signed_in)
