@@ -1393,3 +1393,29 @@ kbd {
   color: var(--ink-faint);
   font-size: var(--text-sm);
 }
+
+/* --- Pruebas en el navegador ------------------------------------------------ */
+
+.section-rule {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.75rem 0 1.25rem;
+}
+
+/* El reporte llega como Markdown ya renderizado a texto; se muestra monoespaciado
+   y con scroll propio para que una corrida larga no estire la página. */
+.report-body {
+  max-height: 26rem;
+  overflow: auto;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.case-pass { color: var(--success, #2f855a); }
+.case-fail { color: var(--danger, #c53030); }

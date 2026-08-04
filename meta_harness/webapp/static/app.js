@@ -2260,6 +2260,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initSubTabs();
   initThemeToggle();
   initRework();
+  initQaBrowserTests();
   await loadProjectConfig();
   for (const tracker of Object.values(TRACKERS)) {
     createTrackerPanel(tracker).init();
@@ -3074,3 +3075,148 @@ const sourcesUI = (() => {
 })();
 
 document.addEventListener("DOMContentLoaded", () => sourcesUI.init());
+
+// --- Browser tests from a ticket (QA tab) -----------------------------------
+// Two buttons on purpose: one writes a plan and changes nothing, the other
+// executes it. The gap between them is where a human reads what will happen.
+
+function initQaBrowserTests() {
+  const el = (name) => document.getElementById(`linear-qa-test-${name}`);
+  const ticket = document.getElementById("linear-qa-ticket");
+  if (!ticket || !el("plan-btn")) return;
+
+  const state = { plan: null };
+
+  const banner = (name, message, klass) => {
+    const node = el(name);
+    if (!node) return;
+    if (message) {
+      node.textContent = message;
+      if (klass) node.className = klass;
+      node.hidden = false;
+    } else {
+      node.hidden = true;
+    }
+  };
+
+  const thinking = (visible, message) => {
+    const node = el("thinking");
+    node.hidden = !visible;
+    if (visible) node.querySelector(".thinking-text").textContent = message || "Trabajando…";
+  };
+
+  const phaseLog = (steps) => {
+    const node = el("phase-log");
+    node.innerHTML = steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
+    node.scrollTop = node.scrollHeight;
+  };
+
+  function syncButtons() {
+    el("plan-btn").disabled = !ticket.value.trim();
+    el("run-btn").disabled = !state.plan;
+  }
+
+  function renderPlan(plan) {
+    state.plan = plan;
+    el("plan-tbody").innerHTML = (plan.cases || [])
+      .map((c) => {
+        const steps = (c.steps || [])
+          .map((s) => `${s.action} ${s.target}${s.value ? ` = ${s.value}` : ""}`)
+          .join("<br>");
+        const exp = c.expectation || {};
+        return `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.criterion || "")}</td>` +
+          `<td>${steps}</td><td>${escapeHtml(exp.ui_text || exp.ui_selector || "")}<br>` +
+          `<code>${escapeHtml(exp.api_method || "")} ${escapeHtml(exp.api_path || "")}</code></td></tr>`;
+      })
+      .join("");
+    el("plan").hidden = false;
+    if (plan.notes && plan.notes.length) {
+      banner("error", plan.notes.join(" "), "warning-banner");
+    }
+    syncButtons();
+  }
+
+  async function makePlan() {
+    banner("error", null);
+    banner("success", null);
+    el("report").hidden = true;
+    state.plan = null;
+    syncButtons();
+
+    const token = newProgressToken();
+    const stop = pollProgress(token, phaseLog);
+    thinking(true, "Leyendo los criterios de aceptación…");
+    el("plan-btn").disabled = true;
+
+    try {
+      const plan = await fetchJson("/api/qa/tests/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticket_id: ticket.value.trim(),
+          tracker: "linear",
+          environment: el("env").value,
+          progress_token: token,
+        }),
+      });
+      renderPlan(plan);
+      banner("success", `Plan con ${plan.cases.length} caso(s). Revísalo antes de ejecutar.`, "success-banner");
+    } catch (err) {
+      banner("error", err.message, "error-banner");
+    } finally {
+      await stop();
+      thinking(false);
+      syncButtons();
+    }
+  }
+
+  async function runTests() {
+    if (!state.plan) return;
+    const confirmed = window.confirm(
+      "Ejecutar las pruebas?\n\n" +
+        "Se harán clics reales en " + el("env").value + " y se escribirán datos de prueba."
+    );
+    if (!confirmed) return;
+
+    banner("error", null);
+    banner("success", null);
+    const token = newProgressToken();
+    const stop = pollProgress(token, phaseLog);
+    thinking(true, "Ejecutando en el navegador…");
+    el("run-btn").disabled = true;
+
+    try {
+      const report = await fetchJson("/api/qa/tests/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan: state.plan,
+          environment: el("env").value,
+          ui_url: el("url").value.trim(),
+          progress_token: token,
+        }),
+      });
+      el("report-body").textContent = report.report_markdown || "";
+      el("report").hidden = false;
+      const klass = report.failed_count ? "error-banner" : "success-banner";
+      banner(report.failed_count ? "error" : "success", report.summary, klass);
+    } catch (err) {
+      banner("error", err.message, "error-banner");
+    } finally {
+      await stop();
+      thinking(false);
+      syncButtons();
+    }
+  }
+
+  ticket.addEventListener("input", () => {
+    // A different issue invalidates the plan written for the previous one.
+    state.plan = null;
+    el("plan").hidden = true;
+    el("report").hidden = true;
+    syncButtons();
+  });
+  el("plan-btn").addEventListener("click", makePlan);
+  el("run-btn").addEventListener("click", runTests);
+  syncButtons();
+}
