@@ -265,6 +265,14 @@ def _post_route(path: str):
                 for i, t in enumerate(GENERATED["tickets"], start=1)
             ]
         },
+        "/api/qa/tests/plan": {"ticket_id": "i1", "route": "/erp/talent/people",
+                               "cases": [{"name": "01-alta", "criterion": "c",
+                                          "steps": [{"action": "goto", "target": "/erp/talent/people"}],
+                                          "expectation": {"ui_text": "Persona registrada",
+                                                          "api_path": "/api/v1/talent/people",
+                                                          "api_method": "POST",
+                                                          "api_status_range": "2xx"}}],
+                               "notes": []},
         "/api/rework/preview": REWORK_PREVIEW,
         "/api/rework/apply": REWORK_REPORT,
         "/api/rework/undo": REWORK_UNDO,

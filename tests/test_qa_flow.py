@@ -527,7 +527,9 @@ def test_perform_route_check_success(monkeypatch, tmp_path):
         "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
     )
     shot_path = tmp_path / "shot.png"
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: shot_path)
+    monkeypatch.setattr(
+        "meta_harness.qa_flow._capture_with_session", lambda base, url: (str(shot_path), False)
+    )
 
     status_code, http_error, screenshot_path = perform_route_check("https://app.example.com", "/login")
 
@@ -544,7 +546,9 @@ def test_perform_route_check_joins_base_url_and_route(monkeypatch):
         return FakeHTTPResponse(200)
 
     monkeypatch.setattr("meta_harness.qa_flow.urllib.request.urlopen", fake_urlopen)
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow._capture_with_session", lambda base, url: ("shot.png", False)
+    )
 
     perform_route_check("https://app.example.com/", "/login")
 
@@ -556,7 +560,9 @@ def test_perform_route_check_http_error_still_returns_status_code(monkeypatch):
         raise urllib.error.HTTPError("https://app.example.com/missing", 404, "Not Found", {}, None)
 
     monkeypatch.setattr("meta_harness.qa_flow.urllib.request.urlopen", fake_urlopen)
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow._capture_with_session", lambda base, url: ("shot.png", False)
+    )
 
     status_code, http_error, _screenshot_path = perform_route_check("https://app.example.com", "/missing")
 
@@ -569,7 +575,9 @@ def test_perform_route_check_url_error_has_no_status_code(monkeypatch):
         raise urllib.error.URLError("Connection refused")
 
     monkeypatch.setattr("meta_harness.qa_flow.urllib.request.urlopen", fake_urlopen)
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow._capture_with_session", lambda base, url: ("shot.png", False)
+    )
 
     status_code, http_error, _screenshot_path = perform_route_check("https://app.example.com", "/login")
 
@@ -582,10 +590,10 @@ def test_perform_route_check_screenshot_failure_keeps_status_code(monkeypatch):
         "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
     )
 
-    def boom(url):
+    def boom(base, url):
         raise ScreenshotCaptureError("chromium crashed")
 
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", boom)
+    monkeypatch.setattr("meta_harness.qa_flow._capture_with_session", boom)
 
     status_code, http_error, screenshot_path = perform_route_check("https://app.example.com", "/login")
 
@@ -598,7 +606,9 @@ def test_perform_route_check_reports_steps(monkeypatch):
     monkeypatch.setattr(
         "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
     )
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow._capture_with_session", lambda base, url: ("shot.png", False)
+    )
 
     steps = []
     perform_route_check("https://app.example.com", "/login", on_step=steps.append)
@@ -628,7 +638,9 @@ def test_review_qa_ticket_performs_route_check_when_base_url_configured(tmp_path
     monkeypatch.setattr(
         "meta_harness.qa_flow.urllib.request.urlopen", lambda req, timeout: FakeHTTPResponse(200)
     )
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", lambda url: "shot.png")
+    monkeypatch.setattr(
+        "meta_harness.qa_flow._capture_with_session", lambda base, url: ("shot.png", False)
+    )
 
     config = ProjectConfigStore(tmp_path / "cfg.json")
     config.set_base_url("sigo-front", "https://sigo-front.example.com")
@@ -647,7 +659,7 @@ def test_review_qa_ticket_skips_route_check_without_base_url(tmp_path, monkeypat
     def boom(*a, **kw):
         raise AssertionError("must not perform a route check with no base URL configured")
 
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", boom)
+    monkeypatch.setattr("meta_harness.qa_flow._capture_with_session", boom)
 
     config = ProjectConfigStore(tmp_path / "cfg.json")  # no base URL set
 
@@ -664,7 +676,7 @@ def test_review_qa_ticket_skips_route_check_without_inferred_route(tmp_path, mon
     def boom(*a, **kw):
         raise AssertionError("must not perform a route check with no inferred route")
 
-    monkeypatch.setattr("meta_harness.qa_flow.capture_screenshot", boom)
+    monkeypatch.setattr("meta_harness.qa_flow._capture_with_session", boom)
 
     config = ProjectConfigStore(tmp_path / "cfg.json")
     config.set_base_url("sigo-front", "https://sigo-front.example.com")

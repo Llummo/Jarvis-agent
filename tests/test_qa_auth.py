@@ -135,3 +135,44 @@ def test_the_error_names_the_variable_to_configure():
 
 def test_a_real_screen_passes_through():
     assert_authenticated(_FakeBrowser(text=APP), where="x")
+
+
+# --- el hueco que dejó la primera versión del arreglo -------------------------
+
+
+def test_login_is_detected_even_without_a_token(monkeypatch, tmp_path):
+    """Sin token es justo cuando la app muestra el login. Saltarse la
+    comprobación ahí devolvía «no es login» sin mirar, y la captura del
+    formulario de sesión se archivaba como evidencia."""
+    from meta_harness import qa_flow
+
+    monkeypatch.delenv("SIGO_LOCAL_TOKEN", raising=False)
+    monkeypatch.delenv("SIGO_QA_TOKEN", raising=False)
+
+    class _Browser:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def goto(self, url): pass
+        def eval(self, script): return True
+        def text_of(self, selector="body"): return LOGIN_ES
+        def screenshot(self, path):
+            from pathlib import Path
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(b"png"); return path
+
+    monkeypatch.setattr("meta_harness.qa.browser.Browser", _Browser)
+    monkeypatch.setattr(qa_flow, "default_screenshot_path", lambda: tmp_path / "s.png")
+
+    _, saw_login = qa_flow._capture_with_session("http://localhost:5180", "http://localhost:5180/erp")
+    assert saw_login is True
+
+
+def test_the_message_distinguishes_missing_token_from_expired(monkeypatch):
+    from meta_harness.qa.auth import token_for
+
+    monkeypatch.delenv("SIGO_LOCAL_TOKEN", raising=False)
+    monkeypatch.delenv("SIGO_QA_TOKEN", raising=False)
+    assert not (token_for("local") or token_for("qa"))
+
+    monkeypatch.setenv("SIGO_LOCAL_TOKEN", "caducado")
+    assert token_for("local") == "caducado"
