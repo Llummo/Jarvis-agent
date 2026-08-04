@@ -219,6 +219,37 @@ def analyze_ticket(
     raise AssertionError("unreachable")  # loop always returns or raises by the final attempt
 
 
+
+def _capture_with_session(base_url: str, url: str) -> Tuple[Optional[str], bool]:
+    """Capture `url`, installing a session first when one is configured.
+
+    Returns the screenshot path and whether the page turned out to be the login
+    screen. Falls back to the plain capture when no token exists, so a target
+    without authentication keeps working exactly as before.
+    """
+    from meta_harness.qa.auth import looks_like_login, token_for
+    from meta_harness.qa.browser import Browser, BrowserError
+
+    token = token_for("local") or token_for("qa")
+    if not token:
+        return str(capture_screenshot(url)), False
+
+    try:
+        with Browser() as browser:
+            browser.goto(base_url)
+            browser.eval(
+                "try { localStorage.setItem('token', %s); return true; } catch (e) { return false; }"
+                % json.dumps(token)
+            )
+            browser.goto(url)
+            saw_login = looks_like_login(browser.text_of())
+            path = default_screenshot_path()
+            browser.screenshot(path)
+            return str(path), saw_login
+    except BrowserError as exc:
+        raise ScreenshotCaptureError(str(exc)) from exc
+
+
 def perform_route_check(
     base_url: str, route: str, *, timeout_s: float = ROUTE_CHECK_TIMEOUT_S, on_step: OnStep = None
 ) -> Tuple[Optional[int], Optional[str], Optional[str]]:
@@ -250,11 +281,26 @@ def perform_route_check(
         http_error = f"Request to {url} failed: {exc}"
         _report(on_step, http_error)
 
+    # An SPA answers 200 for every path — it serves the same shell and routes
+    # in the browser. So the status code says the server is up, and nothing
+    # about whether this route exists. What the page actually rendered is the
+    # only evidence worth keeping.
     _report(on_step, f"Capturing screenshot of {url}…")
     screenshot_path: Optional[str] = None
     try:
-        screenshot_path = str(capture_screenshot(url))
-        _report(on_step, "Screenshot captured.")
+        screenshot_path, saw_login = _capture_with_session(base_url, url)
+        if saw_login:
+            # Without this the review files a screenshot of a login form as if
+            # it were the feature under test.
+            not_signed_in = (
+                "No autenticado: la aplicación mostró la pantalla de inicio de sesión, "
+                "así que la captura no corresponde a la ruta pedida. "
+                "Configure SIGO_LOCAL_TOKEN (o SIGO_QA_TOKEN) con una sesión vigente."
+            )
+            http_error = f"{http_error} · {not_signed_in}" if http_error else not_signed_in
+            _report(on_step, not_signed_in)
+        else:
+            _report(on_step, "Screenshot captured.")
     except (ChromiumNotFoundError, ScreenshotCaptureError) as exc:
         _report(on_step, f"Could not capture screenshot: {exc}")
 

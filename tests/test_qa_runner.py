@@ -221,3 +221,60 @@ def test_the_report_links_the_evidence(tmp_path):
         run = _run(app, tmp_path)
     md = render_markdown(run)
     assert ".png)" in md, "las capturas quedan enlazadas"
+
+
+# --- sesión -------------------------------------------------------------------
+
+LOGIN_PAGE = """<!doctype html><html><body>
+<h1>SIGO · PLATAFORMA INTERNA</h1>
+<h2>Inicia sesión</h2>
+<p>Continúa con tu cuenta corporativa.</p>
+<button>Continuar con Google</button>
+</body></html>"""
+
+
+class _LoginHandler(_Handler):
+    """Una app que redirige todo al login mientras no haya sesión."""
+
+    def do_GET(self):
+        body = PAGE % self.server.script if self.server.authed else LOGIN_PAGE
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body.encode())))
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+
+class GatedApp(FakeApp):
+    def __init__(self, script, authed=False):
+        super().__init__(script)
+        self.httpd.RequestHandlerClass = _LoginHandler
+        self.httpd.authed = authed
+
+
+def test_a_run_without_a_session_fails_with_the_real_cause(tmp_path, monkeypatch):
+    """Antes esto producía capturas del login y las guardaba como evidencia."""
+    monkeypatch.delenv("SIGO_LOCAL_TOKEN", raising=False)
+    with GatedApp(GOOD) as app:
+        env = resolve_environment("local", ui_url=app.url)
+        run = run_plan(_plan(), env, evidence_root=tmp_path)
+    case = run.cases[0]
+    assert not case.passed
+    assert "inicio de sesión" in case.why()
+
+
+def test_the_login_failure_is_not_reported_as_a_missing_button(tmp_path, monkeypatch):
+    """El fallo debe señalar la sesión, no el selector."""
+    monkeypatch.delenv("SIGO_LOCAL_TOKEN", raising=False)
+    with GatedApp(GOOD) as app:
+        env = resolve_environment("local", ui_url=app.url)
+        run = run_plan(_plan(), env, evidence_root=tmp_path)
+    why = run.cases[0].why().lower()
+    assert "no se encontró" not in why
+
+
+def test_the_environment_reports_whether_there_is_a_session(monkeypatch):
+    monkeypatch.setenv("SIGO_LOCAL_TOKEN", "abc")
+    assert resolve_environment("local", ui_url="http://x").describe()["authenticated"] == "sí"
+    monkeypatch.delenv("SIGO_LOCAL_TOKEN")
+    assert resolve_environment("local", ui_url="http://x").describe()["authenticated"] == "no"

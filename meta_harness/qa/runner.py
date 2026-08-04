@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from meta_harness.qa.auth import AuthError, assert_authenticated, authenticate
 from meta_harness.qa.browser import Browser, BrowserError, NetworkCall
 from meta_harness.qa.environments import Environment
 from meta_harness.qa.plan import (
@@ -252,13 +253,16 @@ def _run_case(
         shot = evidence_dir / f"{_slug(case.name)}-{index:02d}.png"
         try:
             _perform(browser, step, environment)
+            # Una navegación puede acabar en el login por redirección del
+            # cliente: la URL sigue siendo la pedida, la pantalla no.
+            assert_authenticated(browser, where=f"el paso «{description}»")
             try:
                 browser.screenshot(shot)
                 shot_path = str(shot)
             except BrowserError:
                 shot_path = ""
             result.steps.append(StepOutcome(step.action, description, True, screenshot=shot_path))
-        except BrowserError as exc:
+        except (BrowserError, AuthError) as exc:
             try:
                 browser.screenshot(shot)
                 shot_path = str(shot)
@@ -313,6 +317,13 @@ def run_plan(
 
     _report(on_step, f"Ejecutando {len(plan.cases)} criterio(s) contra {environment.ui_url}…")
     with Browser() as browser:
+        if environment.auth_token:
+            _report(on_step, "Instalando la sesión en el navegador…")
+            authenticate(browser, environment.ui_url, environment.auth_token)
+        else:
+            # Sin token, todo aterrizará en el login. Se avisa una vez aquí en
+            # lugar de repetir el mismo error en cada paso.
+            _report(on_step, "Aviso: no hay token configurado para este entorno.")
         for case in plan.cases:
             _report(on_step, f"{case.name}…")
             run.cases.append(_run_case(browser, case, environment, evidence_dir, on_step))
