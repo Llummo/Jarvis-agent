@@ -1065,12 +1065,12 @@ def _open_rework(browser):
     browser.wait_for("!document.getElementById('linear-sub-rework').hidden")
 
 
-def _pick_parent(browser, issue_id="p1"):
-    """Choose from the dropdown, the way the UI is actually driven."""
+def _pick_parent(browser, label="SIG-90 — Módulo de selección"):
+    """Type into the single parent field, the way the UI is actually driven."""
     browser.wait_for(
-        "document.querySelectorAll('#linear-rework-parent-select option').length > 1"
+        "document.querySelectorAll('#linear-rework-parent-options option').length > 0"
     )
-    browser.type_into("#linear-rework-parent-select", issue_id)
+    browser.type_into("#linear-rework-parent", label)
 
 
 def _resolve(browser, names="6.5 Tabla de Carga por responsable\nMover candidato a Tanda enviada"):
@@ -1165,7 +1165,7 @@ def test_the_parent_picker_is_visible_before_resolving(browser):
     and unreachable at all if Linear was unavailable."""
     _open_rework(browser)
     assert browser.visible("#linear-rework-parent-step")
-    assert browser.visible("#linear-rework-parent-search")
+    assert browser.visible("#linear-rework-parent")
 
 
 def test_a_parent_can_be_chosen_before_any_names_are_resolved(browser):
@@ -1187,37 +1187,29 @@ def test_changing_team_clears_the_chosen_parent(browser):
     assert "No parent selected" in selected
 
 
-def test_the_parent_dropdown_is_populated_without_typing(browser):
-    """The reason this was rebuilt: a search box that stays empty until you
-    guess a matching word looks like it has no options at all."""
+def test_the_parent_field_offers_the_team_without_typing(browser):
+    """One control, not two: the datalist is the filter."""
     _open_rework(browser)
-    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-options option').length > 0")
     labels = browser.eval(
-        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
+        "[...document.querySelectorAll('#linear-rework-parent-options option')].map(o => o.value)"
     )
     assert any("SIG-90" in label for label in labels)
 
 
-def test_typing_filters_the_parent_dropdown(browser):
+def test_there_is_no_separate_filter_box(browser):
     _open_rework(browser)
-    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
-    browser.type_into("#linear-rework-parent-search", "zzzz-no-such-issue")
-    labels = browser.eval(
-        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
-    )
-    assert len(labels) == 1
-    assert "No issue matches" in labels[0]
+    assert browser.eval("return document.getElementById('linear-rework-parent-search') === null;")
+    assert browser.eval("return document.getElementById('linear-rework-parent-select') === null;")
 
 
-def test_clearing_the_filter_restores_every_option(browser):
+def test_pasting_a_bare_issue_id_selects_the_parent(browser):
+    """The placeholder promises it, so it has to work."""
     _open_rework(browser)
-    browser.wait_for("document.querySelectorAll('#linear-rework-parent-select option').length > 1")
-    browser.type_into("#linear-rework-parent-search", "zzzz")
-    browser.type_into("#linear-rework-parent-search", "")
-    labels = browser.eval(
-        "[...document.querySelectorAll('#linear-rework-parent-select option')].map(o => o.textContent)"
-    )
-    assert any("SIG-90" in label for label in labels)
+    browser.wait_for("document.querySelectorAll('#linear-rework-parent-options option').length > 0")
+    browser.type_into("#linear-rework-parent", "SIG-90")
+    selected = browser.eval("document.getElementById('linear-rework-parent-selected').textContent")
+    assert "SIG-90" in selected
 def test_sources_panels_use_the_shared_panel_structure(browser):
     """.panel carries no padding of its own — it comes from .panel-head and
     .panel-body, and the gap between panels comes from the .step wrapper.
