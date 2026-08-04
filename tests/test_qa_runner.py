@@ -278,3 +278,49 @@ def test_the_environment_reports_whether_there_is_a_session(monkeypatch):
     assert resolve_environment("local", ui_url="http://x").describe()["authenticated"] == "sí"
     monkeypatch.delenv("SIGO_LOCAL_TOKEN")
     assert resolve_environment("local", ui_url="http://x").describe()["authenticated"] == "no"
+
+
+# --- render progresivo --------------------------------------------------------
+
+PROGRESSIVE = """<!doctype html><html><body>
+<h1>SIGO</h1>
+<div id="app"></div>
+<script>
+// Renderiza en dos tiempos, como una SPA: cabecera primero, contenido después.
+setTimeout(() => {
+  document.getElementById('app').innerHTML =
+    '<h2>Inicia sesión</h2><p>Continuar con Google</p>';
+}, 600);
+</script>
+</body></html>"""
+
+
+class _SlowHandler(_Handler):
+    def do_GET(self):
+        body = PROGRESSIVE
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body.encode())))
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+
+class SlowApp(FakeApp):
+    def __init__(self):
+        super().__init__(GOOD)
+        self.httpd.RequestHandlerClass = _SlowHandler
+
+
+def test_goto_waits_for_the_late_content(tmp_path):
+    """readyState 'complete' llega antes de que la SPA monte. Leer ahí devolvía
+    una página casi vacía, y el login pasaba desapercibido."""
+    from meta_harness.qa.auth import looks_like_login
+    from meta_harness.qa.browser import Browser
+
+    with SlowApp() as app:
+        with Browser() as browser:
+            browser.goto(app.url)
+            text = browser.text_of()
+
+    assert "Inicia sesión" in text, f"solo se leyó: {text!r}"
+    assert looks_like_login(text)

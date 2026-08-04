@@ -43,6 +43,13 @@ DEFAULT_TIMEOUT_S = 25.0
 # page fails the step rather than the whole run.
 DEFAULT_WAIT_S = 12.0
 POLL_INTERVAL_S = 0.15
+# How many consecutive polls the text must stay the same length before the
+# page counts as settled. Two is enough to skip a progressive render and
+# cheap enough not to add a visible pause.
+RENDER_STABLE_POLLS = 2
+# Minimum quiet time after the first content before the page counts as
+# ready. Matches the screenshot tool, whose captures are already complete.
+RENDER_SETTLE_GRACE_S = 0.8
 
 
 class BrowserError(RuntimeError):
@@ -187,10 +194,52 @@ class Browser:
 
     def goto(self, url: str) -> None:
         self._call("Page.navigate", {"url": url})
-        # Waiting for the document to be interactive rather than sleeping: an
-        # app that boots asynchronously is the normal case, and a fixed sleep
-        # is the usual source of a test that fails one time in ten.
+        # `readyState === 'complete'` means the document finished loading, not
+        # that the app finished rendering. A React app mounts after that, so
+        # reading the page here returns an empty body — which is how a login
+        # screen slips through a check that looks for its text.
         self.wait_for("document.readyState === 'complete'", message=f"{url} never finished loading")
+        self._wait_for_render()
+
+    def _wait_for_render(self, *, timeout_s: float = DEFAULT_WAIT_S) -> None:
+        """Wait until the page has stopped filling itself in.
+
+        A first signal is not enough: the shell renders its header before the
+        form, so returning on «there is some text» reads a page that is still
+        arriving. This waits for the visible text to stop growing across
+        consecutive polls.
+
+        Returns quietly on timeout — a genuinely blank page is a valid state,
+        and the caller's own assertions should be what fails, not this.
+        """
+        deadline = time.monotonic() + timeout_s
+        previous, stable, first_content_at = -1, 0, None
+        while time.monotonic() < deadline:
+            try:
+                length = self.eval(
+                    "return ((document.body && document.body.innerText) || '').trim().length;"
+                )
+            except BrowserError:
+                return
+            if length and first_content_at is None:
+                first_content_at = time.monotonic()
+
+            if length and length == previous:
+                stable += 1
+                # Stability alone is not enough: a shell that renders its
+                # header and then pauses looks settled for as long as the pause
+                # lasts. Nothing is accepted until the grace period has run
+                # from the first content, so late-arriving markup is not missed.
+                settled_long_enough = (
+                    first_content_at is not None
+                    and time.monotonic() - first_content_at >= RENDER_SETTLE_GRACE_S
+                )
+                if stable >= RENDER_STABLE_POLLS and settled_long_enough:
+                    return
+            else:
+                stable = 0
+            previous = length
+            time.sleep(POLL_INTERVAL_S)
 
     def eval(self, expression: str) -> Any:
         """Evaluate JS in the page and return the result."""
