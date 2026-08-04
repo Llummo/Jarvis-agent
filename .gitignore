@@ -10,7 +10,9 @@ dist/
 build/
 *.egg-info/
 runs/
-qa/
+# Estado local: índices, hallazgos, historial. Anclado a la raíz para no
+# ocultar meta_harness/qa/, que es código.
+/qa/
 .env
 .venv/
 dist/
