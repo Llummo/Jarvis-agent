@@ -21,6 +21,7 @@ from meta_harness.mcp_server.images import list_images as _list_images
 from meta_harness.mcp_server.images import read_image as _read_image
 from meta_harness.qa_findings import close_qa_issue as _close_qa_issue
 from meta_harness.qa_findings import list_qa_issues as _list_qa_issues
+from meta_harness.qa.session import SESSION as _SESSION
 from meta_harness.qa_findings import report_qa_issue as _report_qa_issue
 
 mcp = FastMCP("meta-harness-qa")
@@ -101,3 +102,66 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# --- Live browser for QA exploration ----------------------------------------
+# These let the model look at the app before writing a test plan, rather than
+# guessing steps from the ticket text alone. The session persists across calls
+# because a form cannot be filled in one.
+
+
+@mcp.tool()
+def qa_browser_open(environment: str = "local", ui_url: str = "") -> dict:
+    """Open a browser against 'local' or 'qa'. Production is refused."""
+    return _SESSION.start(environment, ui_url=ui_url or None)
+
+
+@mcp.tool()
+def qa_browser_goto(route: str) -> dict:
+    """Navigate to a route on the open environment, e.g. '/erp/talent/people'."""
+    return _SESSION.goto(route)
+
+
+@mcp.tool()
+def qa_browser_read() -> dict:
+    """Read the visible text of the current page."""
+    return _SESSION.read()
+
+
+@mcp.tool()
+def qa_browser_find(text: str) -> dict:
+    """Check whether something with this visible text exists, and where."""
+    return _SESSION.find(text)
+
+
+@mcp.tool()
+def qa_browser_click(text: str) -> dict:
+    """Click the element whose visible text matches."""
+    return _SESSION.click_text(text)
+
+
+@mcp.tool()
+def qa_browser_type(label: str, value: str) -> dict:
+    """Type into the field with this visible label."""
+    return _SESSION.type_label(label, value)
+
+
+@mcp.tool()
+def qa_browser_network() -> list:
+    """The API calls the page has made since the last navigation.
+
+    This is how a plan learns which endpoint a screen really uses.
+    """
+    return _SESSION.network()
+
+
+@mcp.tool()
+def qa_browser_screenshot() -> dict:
+    """Capture the current page."""
+    return _SESSION.screenshot()
+
+
+@mcp.tool()
+def qa_browser_close() -> dict:
+    """Close the browser and free the session."""
+    return _SESSION.stop()

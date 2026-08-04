@@ -733,6 +733,54 @@
 
             <div id="linear-qa-result" class="ticket-card" hidden></div>
 
+            <hr class="section-rule">
+
+            <h3>Pruebas en el navegador</h3>
+            <p class="hint">Convierte los criterios de aceptación del issue en pasos, y los ejecuta de verdad. Un criterio pasa solo si la pantalla muestra lo esperado <strong>y</strong> el endpoint declarado responde.</p>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="linear-qa-test-env">Entorno</label>
+                <select id="linear-qa-test-env"><option value="local">local</option><option value="qa">qa</option></select>
+                <span class="field-note" id="linear-qa-test-env-note">Producción no es un destino válido.</span>
+              </div>
+              <div class="field">
+                <label for="linear-qa-test-url">URL (opcional)</label>
+                <input type="url" id="linear-qa-test-url" placeholder="http://localhost:3000" autocomplete="off">
+                <span class="field-note">Sobrescribe la URL del entorno para esta corrida.</span>
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button type="button" id="linear-qa-test-plan-btn" class="btn-primary" disabled>Generar plan de pruebas</button>
+              <button type="button" id="linear-qa-test-run-btn" class="btn-success" disabled>Ejecutar las pruebas</button>
+            </div>
+
+            <div id="linear-qa-test-thinking" class="thinking-indicator" hidden>
+              <span class="spinner"></span>
+              <div>
+                <div class="thinking-text"></div>
+                <ul class="phase-log" id="linear-qa-test-phase-log"></ul>
+              </div>
+            </div>
+            <div id="linear-qa-test-error" class="error-banner" hidden></div>
+            <div id="linear-qa-test-success" class="success-banner" hidden></div>
+
+            <div id="linear-qa-test-plan" hidden>
+              <h4>Plan propuesto — revísalo antes de ejecutar</h4>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Caso</th><th>Criterio</th><th>Pasos</th><th>Debe verse / llamar</th></tr></thead>
+                  <tbody id="linear-qa-test-plan-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="linear-qa-test-report" hidden>
+              <h4>Resultado</h4>
+              <div id="linear-qa-test-report-body" class="report-body"></div>
+            </div>
+
             <div id="linear-qa-bulk-results" hidden>
               <h3>Review results</h3>
               <div class="table-wrap">

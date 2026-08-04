@@ -8,7 +8,9 @@ from meta_harness.mcp_server.server import (
 )
 from meta_harness.qa_findings import QAFindingStore
 
-EXPECTED_TOOL_NAMES = {
+# Seyren's original toolkit. Kept as its own set so adding tools can never
+# quietly remove one of these.
+ORIGINAL_TOOL_NAMES = {
     "report_qa_issue",
     "list_qa_issues",
     "close_qa_issue",
@@ -19,12 +21,37 @@ EXPECTED_TOOL_NAMES = {
     "read_image",
 }
 
+# The live browser session, added for ticket-driven browser tests.
+BROWSER_TOOL_NAMES = {
+    "qa_browser_open",
+    "qa_browser_goto",
+    "qa_browser_read",
+    "qa_browser_find",
+    "qa_browser_click",
+    "qa_browser_type",
+    "qa_browser_network",
+    "qa_browser_screenshot",
+    "qa_browser_close",
+}
 
-def test_all_eight_tools_are_registered():
-    tools = asyncio.run(mcp.list_tools())
-    names = {tool.name for tool in tools}
+EXPECTED_TOOL_NAMES = ORIGINAL_TOOL_NAMES | BROWSER_TOOL_NAMES
 
+
+def test_the_original_toolkit_is_still_complete():
+    """Adding tools must never drop one of the originals."""
+    names = {tool.name for tool in asyncio.run(mcp.list_tools())}
+    assert ORIGINAL_TOOL_NAMES <= names
+
+
+def test_exactly_the_expected_tools_are_registered():
+    names = {tool.name for tool in asyncio.run(mcp.list_tools())}
     assert names == EXPECTED_TOOL_NAMES
+
+
+def test_the_browser_session_is_exposed():
+    """Without these the model can only read a ticket, never look at the app."""
+    names = {tool.name for tool in asyncio.run(mcp.list_tools())}
+    assert BROWSER_TOOL_NAMES <= names
 
 
 def test_report_and_list_qa_issue_tools_round_trip(tmp_path, monkeypatch):

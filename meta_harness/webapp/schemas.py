@@ -526,3 +526,23 @@ class ReworkUndoIn(BaseModel):
 
     run_id: str
     progress_token: Optional[str] = None
+
+
+class QATestPlanIn(BaseModel):
+    """Write a test plan from a ticket. Reads only."""
+
+    ticket_id: str
+    tracker: str = "linear"
+    environment: str = "local"
+    progress_token: Optional[str] = None
+
+
+class QATestRunIn(BaseModel):
+    """Execute an approved plan. This clicks real buttons."""
+
+    plan: dict
+    environment: str = "local"
+    # Overrides the configured URL for this run — handy for a local port that
+    # moves. Still refused if it looks like production.
+    ui_url: str = ""
+    progress_token: Optional[str] = None

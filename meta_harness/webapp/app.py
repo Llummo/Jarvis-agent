@@ -17,6 +17,7 @@ from meta_harness.webapp.routes_clickup import router as clickup_router
 from meta_harness.webapp.routes_linear import router as linear_router
 from meta_harness.webapp.routes_qa import router as qa_router
 from meta_harness.webapp.routes_qa_flow import router as qa_flow_router
+from meta_harness.webapp.routes_qa_tests import router as qa_tests_router
 from meta_harness.webapp.routes_progress import router as progress_router
 from meta_harness.webapp.routes_rework import router as rework_router
 from meta_harness.webapp.routes_sources import router as sources_router
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     # matches routes in registration order.
     app.include_router(qa_router, prefix="/api/qa", tags=["qa"])
     app.include_router(qa_flow_router, prefix="/api/qa/reviews", tags=["qa-reviews"])
+    app.include_router(qa_tests_router, prefix="/api/qa/tests", tags=["qa-tests"])
     app.include_router(clickup_router, prefix="/api/clickup", tags=["clickup"])
     app.include_router(linear_router, prefix="/api/linear", tags=["linear"])
     app.include_router(tickets_router, prefix="/api/tickets", tags=["tickets"])
