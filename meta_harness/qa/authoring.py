@@ -39,6 +39,7 @@ from meta_harness.qa.plan import (
     TestStep,
 )
 from meta_harness.qa.ticket_shape import Criterion, TicketShape, parse_ticket
+from meta_harness.qa.vocabulary import Vocabulary, describe, harvest
 from meta_harness.ticket_generator import CLAUDE_TIMEOUT_ENV_VAR, _find_claude
 
 OnStep = Optional[Callable[[str], None]]
@@ -52,7 +53,8 @@ PROMPT = (
     "Dado/Cuando/Entonces.\n\n"
     "Devuelve SOLO JSON:\n"
     '{"steps": [{"action": "...", "target": "...", "value": "..."}], '
-    '"ui_text": "<texto corto que debe verse al terminar>"}\n\n'
+    '"ui_text": "<texto corto que debe verse al terminar>", '
+    '"solo_lectura": false}\n\n'
     "Acciones permitidas, ninguna otra:\n"
     "- goto        target = la ruta\n"
     "- click       target = selector CSS\n"
@@ -68,7 +70,13 @@ PROMPT = (
     "- ui_text debe ser una frase corta que el usuario vería, sacada del 'entonces'. "
     "No inventes mensajes de éxito que el criterio no mencione.\n"
     "- Usa datos de prueba obvios y desechables (por ejemplo 'Prueba QA').\n"
-    "- No inventes endpoints ni URLs: solo la ruta que se te da."
+    "- No inventes endpoints ni URLs: solo la ruta que se te da.\n"
+    "- solo_lectura = true SOLO si el criterio se limita a describir lo que se "
+    "ve y no guarda nada (por ejemplo «el formulario muestra los campos X, Y, "
+    "Z»). Si el criterio crea, edita o borra algo, es false. Ante la duda, "
+    "false: marcarlo mal apaga la mitad de la comprobación.\n"
+    "- Los target salen de la pantalla, no de tu memoria: si se te da la lista "
+    "de palabras que aparecen en ella, cópialas tal cual."
 )
 
 
@@ -109,7 +117,7 @@ def _run_claude(prompt: str, payload: str, timeout_s: float) -> str:
 
 
 def parse_steps(raw_output: str, route: str) -> tuple:
-    """Read the model's answer into steps and the expected on-screen text.
+    """Read the model's answer into steps, expected text, and whether it writes.
 
     Unknown verbs are refused, not silently dropped: a plan missing the step
     that mattered would still validate and would still pass, which is worse
@@ -157,10 +165,16 @@ def parse_steps(raw_output: str, route: str) -> tuple:
     ui_text = str(payload.get("ui_text", "")).strip()
     if not ui_text:
         raise AuthoringError("la respuesta no dice qué debería verse al terminar")
-    return steps, ui_text
+    return steps, ui_text, bool(payload.get("solo_lectura", False))
 
 
-def _case_for(criterion: Criterion, shape: TicketShape, index: int, timeout_s: float) -> TestCase:
+def _case_for(
+    criterion: Criterion,
+    shape: TicketShape,
+    index: int,
+    timeout_s: float,
+    vocabulary: Optional[Vocabulary] = None,
+) -> TestCase:
     payload = json.dumps(
         {
             "route": shape.route,
@@ -175,11 +189,13 @@ def _case_for(criterion: Criterion, shape: TicketShape, index: int, timeout_s: f
         indent=2,
     )
 
+    prompt = PROMPT + describe(vocabulary)
+
     last_error = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        raw = _run_claude(PROMPT, payload, timeout_s)
+        raw = _run_claude(prompt, payload, timeout_s)
         try:
-            steps, ui_text = parse_steps(raw, shape.route)
+            steps, ui_text, reads_only = parse_steps(raw, shape.route)
         except AuthoringError as exc:
             last_error = str(exc)
             if attempt == MAX_ATTEMPTS:
@@ -194,11 +210,58 @@ def _case_for(criterion: Criterion, shape: TicketShape, index: int, timeout_s: f
             # so it cannot move the goalposts to something it can pass.
             expectation=Expectation(
                 ui_text=ui_text,
-                api_path=shape.endpoint_path,
+                # El endpoint sigue saliendo del ticket. Lo único que decide el
+                # modelo es si este criterio llega a llamarlo.
+                api_path="" if reads_only else shape.endpoint_path,
                 api_method=shape.endpoint_method or "POST",
+                reads_only=reads_only,
             ),
         )
     raise AuthoringError(f"{criterion.name}: {last_error}")
+
+
+def _read_screen(environment: str, route: str, on_step: OnStep) -> Optional[Vocabulary]:
+    """Open the screen once and note the words it uses, or give up quietly.
+
+    Shared by every criterion of the ticket: one browser, one page load. The
+    cost is a few seconds per plan, against a plan written entirely against
+    labels that do not exist — which is what the previous version produced.
+
+    Every failure here is non-fatal. An unreachable environment means the plan
+    is authored from the ticket alone, exactly as before, and the run will say
+    so when the steps miss.
+    """
+    # Imported late: authoring a plan must not require a browser to be
+    # installed, and the webapp imports this module at startup.
+    from meta_harness.qa.auth import authenticate, token_for
+    from meta_harness.qa.browser import Browser
+    from meta_harness.qa.environments import EnvironmentError_, resolve_environment
+
+    try:
+        target = resolve_environment(environment)
+    except EnvironmentError_ as exc:
+        if on_step:
+            on_step(f"sin vocabulario de pantalla ({exc})")
+        return None
+
+    url = target.ui_url.rstrip("/") + "/" + route.lstrip("/")
+    if on_step:
+        on_step(f"leyendo la pantalla {url}…")
+    try:
+        with Browser() as browser:
+            authenticate(browser, target.ui_url, token_for(environment))
+            vocabulary = harvest(browser, url)
+    except Exception as exc:  # noqa: BLE001 - authoring survives a dead target
+        if on_step:
+            on_step(f"no se pudo leer la pantalla: {exc}")
+        return None
+
+    if on_step:
+        on_step(
+            f"pantalla leída: {len(vocabulary.actions)} acción(es), "
+            f"{len(vocabulary.fields)} campo(s)"
+        )
+    return None if vocabulary.empty else vocabulary
 
 
 def _slug(value: str) -> str:
@@ -229,13 +292,15 @@ def author_plan(
     if on_step:
         on_step(f"{ticket_id}: {len(shape.criteria)} criterio(s) sobre {shape.route}")
 
+    vocabulary = _read_screen(environment, shape.route, on_step)
+
     cases: List[TestCase] = []
     errors: List[str] = []
     for index, criterion in enumerate(shape.criteria, start=1):
         if on_step:
             on_step(f"  [{index}/{len(shape.criteria)}] {criterion.name}…")
         try:
-            cases.append(_case_for(criterion, shape, index, resolved_timeout))
+            cases.append(_case_for(criterion, shape, index, resolved_timeout, vocabulary))
         except AuthoringError as exc:
             # One unwritable criterion should not cost the others.
             errors.append(str(exc))
@@ -252,7 +317,10 @@ def author_plan(
         route=shape.route,
         cases=cases,
         derived_from=f"criterios de aceptación de {ticket_id}",
-        notes=[f"No se pudo escribir: {error}" for error in errors],
+        notes=(
+            [f"No se pudo escribir: {error}" for error in errors]
+            + [f"Criterio omitido (plantilla sin rellenar): {name}" for name in shape.skipped]
+        ),
     )
     plan.validate()
     if on_step:
