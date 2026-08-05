@@ -98,6 +98,13 @@ class Expectation:
     api_method: str = "POST"
     # Statuses that count as the API having worked.
     api_status_range: str = "2xx"
+    # Whether the criterion only describes what is on screen. «El formulario
+    # muestra los mismos campos que el de Candidate» writes nothing, so
+    # demanding the endpoint made it impossible to pass no matter how well the
+    # feature worked. Marked explicitly, never inferred, and shown in the
+    # report — a criterion that quietly stops checking the API is worse than
+    # one that fails.
+    reads_only: bool = False
 
     def validate(self) -> None:
         if not self.ui_text and not self.ui_selector:
@@ -105,7 +112,13 @@ class Expectation:
                 "an expectation needs something to check on screen "
                 "(ui_text or ui_selector) — a passing API alone is not evidence the feature works"
             )
-        if not self.api_path.strip():
+        if self.reads_only:
+            if self.api_path.strip():
+                raise PlanError(
+                    "a read-only expectation must not name an endpoint: "
+                    "either the criterion writes, or it does not"
+                )
+        elif not self.api_path.strip():
             raise PlanError(
                 "an expectation needs the endpoint the UI must call — "
                 "a screen that looks right without saving anything is the failure this catches"
@@ -115,6 +128,8 @@ class Expectation:
 
     def describe(self) -> str:
         shown = self.ui_text or self.ui_selector
+        if self.reads_only:
+            return f"se ve {shown!r} (criterio visual: no escribe nada)"
         return f"se ve {shown!r} y {self.api_method} {self.api_path} responde {self.api_status_range}"
 
 
@@ -233,6 +248,7 @@ class TestPlan:
                     api_path=str(raw_expectation.get("api_path", "")),
                     api_method=str(raw_expectation.get("api_method", "POST")).upper(),
                     api_status_range=str(raw_expectation.get("api_status_range", "2xx")),
+                    reads_only=bool(raw_expectation.get("reads_only", False)),
                 )
             cases.append(
                 TestCase(

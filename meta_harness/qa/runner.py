@@ -89,6 +89,9 @@ class CaseResult:
     ui_detail: str = ""
     api_ok: bool = False
     api_detail: str = ""
+    # Si se llegó a mirar la red. Un criterio visual no la mira, y un ✅ junto a
+    # «no llama a ningún endpoint» se lee como que la API respondió bien.
+    api_checked: bool = True
     api_calls: List[Dict[str, Any]] = field(default_factory=list)
     seconds: float = 0.0
 
@@ -121,6 +124,7 @@ class CaseResult:
             "ui_detail": self.ui_detail,
             "api_ok": self.api_ok,
             "api_detail": self.api_detail,
+            "api_checked": self.api_checked,
             "api_calls": list(self.api_calls),
             "steps": [outcome.to_dict() for outcome in self.steps],
             "seconds": round(self.seconds, 2),
@@ -178,6 +182,10 @@ def _matches(call: NetworkCall, expectation: Expectation) -> bool:
 
 
 def _check_api(calls: List[NetworkCall], expectation: Expectation) -> tuple:
+    if expectation.reads_only:
+        # No hay nada que comprobar en la red, y decirlo importa: el informe no
+        # debe leerse como si el endpoint hubiera respondido bien.
+        return True, "criterio visual: no llama a ningún endpoint"
     matching = [call for call in calls if _matches(call, expectation)]
     if not matching:
         seen = ", ".join(sorted({f"{c.method} {c.path}" for c in calls})[:6]) or "ninguna llamada"
@@ -224,7 +232,9 @@ def _perform(browser: Browser, step: TestStep, environment: Environment) -> str:
     elif step.action == ACTION_TYPE:
         browser.type_into(step.target, step.value)
     elif step.action == ACTION_TYPE_LABEL:
-        found = browser.find_best_match(step.target, role="input")
+        # Un desplegable y un área de texto también son campos que se rellenan;
+        # limitarlo a <input> dejaba fuera «Fuente», que es un <select>.
+        found = browser.find_best_match(step.target, role="input, select, textarea")
         if not found:
             raise BrowserError(f"no se encontró un campo parecido a {step.target!r}")
         browser.type_into(found["selector"], step.value)
@@ -252,7 +262,12 @@ def _run_case(
     on_step: OnStep,
 ) -> CaseResult:
     started = time.monotonic()
-    result = CaseResult(name=case.name, criterion=case.criterion, result=RESULT_PASSED)
+    result = CaseResult(
+        name=case.name,
+        criterion=case.criterion,
+        result=RESULT_PASSED,
+        api_checked=not (case.expectation and case.expectation.reads_only),
+    )
 
     # Each case is judged on the traffic it causes, not on what the page did
     # while it was loading.

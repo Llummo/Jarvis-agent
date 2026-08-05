@@ -29,8 +29,13 @@ CRITERION_RE = re.compile(r"📌\s*Criterio\s*\d+\s*:\s*(.+)")
 # rather than as a value, or every plan would try to visit "(no aplica)".
 NOT_APPLICABLE = ("(no aplica)", "no aplica", "n/a", "-", "")
 
-# A placeholder criterion the template leaves behind for the author to fill in.
-PLACEHOLDER_HINTS = ("criterio x", "describe", "reemplaz", "completar")
+# The criterion the template leaves behind for the author to fill in — see
+# ticket_format.py, which writes «📌 Criterio X: [Espacio para criterios
+# adicionales]». Matched against the *name* and anchored, never as a substring
+# of the body: «completar» and «describe» are ordinary Spanish verbs, and
+# hunting for them anywhere in the text silently discarded a real criterion
+# («cuando intente guardar sin completar First name…») as if it were filler.
+PLACEHOLDER_NAME_RE = re.compile(r"^\s*(?:criterio\s*[xn]?|\[.*\]|<.*>)\s*$", re.IGNORECASE)
 
 _HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
@@ -55,8 +60,15 @@ class Criterion:
 
     @property
     def is_placeholder(self) -> bool:
-        lowered = f"{self.name} {self.text}".lower()
-        return any(hint in lowered for hint in PLACEHOLDER_HINTS)
+        """Whether this is the template's blank slot rather than a criterion.
+
+        Two ways to tell, both about structure rather than vocabulary: the name
+        is the template's own («Criterio X», or bracketed filler), or there is
+        no Dado/Cuando/Entonces at all — nothing a browser could carry out.
+        """
+        if PLACEHOLDER_NAME_RE.match(self.name):
+            return True
+        return not self.text
 
 
 @dataclass
@@ -69,6 +81,10 @@ class TicketShape:
     endpoint_method: str = ""
     endpoint_path: str = ""
     criteria: List[Criterion] = field(default_factory=list)
+    # Names of the criteria that were read but left out, so a plan can say what
+    # it is not covering. A criterion that vanishes without a trace is how a
+    # ticket ends up «fully tested» with a third of it never exercised.
+    skipped: List[str] = field(default_factory=list)
 
     @property
     def testable(self) -> bool:
@@ -111,13 +127,15 @@ def _split_endpoint(raw: str) -> tuple:
     return ("POST", match.group(1)) if match else ("", "")
 
 
-def _parse_criteria(description: str) -> List[Criterion]:
+def _parse_criteria(description: str) -> tuple:
+    """Every criterion the ticket states, split into usable and skipped."""
     start = description.find(CRITERIA_MARKER)
     if start == -1:
-        return []
+        return [], []
     body = description[start + len(CRITERIA_MARKER):]
 
     criteria: List[Criterion] = []
+    skipped: List[str] = []
     matches = list(CRITERION_RE.finditer(body))
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
@@ -126,25 +144,38 @@ def _parse_criteria(description: str) -> List[Criterion]:
         for line in block.splitlines():
             cleaned = line.strip().lstrip("*-• ").strip()
             lowered = cleaned.lower()
+            # Cada cláusula se acumula: un criterio con dos «entonces» encadenados
+            # perdía todos menos el último, y con él la mitad de lo que exigía.
             if lowered.startswith("dado"):
-                criterion.given = cleaned
+                criterion.given = _join(criterion.given, cleaned)
             elif lowered.startswith("cuando"):
-                criterion.when = cleaned
+                criterion.when = _join(criterion.when, cleaned)
             elif lowered.startswith("entonces"):
-                criterion.then = cleaned
-        if not criterion.is_placeholder:
+                criterion.then = _join(criterion.then, cleaned)
+            elif criterion.then and lowered.startswith(("y ", "and ")):
+                # «Y además muestra…» cuelga del entonces anterior.
+                criterion.then = _join(criterion.then, cleaned)
+        if criterion.is_placeholder:
+            skipped.append(criterion.name)
+        else:
             criteria.append(criterion)
-    return criteria
+    return criteria, skipped
+
+
+def _join(existing: str, addition: str) -> str:
+    return f"{existing} {addition}".strip() if existing else addition
 
 
 def parse_ticket(ticket_id: str, title: str, description: str) -> TicketShape:
     """Read a house-format ticket into the facts a test can be built from."""
     method, path = _split_endpoint(_value_after(description, ENDPOINT_MARKER))
+    criteria, skipped = _parse_criteria(description)
     return TicketShape(
         ticket_id=ticket_id,
         title=title,
         route=_value_after(description, ROUTE_MARKER),
         endpoint_method=method,
         endpoint_path=path,
-        criteria=_parse_criteria(description),
+        criteria=criteria,
+        skipped=skipped,
     )

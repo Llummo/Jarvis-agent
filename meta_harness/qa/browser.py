@@ -303,18 +303,62 @@ class Browser:
         const wantedFolded = fold(wanted);
         const wantedWords = words(wanted);
 
+        // Cuándo dos palabras cuentan como la misma pese a no escribirse igual.
+        function sameWord(a, b) {
+          if (a === b) return true;
+          const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+          // Prefijo de cuatro letras o más: cubre singular/plural («persona» /
+          // «personas») sin llegar a emparejar «casa» con «casarse».
+          if (short.length >= 4 && long.startsWith(short)) return true;
+          // Una letra de diferencia: un typo del ticket no debe hacer que el
+          // clic caiga en otro elemento. Solo en palabras largas, donde una
+          // letra no cambia el significado.
+          if (short.length >= 5 && long.length - short.length <= 1) {
+            return editDistance(a, b) <= 1;
+          }
+          return false;
+        }
+
+        // Damerau-Levenshtein: cuenta una transposición como una sola edición.
+        // Intercambiar dos letras seguidas («impotrar» por «importar») es el
+        // error de tecleo más común, y con Levenshtein simple contaría como dos.
+        function editDistance(a, b) {
+          const m = a.length, n = b.length;
+          const d = [];
+          for (let i = 0; i <= m; i++) d.push(new Array(n + 1).fill(0));
+          for (let i = 0; i <= m; i++) d[i][0] = i;
+          for (let j = 0; j <= n; j++) d[0][j] = j;
+          for (let i = 1; i <= m; i++) {
+            for (let j = 1; j <= n; j++) {
+              const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+              d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+              if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+                d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+              }
+            }
+          }
+          return d[m][n];
+        }
+
         function score(label) {
           const f = fold(label);
           if (!f) return 0;
           if (f === wantedFolded) return 1;
-          if (f.includes(wantedFolded) || wantedFolded.includes(f)) return 0.9;
+          // Deliberadamente NO se compara por subcadena: «es» aparece dentro de
+          // «pesroan» y emparejaría el selector de idioma con letras revueltas.
+          // Solo cuentan palabras completas.
           const lw = words(label);
           if (!lw.length || !wantedWords.length) return 0;
-          const shared = lw.filter((w) => wantedWords.includes(w)).length;
+          const shared = lw.filter((w) => wantedWords.some((x) => sameWord(w, x))).length;
           if (!shared) return 0;
-          const containment = shared / Math.min(lw.length, wantedWords.length);
+          // Asimétrico a propósito: se mide contra lo que pidió el ticket, no
+          // contra la etiqueta. Que al botón le sobren palabras es normal
+          // («Agregar» encuentra «Agregar persona»); que le falte una de las
+          // pedidas no lo es — «Eliminar persona» emparejaría con «Personas»
+          // y el paso haría clic en el menú en vez de fallar.
+          const asked = shared / wantedWords.length;
           const coverage = shared / Math.max(lw.length, wantedWords.length);
-          return 0.7 * containment + 0.3 * coverage;
+          return 0.7 * asked + 0.3 * coverage;
         }
 
         const tags = role ? [role]
@@ -322,14 +366,48 @@ class Browser:
         let pool = tags.map((t) => [...document.querySelectorAll(t)]).flat();
         if (!pool.length) pool = [...document.querySelectorAll('*')];
 
+        // Con un diálogo abierto, el mismo texto suele existir dos veces: el
+        // botón que lo abrió sigue detrás. En «Agregar persona» los dos se
+        // llaman igual, así que sin esto el paso que debía enviar el formulario
+        // vuelve a pulsar el de la barra y el diálogo nunca se envía.
+        const dialog = document.querySelector('[role=dialog], dialog[open], [aria-modal="true"]');
+
+        // Cómo se llama un elemento para quien lo mira. Un <input> no tiene
+        // innerText y casi nunca aria-label: su nombre está en el <label> que
+        // lo acompaña. Sin resolverlo, «Nombres *» no encontraba el campo que
+        // literalmente se llama así, y el paso fallaba como si no existiera.
+        function nameOf(el) {
+          const direct = el.innerText || el.getAttribute('aria-label');
+          if (direct && direct.trim()) return direct;
+          const tag = el.tagName.toLowerCase();
+          if (tag !== 'input' && tag !== 'select' && tag !== 'textarea') {
+            return el.value || '';
+          }
+          if (el.id) {
+            const tied = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+            if (tied && tied.innerText.trim()) return tied.innerText;
+          }
+          const wrapping = el.closest('label');
+          if (wrapping && wrapping.innerText.trim()) return wrapping.innerText;
+          return el.placeholder || el.name || el.value || '';
+        }
+
         let best = null;
         for (const el of pool) {
-          const label = el.innerText || el.value || el.getAttribute('aria-label') || '';
+          const label = nameOf(el) || '';
           const box = el.getBoundingClientRect();
           if (box.width === 0 || box.height === 0) continue;
           const s = score(label);
           if (s < MIN) continue;
-          if (!best || s > best.score) best = { el, score: s, text: (label || '').trim() };
+          const disabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+          // Se ordena por un rango, no por la puntuación: a igualdad de texto
+          // gana el que está dentro del diálogo, y pierde el deshabilitado.
+          // Este último se devuelve igualmente para poder decir por qué no se
+          // pudo hacer clic, en vez de dar el paso por bueno.
+          const rank = s + (dialog && dialog.contains(el) ? 0.5 : 0) - (disabled ? 0.25 : 0);
+          if (!best || rank > best.rank) {
+            best = { el, rank: rank, score: s, disabled: disabled, text: (label || '').trim() };
+          }
         }
         if (!best) return null;
 
@@ -342,7 +420,7 @@ class Browser:
           selector = '[data-mh-found="1"]';
         }
         return { selector: selector, text: best.text, score: best.score,
-                 exact: best.score >= 0.999 };
+                 disabled: best.disabled, exact: best.score >= 0.999 };
         """ % (json.dumps(text), json.dumps(role), MIN_MATCH_SCORE)
         return self.eval(script)
 
@@ -373,19 +451,47 @@ class Browser:
     # -- acting ----------------------------------------------------------
 
     def click(self, selector: str) -> None:
-        clicked = self.eval(
+        """Click, refusing to pretend a disabled control did anything.
+
+        `el.click()` on a disabled button returns quietly and changes nothing,
+        so without this check the step passes, the next one fails somewhere
+        unrelated, and the report blames the wrong thing. Sigo disables the
+        save button until the required fields are filled, which is exactly the
+        case a test is most likely to hit.
+        """
+        outcome = self.eval(
             f"const el = document.querySelector({json.dumps(selector)});"
-            " if (!el) return false; el.click(); return true;"
+            " if (!el) return 'missing';"
+            " if (el.disabled === true || el.getAttribute('aria-disabled') === 'true')"
+            "   return 'disabled';"
+            " el.click(); return 'ok';"
         )
-        if not clicked:
+        if outcome == "missing":
             raise BrowserError(f"nothing to click at {selector!r}")
+        if outcome == "disabled":
+            raise BrowserError(f"el elemento en {selector!r} está deshabilitado")
 
     def type_into(self, selector: str, text: str) -> None:
+        """Type as a person would, so a React form actually registers it.
+
+        Assigning `el.value` directly does not work on a controlled input:
+        React keeps its own value tracker, sees no change, and swallows the
+        `input` event. The field then *looks* filled while the component's
+        state stays empty — which showed up as Sigo's save button refusing to
+        enable, and was very nearly filed as a defect in Sigo.
+
+        Going through the prototype's native setter is what a real keystroke
+        does, and updates the tracker along with it.
+        """
         typed = self.eval(
             f"const el = document.querySelector({json.dumps(selector)});"
             " if (!el) return false;"
             " el.focus();"
-            f" el.value = {json.dumps(text)};"
+            " const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype"
+            "   : (el instanceof HTMLSelectElement ? HTMLSelectElement.prototype"
+            "   : HTMLInputElement.prototype);"
+            " const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;"
+            f" setter.call(el, {json.dumps(text)});"
             " el.dispatchEvent(new Event('input', {bubbles: true}));"
             " el.dispatchEvent(new Event('change', {bubbles: true}));"
             " return true;"

@@ -99,13 +99,13 @@ GOOD_ANSWER = json.dumps({
 
 
 def test_steps_are_read_from_the_answer():
-    steps, ui_text = parse_steps(GOOD_ANSWER, "/erp/talent/people")
+    steps, ui_text, _ = parse_steps(GOOD_ANSWER, "/erp/talent/people")
     assert [s.action for s in steps] == ["goto", "type_label", "click_text"]
     assert ui_text == "Persona registrada"
 
 
 def test_an_answer_wrapped_in_fences_is_still_read():
-    steps, _ = parse_steps(f"```json\n{GOOD_ANSWER}\n```", "/erp/talent/people")
+    steps, _, _ = parse_steps(f"```json\n{GOOD_ANSWER}\n```", "/erp/talent/people")
     assert steps
 
 
@@ -119,7 +119,7 @@ def test_an_unknown_action_is_refused_not_dropped():
 
 def test_a_plan_that_starts_elsewhere_is_corrected():
     answer = json.dumps({"steps": [{"action": "click_text", "target": "Guardar"}], "ui_text": "ok"})
-    steps, _ = parse_steps(answer, "/erp/talent/people")
+    steps, _, _ = parse_steps(answer, "/erp/talent/people")
     assert steps[0].action == "goto"
     assert steps[0].target == "/erp/talent/people"
 
@@ -197,3 +197,20 @@ def test_the_plan_round_trips_to_disk(monkeypatch, tmp_path):
     plan = author_plan("SIG-109", "Alta", HOUSE)
     path = plan.save(tmp_path / "plan.json")
     assert TestPlan.load(path).to_dict() == plan.to_dict()
+
+
+def test_a_read_only_criterion_is_declared_not_inferred():
+    """Un criterio visual apaga media comprobación, así que ha de pedirse."""
+    answer = json.dumps(
+        {
+            "steps": [{"action": "goto", "target": "/erp/talent/people"}],
+            "ui_text": "Nombres",
+            "solo_lectura": True,
+        }
+    )
+    _, _, reads_only = parse_steps(answer, "/erp/talent/people")
+    assert reads_only is True
+
+    # Sin declararlo, se sigue exigiendo el endpoint: el silencio no es permiso.
+    _, _, reads_only = parse_steps(GOOD_ANSWER, "/erp/talent/people")
+    assert reads_only is False

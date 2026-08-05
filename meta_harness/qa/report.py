@@ -27,7 +27,8 @@ def _case_block(case: CaseResult, evidence_dir: Path) -> List[str]:
 
     lines += [
         f"- **UI:** {TICK if case.ui_ok else CROSS} {case.ui_detail}",
-        f"- **API:** {TICK if case.api_ok else CROSS} {case.api_detail}",
+        f"- **API:** {(TICK if case.api_ok else CROSS) if case.api_checked else '—'} "
+        f"{case.api_detail}",
     ]
     if not case.passed:
         lines.append(f"- **Motivo:** {case.why()}")
