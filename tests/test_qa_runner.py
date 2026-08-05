@@ -278,3 +278,153 @@ def test_the_environment_reports_whether_there_is_a_session(monkeypatch):
     assert resolve_environment("local", ui_url="http://x").describe()["authenticated"] == "sí"
     monkeypatch.delenv("SIGO_LOCAL_TOKEN")
     assert resolve_environment("local", ui_url="http://x").describe()["authenticated"] == "no"
+
+
+# --- render progresivo --------------------------------------------------------
+
+PROGRESSIVE = """<!doctype html><html><body>
+<h1>SIGO</h1>
+<div id="app"></div>
+<script>
+// Renderiza en dos tiempos, como una SPA: cabecera primero, contenido después.
+setTimeout(() => {
+  document.getElementById('app').innerHTML =
+    '<h2>Inicia sesión</h2><p>Continuar con Google</p>';
+}, 600);
+</script>
+</body></html>"""
+
+
+class _SlowHandler(_Handler):
+    def do_GET(self):
+        body = PROGRESSIVE
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body.encode())))
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+
+class SlowApp(FakeApp):
+    def __init__(self):
+        super().__init__(GOOD)
+        self.httpd.RequestHandlerClass = _SlowHandler
+
+
+def test_goto_waits_for_the_late_content(tmp_path):
+    """readyState 'complete' llega antes de que la SPA monte. Leer ahí devolvía
+    una página casi vacía, y el login pasaba desapercibido."""
+    from meta_harness.qa.auth import looks_like_login
+    from meta_harness.qa.browser import Browser
+
+    with SlowApp() as app:
+        with Browser() as browser:
+            browser.goto(app.url)
+            text = browser.text_of()
+
+    assert "Inicia sesión" in text, f"solo se leyó: {text!r}"
+    assert looks_like_login(text)
+
+
+# --- emparejamiento tolerante -------------------------------------------------
+
+WORDING = """<!doctype html><html><body>
+<h1>Personas</h1>
+<button id="add">Agregar persona</button>
+<button id="imp">Importar empleados</button>
+<input id="nombre" aria-label="Nombres del candidato">
+<div id="salida"></div>
+<script>
+document.getElementById('add').addEventListener('click', async () => {
+  const r = await fetch('/api/v1/talent/people', {method:'POST'});
+  if (r.ok) document.getElementById('salida').textContent = 'Persona registrada';
+});
+</script>
+</body></html>"""
+
+
+class _WordingHandler(_Handler):
+    """Sirve la página tal cual: FakeApp la insertaría dentro de un <script>."""
+
+    def do_GET(self):
+        body = WORDING
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body.encode())))
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+
+class WordingApp(FakeApp):
+    def __init__(self):
+        super().__init__(GOOD)
+        self.httpd.RequestHandlerClass = _WordingHandler
+
+
+def _match(query, role=""):
+    from meta_harness.qa.browser import Browser
+
+    with WordingApp() as app:
+        with Browser() as b:
+            b.goto(app.url)
+            return b.find_best_match(query, role=role)
+
+
+def test_extra_words_in_the_ticket_still_find_the_button():
+    """El ticket dice «Agregar nueva persona»; el botón dice «Agregar persona»."""
+    m = _match("Agregar nueva persona")
+    assert m and m["text"] == "Agregar persona"
+    assert not m["exact"], "debe declararse como aproximada"
+
+
+def test_case_and_accents_do_not_matter():
+    m = _match("AGREGAR PERSÓNA")
+    assert m and m["text"] == "Agregar persona"
+
+
+def test_a_genuinely_absent_target_still_fails():
+    """Lo importante: tolerante no es permisivo."""
+    assert _match("Exportar a contabilidad") is None
+
+
+def test_it_does_not_settle_for_an_unrelated_button():
+    m = _match("Agregar nueva persona")
+    assert m["text"] != "Importar empleados"
+
+
+def test_the_best_candidate_wins_not_the_first():
+    m = _match("Importar")
+    assert m and m["text"] == "Importar empleados"
+
+
+def test_a_field_is_found_by_its_label():
+    m = _match("Nombres", role="input")
+    assert m and "Nombres" in m["text"]
+
+
+def test_a_loose_match_is_recorded_in_the_step(tmp_path):
+    """Una coincidencia aproximada que no se declara es indistinguible de una
+    exacta, y entonces nadie puede juzgar si fue razonable."""
+    plan = _plan()
+    plan.cases[0].steps = [
+        TestStep("goto", "/"),
+        TestStep("click_text", "Agregar nueva persona"),
+        TestStep("wait_text", "Persona registrada"),
+    ]
+    with WordingApp() as app:
+        env = resolve_environment("local", ui_url=app.url)
+        run = run_plan(plan, env, evidence_root=tmp_path)
+
+    click = [s for s in run.cases[0].steps if s.action == "click_text"][0]
+    assert click.ok
+    assert click.matched_text == "Agregar persona"
+
+
+def test_an_exact_match_is_not_annotated(tmp_path):
+    plan = _plan()
+    plan.cases[0].steps = [TestStep("goto", "/"), TestStep("click_text", "Agregar persona")]
+    with WordingApp() as app:
+        env = resolve_environment("local", ui_url=app.url)
+        run = run_plan(plan, env, evidence_root=tmp_path)
+    click = [s for s in run.cases[0].steps if s.action == "click_text"][0]
+    assert click.matched_text == ""

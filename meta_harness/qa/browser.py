@@ -43,6 +43,16 @@ DEFAULT_TIMEOUT_S = 25.0
 # page fails the step rather than the whole run.
 DEFAULT_WAIT_S = 12.0
 POLL_INTERVAL_S = 0.15
+# How many consecutive polls the text must stay the same length before the
+# page counts as settled. Two is enough to skip a progressive render and
+# cheap enough not to add a visible pause.
+RENDER_STABLE_POLLS = 2
+# Minimum quiet time after the first content before the page counts as
+# ready. Matches the screenshot tool, whose captures are already complete.
+RENDER_SETTLE_GRACE_S = 0.8
+# Below this a candidate is not the thing asked for. Tuned so «Agregar nueva
+# persona» reaches «Agregar persona» (0.90) but never «Importar empleados» (0).
+MIN_MATCH_SCORE = 0.6
 
 
 class BrowserError(RuntimeError):
@@ -187,10 +197,52 @@ class Browser:
 
     def goto(self, url: str) -> None:
         self._call("Page.navigate", {"url": url})
-        # Waiting for the document to be interactive rather than sleeping: an
-        # app that boots asynchronously is the normal case, and a fixed sleep
-        # is the usual source of a test that fails one time in ten.
+        # `readyState === 'complete'` means the document finished loading, not
+        # that the app finished rendering. A React app mounts after that, so
+        # reading the page here returns an empty body — which is how a login
+        # screen slips through a check that looks for its text.
         self.wait_for("document.readyState === 'complete'", message=f"{url} never finished loading")
+        self._wait_for_render()
+
+    def _wait_for_render(self, *, timeout_s: float = DEFAULT_WAIT_S) -> None:
+        """Wait until the page has stopped filling itself in.
+
+        A first signal is not enough: the shell renders its header before the
+        form, so returning on «there is some text» reads a page that is still
+        arriving. This waits for the visible text to stop growing across
+        consecutive polls.
+
+        Returns quietly on timeout — a genuinely blank page is a valid state,
+        and the caller's own assertions should be what fails, not this.
+        """
+        deadline = time.monotonic() + timeout_s
+        previous, stable, first_content_at = -1, 0, None
+        while time.monotonic() < deadline:
+            try:
+                length = self.eval(
+                    "return ((document.body && document.body.innerText) || '').trim().length;"
+                )
+            except BrowserError:
+                return
+            if length and first_content_at is None:
+                first_content_at = time.monotonic()
+
+            if length and length == previous:
+                stable += 1
+                # Stability alone is not enough: a shell that renders its
+                # header and then pauses looks settled for as long as the pause
+                # lasts. Nothing is accepted until the grace period has run
+                # from the first content, so late-arriving markup is not missed.
+                settled_long_enough = (
+                    first_content_at is not None
+                    and time.monotonic() - first_content_at >= RENDER_SETTLE_GRACE_S
+                )
+                if stable >= RENDER_STABLE_POLLS and settled_long_enough:
+                    return
+            else:
+                stable = 0
+            previous = length
+            time.sleep(POLL_INTERVAL_S)
 
     def eval(self, expression: str) -> Any:
         """Evaluate JS in the page and return the result."""
@@ -219,31 +271,85 @@ class Browser:
 
     # -- locating things the way a person would --------------------------
 
-    def find_by_text(self, text: str, *, role: str = "") -> Optional[str]:
-        """A CSS selector for the visible element whose text matches, or None.
+    def find_best_match(self, text: str, *, role: str = "") -> Optional[Dict[str, Any]]:
+        """The element that best matches `text`, or None if none is close enough.
 
-        Prefers buttons, links and inputs — the things a person clicks — and
-        falls back to any element. Returned as a selector so the caller can
-        act on it with the ordinary methods.
+        Written against how tickets are actually worded. A ticket says «Agregar
+        nueva persona»; the button reads «Agregar persona». Demanding the label
+        contain the phrase verbatim fails that, and the failure looks like a
+        missing button rather than a wording difference — which sends whoever
+        reads the report hunting for a bug that is not there.
+
+        So the match is scored, not literal: accents and case are folded, and
+        the words of one have to be contained in the other. A genuinely wrong
+        target still scores near zero and still fails, which is the point —
+        «Agregar nueva persona» must not quietly match «Importar empleados».
+
+        Returns the selector, the text actually found, the score, and whether
+        it was exact, so a loose match can be reported rather than hidden.
         """
-        script = """
-        const wanted = %s.trim().toLowerCase();
+        script = r"""
+        const wanted = %s;
         const role = %s;
-        const tags = role ? [role] : ['button','a','input','select','textarea','label','[role=button]'];
-        const pools = tags.map(t => [...document.querySelectorAll(t)]).flat();
-        const all = pools.length ? pools : [...document.querySelectorAll('*')];
-        for (const el of all) {
-          const label = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
-          if (!label || !label.includes(wanted)) continue;
+        const MIN = %s;
+
+        const fold = (s) => (s || '')
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        // Palabras de una o dos letras son artículos y preposiciones: dejarlas
+        // haría que casi cualquier par de etiquetas se pareciera.
+        const words = (s) => fold(s).split(' ').filter((w) => w.length > 2);
+
+        const wantedFolded = fold(wanted);
+        const wantedWords = words(wanted);
+
+        function score(label) {
+          const f = fold(label);
+          if (!f) return 0;
+          if (f === wantedFolded) return 1;
+          if (f.includes(wantedFolded) || wantedFolded.includes(f)) return 0.9;
+          const lw = words(label);
+          if (!lw.length || !wantedWords.length) return 0;
+          const shared = lw.filter((w) => wantedWords.includes(w)).length;
+          if (!shared) return 0;
+          const containment = shared / Math.min(lw.length, wantedWords.length);
+          const coverage = shared / Math.max(lw.length, wantedWords.length);
+          return 0.7 * containment + 0.3 * coverage;
+        }
+
+        const tags = role ? [role]
+          : ['button', 'a', 'input', 'select', 'textarea', 'label', '[role=button]'];
+        let pool = tags.map((t) => [...document.querySelectorAll(t)]).flat();
+        if (!pool.length) pool = [...document.querySelectorAll('*')];
+
+        let best = null;
+        for (const el of pool) {
+          const label = el.innerText || el.value || el.getAttribute('aria-label') || '';
           const box = el.getBoundingClientRect();
           if (box.width === 0 || box.height === 0) continue;
-          if (el.id) return '#' + CSS.escape(el.id);
-          el.setAttribute('data-mh-found', '1');
-          return '[data-mh-found="1"]';
+          const s = score(label);
+          if (s < MIN) continue;
+          if (!best || s > best.score) best = { el, score: s, text: (label || '').trim() };
         }
-        return null;
-        """ % (json.dumps(text), json.dumps(role))
+        if (!best) return null;
+
+        let selector;
+        if (best.el.id) {
+          selector = '#' + CSS.escape(best.el.id);
+        } else {
+          document.querySelectorAll('[data-mh-found]').forEach((e) => e.removeAttribute('data-mh-found'));
+          best.el.setAttribute('data-mh-found', '1');
+          selector = '[data-mh-found="1"]';
+        }
+        return { selector: selector, text: best.text, score: best.score,
+                 exact: best.score >= 0.999 };
+        """ % (json.dumps(text), json.dumps(role), MIN_MATCH_SCORE)
         return self.eval(script)
+
+    def find_by_text(self, text: str, *, role: str = "") -> Optional[str]:
+        """A CSS selector for the best match, or None."""
+        found = self.find_best_match(text, role=role)
+        return found["selector"] if found else None
 
     def visible(self, selector: str) -> bool:
         return bool(
@@ -286,6 +392,20 @@ class Browser:
         )
         if not typed:
             raise BrowserError(f"no field to type into at {selector!r}")
+
+    def set_cookie(self, name: str, value: str, url: str) -> None:
+        """Install a cookie for `url`.
+
+        The admin app authenticates with a cookie, not a bearer token in
+        storage, so this is what actually makes a session. Uses CDP rather
+        than document.cookie because the real cookie is httpOnly and
+        JavaScript cannot write it.
+        """
+        result = self._call(
+            "Network.setCookie", {"name": name, "value": value, "url": url}
+        )
+        if not (result.get("result") or {}).get("success", True):
+            raise BrowserError(f"el navegador rechazó la cookie {name!r}")
 
     def screenshot(self, path: Path) -> Path:
         payload = self._call("Page.captureScreenshot", {"format": "png"})

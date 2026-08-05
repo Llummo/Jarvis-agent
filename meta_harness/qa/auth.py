@@ -24,6 +24,11 @@ from typing import Optional
 # indistinguishable, to the app, from having logged in.
 TOKEN_STORAGE_KEY = "token"
 
+# The admin app authenticates with this cookie — see pkg/iam/auth/middleware.go,
+# which falls back to c.Cookies("access_token") when there is no bearer header.
+# It is httpOnly, so it has to be installed through CDP, not from JavaScript.
+SESSION_COOKIE = "access_token"
+
 # Per-environment token, so a local session is never sent to the deployed site.
 TOKEN_ENV_VARS = {"local": "SIGO_LOCAL_TOKEN", "qa": "SIGO_QA_TOKEN"}
 
@@ -88,8 +93,11 @@ def authenticate(browser, base_url: str, token: Optional[str]) -> bool:
     if not token:
         return False
     browser.goto(base_url)
-    if not browser.eval(inject_script(token)):
-        raise AuthError("el navegador no permitió escribir la sesión en localStorage")
+    # The cookie is what the admin app actually reads.
+    browser.set_cookie(SESSION_COOKIE, token, base_url)
+    # The portals read a bearer token from storage instead; setting both costs
+    # nothing and covers either surface.
+    browser.eval(inject_script(token))
     return True
 
 

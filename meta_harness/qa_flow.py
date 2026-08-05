@@ -236,16 +236,16 @@ def _capture_with_session(base_url: str, url: str) -> Tuple[Optional[str], bool]
     a screenshot of a sign-in form as if it were the feature under test, which
     is the failure this function was written to stop.
     """
-    from meta_harness.qa.auth import inject_script, looks_like_login, token_for
+    from meta_harness.qa.auth import authenticate, looks_like_login, token_for
     from meta_harness.qa.browser import Browser, BrowserError
 
     token = token_for("local") or token_for("qa")
     try:
         with Browser() as browser:
-            if token:
-                # El origen primero: localStorage es por origen.
-                browser.goto(base_url)
-                browser.eval(inject_script(token))
+            # Vía authenticate, no en línea: la sesión es una cookie httpOnly
+            # y duplicar el procedimiento aquí ya dejó este camino sin sesión
+            # cuando el otro sí la instalaba.
+            authenticate(browser, base_url, token)
             browser.goto(url)
             saw_login = looks_like_login(browser.text_of())
             path = default_screenshot_path()
