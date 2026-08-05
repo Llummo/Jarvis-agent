@@ -8,6 +8,19 @@ from meta_harness.qa import authoring as authoring_module
 from meta_harness.qa.authoring import AuthoringError, author_plan, parse_steps
 from meta_harness.qa.ticket_shape import parse_ticket
 
+
+@pytest.fixture(autouse=True)
+def no_browser(monkeypatch):
+    """Ningún test de aquí abre un navegador.
+
+    Sin esto `author_plan` recorre el flujo de verdad: arranca Chromium, entra
+    en Sigo y escribe en el archivo de mediciones. Los tests pasaban solo con la
+    app levantada en local, tardaban minuto y medio, y ensuciaban la frontera
+    con corridas que no eran de nadie. Lo que se prueba aquí es la redacción del
+    plan, y para eso el mapa sobra.
+    """
+    monkeypatch.setattr(authoring_module, "_map_flow", lambda *a, **k: None)
+
 HOUSE = """📄 USER STORY: GESTIÓN DE POOL DE TALENTO
 
 Título: Formulario de alta de persona
@@ -181,12 +194,14 @@ def test_one_unwritable_criterion_does_not_cost_the_others(monkeypatch):
     monkeypatch.setattr(authoring_module, "_run_claude", flaky)
     plan = author_plan("SIG-109", "Alta", HOUSE)
     assert len(plan.cases) == 1
-    assert plan.notes and "No se pudo escribir" in plan.notes[0]
+    # Las notas llevan además la correspondencia y la medición, así que el
+    # fallo se busca entre todas y no en la primera.
+    assert any("No se pudo escribir" in note for note in plan.notes)
 
 
 def test_a_plan_nobody_could_write_raises(monkeypatch):
     monkeypatch.setattr(authoring_module, "_run_claude", lambda *a, **k: "no puedo")
-    with pytest.raises(AuthoringError, match="ningún caso"):
+    with pytest.raises(AuthoringError, match="ningún plan"):
         author_plan("SIG-109", "Alta", HOUSE)
 
 
