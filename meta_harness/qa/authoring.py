@@ -26,6 +26,8 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from meta_harness.claude_output import assert_usable
@@ -39,8 +41,10 @@ from meta_harness.qa.plan import (
     TestStep,
 )
 from meta_harness.qa import reconcile as reconciliation
+from meta_harness.qa import plan_bench
+from meta_harness.qa.flow import FlowMap, describe as describe_flow, explore
 from meta_harness.qa.ticket_shape import Criterion, TicketShape, parse_ticket
-from meta_harness.qa.vocabulary import Vocabulary, describe, harvest
+from meta_harness.qa.vocabulary import Vocabulary, describe
 from meta_harness.ticket_generator import CLAUDE_TIMEOUT_ENV_VAR, _find_claude
 
 OnStep = Optional[Callable[[str], None]]
@@ -79,6 +83,44 @@ PROMPT = (
     "- Los target salen de la pantalla, no de tu memoria: si se te da la lista "
     "de palabras que aparecen en ella, cópialas tal cual."
 )
+
+
+@dataclass(frozen=True)
+class Strategy:
+    """One way of approaching a plan, so candidates differ on purpose.
+
+    Sampling the same prompt three times gives three near-identical plans and
+    measures the model's noise. Asking for genuinely different approaches gives
+    the benchmark something to choose between: the short path and the careful
+    one fail in different places, and which of those matters depends on the app,
+    not on a preference decided in advance.
+    """
+
+    name: str
+    hint: str
+
+
+STRATEGIES = (
+    Strategy(
+        "directo",
+        "el camino más corto que demuestre el criterio. Solo los pasos "
+        "imprescindibles, sin esperas de adorno.",
+    ),
+    Strategy(
+        "explicito",
+        "espera a ver cada pantalla antes de actuar sobre ella, y rellena todos "
+        "los campos obligatorios aunque el criterio no los nombre.",
+    ),
+    Strategy(
+        "verificador",
+        "después de cada acción que cambie de pantalla, comprueba con wait_text "
+        "que la nueva se ve, para que un fallo señale el paso exacto.",
+    ),
+)
+
+# Cuántos planes se escriben por defecto. Cada uno cuesta una llamada al modelo
+# por criterio, así que subirlo mejora la elección y alarga la espera.
+DEFAULT_CANDIDATES = 2
 
 
 class AuthoringError(RuntimeError):
@@ -174,8 +216,9 @@ def _case_for(
     shape: TicketShape,
     index: int,
     timeout_s: float,
-    vocabulary: Optional[Vocabulary] = None,
+    flow: Optional[FlowMap] = None,
     matches: Optional[List[reconciliation.Match]] = None,
+    strategy: str = "",
 ) -> TestCase:
     payload = json.dumps(
         {
@@ -191,7 +234,12 @@ def _case_for(
         indent=2,
     )
 
-    prompt = PROMPT + describe(vocabulary) + reconciliation.describe(matches or [])
+    prompt = (
+        PROMPT
+        + describe_flow(flow)
+        + reconciliation.describe(matches or [])
+        + (f"\n\nEnfoque para este plan: {strategy}" if strategy else "")
+    )
 
     last_error = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -222,8 +270,13 @@ def _case_for(
     raise AuthoringError(f"{criterion.name}: {last_error}")
 
 
-def _read_screen(environment: str, route: str, on_step: OnStep) -> Optional[Vocabulary]:
-    """Open the screen once and note the words it uses, or give up quietly.
+def _archive_root() -> Path:
+    """Where scored candidates are filed, alongside every other Hermes run."""
+    return Path(os.getenv("MH_QA_PLAN_ARCHIVE", "qa/plan-benchmarks"))
+
+
+def _map_flow(environment: str, route: str, on_step: OnStep) -> Optional[FlowMap]:
+    """Walk the flow once and record every view, or give up quietly.
 
     Shared by every criterion of the ticket: one browser, one page load. The
     cost is a few seconds per plan, against a plan written entirely against
@@ -248,22 +301,21 @@ def _read_screen(environment: str, route: str, on_step: OnStep) -> Optional[Voca
 
     url = target.ui_url.rstrip("/") + "/" + route.lstrip("/")
     if on_step:
-        on_step(f"leyendo la pantalla {url}…")
+        on_step(f"recorriendo el flujo desde {url}…")
     try:
         with Browser() as browser:
             authenticate(browser, target.ui_url, token_for(environment))
-            vocabulary = harvest(browser, url)
+            flow = explore(browser, url)
     except Exception as exc:  # noqa: BLE001 - authoring survives a dead target
         if on_step:
-            on_step(f"no se pudo leer la pantalla: {exc}")
+            on_step(f"no se pudo recorrer el flujo: {exc}")
         return None
 
     if on_step:
-        on_step(
-            f"pantalla leída: {len(vocabulary.actions)} acción(es), "
-            f"{len(vocabulary.fields)} campo(s)"
-        )
-    return None if vocabulary.empty else vocabulary
+        for view in sorted(flow.views, key=lambda v: v.depth):
+            on_step(f"  vista «{view.name}» — {view.how_to_reach()}")
+        on_step(f"flujo recorrido: {len(flow.views)} vista(s); {flow.stopped_because}")
+    return None if flow.empty else flow
 
 
 def _slug(value: str) -> str:
@@ -279,6 +331,7 @@ def author_plan(
     environment: str = "local",
     timeout_s: Optional[float] = None,
     on_step: OnStep = None,
+    candidate_count: int = DEFAULT_CANDIDATES,
 ) -> TestPlan:
     """Write a reviewable plan for one ticket.
 
@@ -294,14 +347,15 @@ def author_plan(
     if on_step:
         on_step(f"{ticket_id}: {len(shape.criteria)} criterio(s) sobre {shape.route}")
 
-    vocabulary = _read_screen(environment, shape.route, on_step)
+    flow = _map_flow(environment, shape.route, on_step)
 
     # Qué afirma el ticket frente a qué hay. Se hace una vez por ticket, entre
-    # leer la pantalla y escribir el primer paso, porque el resultado cambia lo
+    # recorrer el flujo y escribir el primer paso, porque el resultado cambia lo
     # que se le puede pedir al modelo — y porque lo que no existe hay que
     # decirlo, no rodearlo.
     matches: List[reconciliation.Match] = []
-    if vocabulary is not None:
+    if flow is not None:
+        vocabulary = flow.merged()
         terms = reconciliation.mentioned_elements(shape, resolved_timeout)
         matches = reconciliation.reconcile(terms, vocabulary)
         matches = reconciliation.relate_remaining(matches, vocabulary, resolved_timeout)
@@ -309,9 +363,47 @@ def author_plan(
             absent = sum(1 for match in matches if match.missing)
             on_step(
                 f"{len(matches)} elemento(s) del ticket contrastados; "
-                f"{absent} sin equivalente en pantalla"
+                f"{absent} sin equivalente en el flujo"
             )
 
+    common_notes = (
+        [f"Criterio omitido (plantilla sin rellenar): {name}" for name in shape.skipped]
+        + reconciliation.summarize(matches)
+    )
+
+    candidates: List[TestPlan] = []
+    for number, strategy in enumerate(STRATEGIES[:max(1, candidate_count)], start=1):
+        if on_step:
+            on_step(f"escribiendo el plan {number}/{min(len(STRATEGIES), candidate_count)}…")
+        try:
+            candidates.append(
+                _write_one_plan(
+                    shape, title, environment, resolved_timeout,
+                    flow, matches, strategy, common_notes, on_step,
+                )
+            )
+        except AuthoringError as exc:
+            if on_step:
+                on_step(f"  plan {number} descartado: {exc}")
+
+    if not candidates:
+        raise AuthoringError(f"{ticket_id}: no se pudo escribir ningún plan")
+
+    return _pick(candidates, flow, on_step)
+
+
+def _write_one_plan(
+    shape: TicketShape,
+    title: str,
+    environment: str,
+    timeout_s: float,
+    flow: Optional[FlowMap],
+    matches: List[reconciliation.Match],
+    strategy: "Strategy",
+    common_notes: List[str],
+    on_step: OnStep,
+) -> TestPlan:
+    """One whole candidate: every criterion written under one approach."""
     cases: List[TestCase] = []
     errors: List[str] = []
     for index, criterion in enumerate(shape.criteria, start=1):
@@ -319,32 +411,70 @@ def author_plan(
             on_step(f"  [{index}/{len(shape.criteria)}] {criterion.name}…")
         try:
             cases.append(
-                _case_for(criterion, shape, index, resolved_timeout, vocabulary, matches)
+                _case_for(criterion, shape, index, timeout_s, flow, matches, strategy.hint)
             )
         except AuthoringError as exc:
             # One unwritable criterion should not cost the others.
             errors.append(str(exc))
 
     if not cases:
-        raise AuthoringError(
-            f"{ticket_id}: no se pudo escribir ningún caso. " + "; ".join(errors)[:300]
-        )
+        raise AuthoringError("; ".join(errors)[:300] or "sin casos")
 
     plan = TestPlan(
-        ticket_id=ticket_id,
+        ticket_id=shape.ticket_id,
         ticket_title=title,
         environment=environment,
         route=shape.route,
         cases=cases,
-        derived_from=f"criterios de aceptación de {ticket_id}",
-        notes=(
-            [f"No se pudo escribir: {error}" for error in errors]
-            + [f"Criterio omitido (plantilla sin rellenar): {name}" for name in shape.skipped]
-            + reconciliation.summarize(matches)
-        ),
+        derived_from=f"criterios de aceptación de {shape.ticket_id} ({strategy.name})",
+        notes=common_notes + [f"No se pudo escribir: {error}" for error in errors],
         correspondence=[match.to_dict() for match in matches],
     )
     plan.validate()
-    if on_step:
-        on_step(f"{ticket_id}: plan con {len(cases)} caso(s) listo para revisar")
     return plan
+
+
+def _pick(
+    candidates: List[TestPlan], flow: Optional[FlowMap], on_step: OnStep
+) -> TestPlan:
+    """Score the candidates against the real flow and return the best.
+
+    Without a flow map there is nothing to score against, so the first plan is
+    returned unmeasured — and says so, rather than implying it won a contest it
+    never entered.
+    """
+    if flow is None or flow.empty:
+        chosen = candidates[0]
+        chosen.notes.append(
+            "Sin mapa del flujo: el plan no se pudo medir contra la app y se "
+            "eligió el primero escrito."
+        )
+        return chosen
+
+    archive = _archive_root()
+    scores = []
+    for candidate in candidates:
+        name = candidate.derived_from.split("(")[-1].rstrip(")") or "candidato"
+        result = plan_bench.score_plan(candidate, flow, candidate_name=name)
+        try:
+            plan_bench.write_run_dir(result, archive, flow)
+            plan_bench.record_in_frontier(result, archive / "frontier.json")
+        except Exception as exc:  # noqa: BLE001 - no poder archivar no invalida la medida
+            if on_step:
+                on_step(f"  no se pudo archivar {name}: {exc}")
+        scores.append(result)
+        if on_step:
+            on_step(f"  {result.summary_line()}")
+
+    best = plan_bench.choose_best(scores)
+    chosen = best.plan
+    chosen.notes.append(
+        f"Elegido entre {len(scores)} plan(es) medidos contra la app: "
+        f"{best.summary_line()}."
+    )
+    for other in scores:
+        if other is not best:
+            chosen.notes.append(f"Descartado — {other.summary_line()}.")
+    if on_step:
+        on_step(f"{chosen.ticket_id}: plan con {len(chosen.cases)} caso(s) listo para revisar")
+    return chosen
