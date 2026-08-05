@@ -3066,7 +3066,7 @@ function initQaBrowserTests() {
   const ticket = document.getElementById("linear-qa-ticket");
   if (!ticket || !el("plan-btn")) return;
 
-  const state = { plan: null };
+  const state = { plan: null, report: null };
 
   const banner = (name, message, klass) => {
     const node = el(name);
@@ -3180,7 +3180,16 @@ function initQaBrowserTests() {
           progress_token: token,
         }),
       });
+      state.report = report;
       el("report-body").textContent = report.report_markdown || "";
+      // Dónde quedaron las capturas: el .md las enlaza por nombre de fichero,
+      // así que fuera de su carpeta el informe se lee pero no se ve.
+      const evidence = el("evidence");
+      if (evidence) {
+        evidence.textContent = report.report_path
+          ? `Informe y capturas en ${report.report_path.replace(/\/[^/]+$/, "")}`
+          : "";
+      }
       el("report").hidden = false;
       const klass = report.failed_count ? "error-banner" : "success-banner";
       banner(report.failed_count ? "error" : "success", report.summary, klass);
@@ -3193,9 +3202,51 @@ function initQaBrowserTests() {
     }
   }
 
+  function reportFilename() {
+    const id = (state.report && state.report.ticket_id) || "informe";
+    // La marca de tiempo va en el nombre porque lo normal es correr las mismas
+    // pruebas varias veces seguidas y comparar.
+    const when = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+    return `QA-${id}-${when}.md`;
+  }
+
+  function downloadReport() {
+    if (!state.report) return;
+    const blob = new Blob([state.report.report_markdown || ""], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = reportFilename();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function copyReport() {
+    if (!state.report) return;
+    const button = el("copy");
+    try {
+      await navigator.clipboard.writeText(state.report.report_markdown || "");
+      if (button) {
+        const previous = button.textContent;
+        button.textContent = "Copiado";
+        setTimeout(() => { button.textContent = previous; }, 1500);
+      }
+    } catch (err) {
+      banner("error", `No se pudo copiar: ${err.message}`, "error-banner");
+    }
+  }
+
+  if (el("download")) el("download").addEventListener("click", downloadReport);
+  if (el("copy")) el("copy").addEventListener("click", copyReport);
+
   ticket.addEventListener("input", () => {
     // A different issue invalidates the plan written for the previous one.
     state.plan = null;
+    state.report = null;
     el("plan").hidden = true;
     el("report").hidden = true;
     syncButtons();
