@@ -61,6 +61,10 @@ class StepOutcome:
     ok: bool
     error: str = ""
     screenshot: str = ""
+    # Qué se encontró cuando no coincide literalmente con lo pedido. Una
+    # coincidencia aproximada que no se declara es indistinguible de una exacta,
+    # y entonces nadie puede juzgar si fue razonable.
+    matched_text: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -69,6 +73,7 @@ class StepOutcome:
             "ok": self.ok,
             "error": self.error,
             "screenshot": self.screenshot,
+            "matched_text": self.matched_text,
         }
 
 
@@ -201,24 +206,29 @@ def _check_ui(browser: Browser, expectation: Expectation) -> tuple:
     return True, f"se ve {shown!r}"
 
 
-def _perform(browser: Browser, step: TestStep, environment: Environment) -> None:
-    """Carry out one step, raising BrowserError if it cannot be done."""
+def _perform(browser: Browser, step: TestStep, environment: Environment) -> str:
+    """Carry out one step; returns the text actually matched, when it differs.
+
+    Raises BrowserError if the step cannot be done.
+    """
     if step.action == ACTION_GOTO:
         browser.goto(environment.url_for(step.target))
     elif step.action == ACTION_CLICK:
         browser.click(step.target)
     elif step.action == ACTION_CLICK_TEXT:
-        selector = browser.find_by_text(step.target)
-        if not selector:
-            raise BrowserError(f"no se encontró nada que diga {step.target!r}")
-        browser.click(selector)
+        found = browser.find_best_match(step.target)
+        if not found:
+            raise BrowserError(f"no se encontró nada parecido a {step.target!r}")
+        browser.click(found["selector"])
+        return "" if found["exact"] else found["text"]
     elif step.action == ACTION_TYPE:
         browser.type_into(step.target, step.value)
     elif step.action == ACTION_TYPE_LABEL:
-        selector = browser.find_by_text(step.target, role="input")
-        if not selector:
-            raise BrowserError(f"no se encontró un campo llamado {step.target!r}")
-        browser.type_into(selector, step.value)
+        found = browser.find_best_match(step.target, role="input")
+        if not found:
+            raise BrowserError(f"no se encontró un campo parecido a {step.target!r}")
+        browser.type_into(found["selector"], step.value)
+        return "" if found["exact"] else found["text"]
     elif step.action == ACTION_WAIT_TEXT:
         browser.wait_for(
             f"document.body.innerText.toLowerCase().includes({step.target.lower()!r})",
@@ -231,6 +241,7 @@ def _perform(browser: Browser, step: TestStep, environment: Environment) -> None
         )
     else:  # pragma: no cover - plan validation rejects unknown actions first
         raise BrowserError(f"acción no soportada: {step.action}")
+    return ""
 
 
 def _run_case(
@@ -252,7 +263,7 @@ def _run_case(
         _report(on_step, f"  {case.name} · paso {index}: {description}")
         shot = evidence_dir / f"{_slug(case.name)}-{index:02d}.png"
         try:
-            _perform(browser, step, environment)
+            matched = _perform(browser, step, environment)
             # Una navegación puede acabar en el login por redirección del
             # cliente: la URL sigue siendo la pedida, la pantalla no.
             assert_authenticated(browser, where=f"el paso «{description}»")
@@ -261,7 +272,9 @@ def _run_case(
                 shot_path = str(shot)
             except BrowserError:
                 shot_path = ""
-            result.steps.append(StepOutcome(step.action, description, True, screenshot=shot_path))
+            result.steps.append(
+                StepOutcome(step.action, description, True, screenshot=shot_path, matched_text=matched)
+            )
         except (BrowserError, AuthError) as exc:
             try:
                 browser.screenshot(shot)

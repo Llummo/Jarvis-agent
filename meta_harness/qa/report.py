@@ -40,7 +40,11 @@ def _case_block(case: CaseResult, evidence_dir: Path) -> List[str]:
         if step.screenshot:
             name = Path(step.screenshot).name
             evidence = f"[{name}]({name})"
-        status = TICK if step.ok else f"{CROSS} {step.error}"
+        if step.ok and step.matched_text:
+            # Se declara para que un emparejamiento laxo se pueda juzgar.
+            status = f"{TICK} encontró «{step.matched_text}»"
+        else:
+            status = TICK if step.ok else f"{CROSS} {step.error}"
         lines.append(f"| {index} | {step.description} | {status} | {evidence} |")
     lines.append("")
 
