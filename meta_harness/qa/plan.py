@@ -175,6 +175,11 @@ class TestPlan:
     # from real acceptance criteria from one the model improvised.
     derived_from: str = ""
     notes: List[str] = field(default_factory=list)
+    # Lo que el ticket nombra frente a lo que hay en pantalla, incluido lo que
+    # no aparece por ningún lado. Viaja con el plan porque es lo primero que
+    # hay que mirar al revisarlo: un elemento ausente convierte el criterio en
+    # una pregunta para una persona, no en una prueba más.
+    correspondence: List[Dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> None:
         if not self.ticket_id.strip():
@@ -196,6 +201,7 @@ class TestPlan:
             "route": self.route,
             "derived_from": self.derived_from,
             "notes": list(self.notes),
+            "correspondence": list(self.correspondence),
             "cases": [
                 {
                     "name": case.name,
@@ -267,6 +273,9 @@ class TestPlan:
             cases=cases,
             derived_from=str(payload.get("derived_from", "")),
             notes=[str(n) for n in (payload.get("notes") or [])],
+            correspondence=[
+                item for item in (payload.get("correspondence") or []) if isinstance(item, dict)
+            ],
         )
         plan.validate()
         return plan

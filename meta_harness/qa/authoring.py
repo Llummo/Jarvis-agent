@@ -38,6 +38,7 @@ from meta_harness.qa.plan import (
     TestPlan,
     TestStep,
 )
+from meta_harness.qa import reconcile as reconciliation
 from meta_harness.qa.ticket_shape import Criterion, TicketShape, parse_ticket
 from meta_harness.qa.vocabulary import Vocabulary, describe, harvest
 from meta_harness.ticket_generator import CLAUDE_TIMEOUT_ENV_VAR, _find_claude
@@ -174,6 +175,7 @@ def _case_for(
     index: int,
     timeout_s: float,
     vocabulary: Optional[Vocabulary] = None,
+    matches: Optional[List[reconciliation.Match]] = None,
 ) -> TestCase:
     payload = json.dumps(
         {
@@ -189,7 +191,7 @@ def _case_for(
         indent=2,
     )
 
-    prompt = PROMPT + describe(vocabulary)
+    prompt = PROMPT + describe(vocabulary) + reconciliation.describe(matches or [])
 
     last_error = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -294,13 +296,31 @@ def author_plan(
 
     vocabulary = _read_screen(environment, shape.route, on_step)
 
+    # Qué afirma el ticket frente a qué hay. Se hace una vez por ticket, entre
+    # leer la pantalla y escribir el primer paso, porque el resultado cambia lo
+    # que se le puede pedir al modelo — y porque lo que no existe hay que
+    # decirlo, no rodearlo.
+    matches: List[reconciliation.Match] = []
+    if vocabulary is not None:
+        terms = reconciliation.mentioned_elements(shape, resolved_timeout)
+        matches = reconciliation.reconcile(terms, vocabulary)
+        matches = reconciliation.relate_remaining(matches, vocabulary, resolved_timeout)
+        if on_step and matches:
+            absent = sum(1 for match in matches if match.missing)
+            on_step(
+                f"{len(matches)} elemento(s) del ticket contrastados; "
+                f"{absent} sin equivalente en pantalla"
+            )
+
     cases: List[TestCase] = []
     errors: List[str] = []
     for index, criterion in enumerate(shape.criteria, start=1):
         if on_step:
             on_step(f"  [{index}/{len(shape.criteria)}] {criterion.name}…")
         try:
-            cases.append(_case_for(criterion, shape, index, resolved_timeout, vocabulary))
+            cases.append(
+                _case_for(criterion, shape, index, resolved_timeout, vocabulary, matches)
+            )
         except AuthoringError as exc:
             # One unwritable criterion should not cost the others.
             errors.append(str(exc))
@@ -320,7 +340,9 @@ def author_plan(
         notes=(
             [f"No se pudo escribir: {error}" for error in errors]
             + [f"Criterio omitido (plantilla sin rellenar): {name}" for name in shape.skipped]
+            + reconciliation.summarize(matches)
         ),
+        correspondence=[match.to_dict() for match in matches],
     )
     plan.validate()
     if on_step:
